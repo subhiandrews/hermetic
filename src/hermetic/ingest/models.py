@@ -7,6 +7,11 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict
 
 Json = dict[str, Any]
+# JSON schemas in the model have their local `$ref`s inlined. The one exception is recursion:
+# a reference back into a schema that is already being expanded stays as
+# {"$ref": "#/components/schemas/Name"}. The model carries no components, so a consumer must
+# read such a node as "the same shape as the enclosing schema Name" (an ancestor in the same
+# tree), not try to resolve it.
 
 
 class _Frozen(BaseModel):

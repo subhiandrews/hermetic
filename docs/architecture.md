@@ -19,16 +19,14 @@ hermetic run --spec openapi.yaml --docs ./docs --target http://svc:8080
 
 ## Ingest
 
-`hermetic.ingest` turns an OpenAPI 3.x file (JSON or YAML) and an optional docs directory into a frozen `ServiceModel`. Decisions that later stages depend on:
+`hermetic.ingest` turns an OpenAPI 3.x file (JSON or YAML) and an optional docs directory into a frozen `ServiceModel`. These are the decisions later stages depend on. Exact limits live as constants in `ingest/openapi.py` and `ingest/docs.py`.
 
-- Only OpenAPI 3.x is accepted; the document is validated first and a failure stops the run.
-- The spec is untrusted input. YAML is normalised to plain JSON types on load (integer keys such as `200:` become strings, dates become ISO strings, other non-JSON values are rejected, and keys YAML 1.1 reads as booleans or null, such as an unquoted `on`, `yes` or `null`, are rejected with a hint to quote them rather than silently renamed), the file size is checked before it is read, and node caps apply to the loaded document, to each path item's inlined expansion and to the total expansion across the document, so an alias bomb or schemas that fan out into each other fail with a clear error instead of exhausting memory.
-- Only local `$ref` pointers (`#/...`) are resolved. External references are rejected before the validator runs, because the validator's resolver would otherwise fetch URLs or read files. A reference to a schema that is already being expanded (a recursive schema) is left as `{"$ref": ...}` rather than expanded forever.
-- Each operation carries a `fragment_hash`: a hash of the fully resolved operation, including any component schema it references, the security requirements and servers it inherits (operation, then path item, then document), and the definitions of the security schemes it uses (a change to an unrelated scheme does not mark it). The diff stage uses it to find added, modified and dropped operations, so a change to a shared schema correctly marks every operation that uses it.
-- A parameter described with `content` instead of `schema` keeps its schema, and its media type is recorded in `media_type`.
-- `spec_hash` hashes the whole parsed document, independent of key order and formatting.
-- An operation without an `operationId` gets a synthesized one (`get_pets_id`); duplicate ids are an error.
-- The docs loader reads Markdown, plain text and diagrams-as-text (PlantUML, Mermaid), sorted by path, up to 500 files and 8 MB in total (a docs path at a repository root fails with a hint to narrow it). It never enters hidden directories (so pointing it at a repository root does not walk `.git` or `.venv`) and skips hidden files, symlinks and special files, and fails on a file or directory it cannot read, a file that is too large, or one that is not UTF-8, instead of silently dropping it.
+- **The spec is untrusted input.** It is validated first and parsed into plain JSON types: ambiguous YAML (an unquoted `on` key), duplicate keys and non-JSON values are errors. File size, node counts and the expansion of references are bounded, so a hostile or pathological file fails with a clear error instead of exhausting memory.
+- **Only local `$ref`s (`#/...`) are resolved.** External ones are rejected before the validator runs, because its resolver would otherwise fetch URLs or read files. In 3.1 documents, keywords next to a `$ref` are merged over its target; 3.0 ignores them, as that version specifies.
+- **Recursive schemas keep a reference.** A `$ref` back into a schema that is already being expanded is left as `{"$ref": "#/components/schemas/Name"}`. The model carries no components, so consumers read it as "the same shape as the enclosing schema `Name`".
+- **`fragment_hash` is what the diff stage keys on.** It covers the resolved operation plus everything it inherits (referenced schemas, security requirements and the schemes they use, servers), so a change to a shared definition marks exactly the operations that depend on it.
+- **`spec_hash`** hashes the whole parsed document, independent of key order and formatting. An operation without an `operationId` gets a synthesized one; duplicates are an error.
+- **Docs are read strictly.** Markdown, text and diagrams-as-text are loaded in sorted order and bounded in count and size. Anything that cannot be read in full (unreadable, too large, not UTF-8) is an error rather than a silent omission.
 
 ## Run history
 
