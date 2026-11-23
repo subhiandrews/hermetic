@@ -32,7 +32,12 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
         "@pytest.mark.skipif(False, reason='not on this server')\n"
         "def test_a(hermetic_client):\n"
         "    hermetic_client.headers['X-Test'] = 'a {b} c_d'\n"
-        "    assert 'user_{}'.format(1) and '__' not in 'x'\n",
+        "    assert 'user_{}'.format(1) and '__' not in 'x'\n\n"
+        "class TestShapes:\n"
+        '    @pytest.mark.operation("op")\n'
+        "    def test_b(self, hermetic_client):\n"
+        "        for _ in range(2):\n"
+        "            assert hermetic_client.get('/ok')\n",
         "op",
     )
 
@@ -90,6 +95,30 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
         ),
         ("from pytest.mark import skipif\n", "importing `skipif`"),
         ("skipif\n", "`skipif` is not allowed"),
+        ("import uuid\nuuid._get_command_stdout('sh')\n", "attribute `_get_command_stdout`"),
+        ("from uuid import _get_command_stdout\n", "importing `_get_command_stdout`"),
+        ("import typing\ntyping.operator.attrgetter('x')\n", "attribute `(operator|attrgetter)`"),
+        ("import typing\ntyping.operator\n", "attribute `operator`"),
+        ("import pytest\npytest.MonkeyPatch()\n", "attribute `MonkeyPatch`"),
+        ("import pytest\npytest.main([])\n", "attribute `main`"),
+        (
+            "import pytest\n"
+            "@pytest.mark.skipif(**{'condition': \"os.system('id')\"})\n"
+            "def test_a(): ...\n",
+            "may only take a constant condition",
+        ),
+        ("x = ('{0._' + '_g}').format(1)\n", "`.format` may only be called on a single string"),
+        ("fmt = '{}'\nx = fmt.format(1)\n", "`.format` may only be called on a single string"),
+        (
+            'import pytest\n@pytest.mark.operation("op")\ndef test_a(): ...\n'
+            "class TestX:\n    def test_b(self): ...\n",
+            "test_b lacks @pytest.mark.operation",
+        ),
+        (
+            'import pytest\n@pytest.mark.operation("op")\ndef test_a(): ...\n'
+            "if True:\n    def test_c(): ...\n",
+            "test_c lacks @pytest.mark.operation",
+        ),
         ("x = 1\n", "no top-level test_ function"),
         ("import pytest\ndef test_a(): ...\n", "lacks @pytest.mark.operation"),
         (

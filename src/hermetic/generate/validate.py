@@ -42,11 +42,16 @@ FORBIDDEN_ATTRIBUTES = frozenset(
         # Frame and traceback objects expose `f_globals`, and so the real builtins.
         "gi_frame", "cr_frame", "ag_frame", "f_globals", "f_locals", "f_builtins", "f_back",
         "tb_frame",
+        # Modules an allowed module re-exports (`typing.operator`), and ways to start another
+        # pytest session or get a fixture by hand (`pytest.main`, `pytest.MonkeyPatch`).
+        "functools", "operator", "types", "attrgetter", "itemgetter", "methodcaller",
+        "MonkeyPatch", "Pytester", "main",
     }
 )  # fmt: skip
 # `pytest.mark.skipif("...")` and `xfail("...")` eval() a string condition at collection.
 # They are only allowed as a direct call whose arguments are all non-string constants.
 EVALUATING_MARKS = frozenset({"skipif", "xfail"})
+FORMAT_METHODS = frozenset({"format", "format_map"})
 # `"{0.__class__}".format(x)` reaches dunder attributes by name, without an Attribute node.
 _FORMAT_DUNDER = re.compile(r"\{[^{}]*__")
 # Fixtures that give a test the file system or the environment; only `hermetic_client` is meant.
@@ -79,8 +84,10 @@ def validate_source(source: str, operation_id: str) -> None:
                 raise SourceRejected("relative imports are not allowed")
             _check_module(node.module)
             for alias in node.names:
-                if alias.name == "*" or alias.name in (
-                    FORBIDDEN_NAMES | FORBIDDEN_ATTRIBUTES | EVALUATING_MARKS
+                if (
+                    alias.name == "*"
+                    or alias.name.startswith("_")  # private helpers: `uuid._get_command_stdout`
+                    or alias.name in FORBIDDEN_NAMES | FORBIDDEN_ATTRIBUTES | EVALUATING_MARKS
                 ):
                     raise SourceRejected(f"importing `{alias.name}` is not allowed in a test")
         elif isinstance(node, ast.Name) and (
@@ -92,19 +99,30 @@ def validate_source(source: str, operation_id: str) -> None:
             raise SourceRejected(f"`{node.id}` is not allowed in a test")
         elif isinstance(node, ast.Attribute) and (
             node.attr in FORBIDDEN_ATTRIBUTES
-            or node.attr.startswith("__")
+            or node.attr.startswith("_")  # private and dunder attributes alike
             or (node.attr in EVALUATING_MARKS and id(node) not in safe_marks)
         ):
             raise SourceRejected(f"attribute `{node.attr}` is not allowed in a test")
         elif isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load):
             raise SourceRejected(f"assigning to or deleting `.{node.attr}` is not allowed")
         elif isinstance(node, ast.Call) and _mark_name(node.func) in EVALUATING_MARKS:
-            conditions = [*node.args, *(k.value for k in node.keywords if k.arg == "condition")]
+            # `**{...}` has no keyword name; its value is a dict, which is not a constant either.
+            conditions = [
+                *node.args,
+                *(k.value for k in node.keywords if k.arg in (None, "condition")),
+            ]
             if any(not _is_plain_constant(condition) for condition in conditions):
                 raise SourceRejected(
                     f"`{_mark_name(node.func)}` may only take a constant condition"
                 )
             safe_marks.add(id(node.func))
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in FORMAT_METHODS
+            and not _is_string_literal(node.func.value)
+        ):
+            raise SourceRejected("`.format` may only be called on a single string literal")
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             if _FORMAT_DUNDER.search(node.value):
                 raise SourceRejected("a format string may not reach a name starting with `__`")
@@ -118,8 +136,13 @@ def validate_source(source: str, operation_id: str) -> None:
     ]
     if not tests:
         raise SourceRejected("the module defines no top-level test_ function")
-    for function in tests:
-        if not any(_marks_operation(d, operation_id) for d in function.decorator_list):
+    # Pytest also collects `test_` methods of a `Test*` class and functions nested under an `if`,
+    # so every `test_` function anywhere in the module carries the mark, not just top-level ones.
+    for function in ast.walk(tree):
+        if isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef) and (
+            function.name.startswith("test_")
+            and not any(_marks_operation(d, operation_id) for d in function.decorator_list)
+        ):
             raise SourceRejected(f"{function.name} lacks @pytest.mark.operation({operation_id!r})")
 
 
@@ -127,6 +150,10 @@ def _mark_name(func: ast.expr) -> str | None:
     if isinstance(func, ast.Attribute):
         return func.attr
     return func.id if isinstance(func, ast.Name) else None
+
+
+def _is_string_literal(node: ast.expr) -> bool:
+    return isinstance(node, ast.Constant) and isinstance(node.value, str)
 
 
 def _is_plain_constant(node: ast.expr) -> bool:
