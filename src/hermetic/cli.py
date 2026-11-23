@@ -23,7 +23,3 @@ def main() -> None:
 def version() -> None:
     """Print the Hermetic version."""
     typer.echo(__version__)
-
-
-if __name__ == "__main__":  # pragma: no cover
-    app()
