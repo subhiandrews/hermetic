@@ -24,15 +24,19 @@ HTTP_METHODS = ("get", "put", "post", "delete", "options", "head", "patch", "tra
 # reference each other with fan-out), so every traversal that copies the document is bounded.
 MAX_SPEC_NODES = 1_000_000  # the whole document, after YAML aliases are expanded
 MAX_EXPANDED_NODES = 500_000  # one path item, after its $refs are inlined
+MAX_TOTAL_EXPANDED_NODES = 2_000_000  # all path items together: bounds total memory
 
 
 class _Budget:
-    def __init__(self, limit: int, what: str) -> None:
+    def __init__(self, limit: int, what: str, parent: _Budget | None = None) -> None:
         self._limit = limit
         self._left = limit
         self._what = what
+        self._parent = parent  # every node spent here is also spent against the parent
 
     def spend(self) -> None:
+        if self._parent is not None:
+            self._parent.spend()
         self._left -= 1
         if self._left < 0:
             raise IngestError(
@@ -45,9 +49,11 @@ def canonical_hash(value: Any) -> str:
     """SHA-256 of a JSON-serialisable value, independent of key order and formatting."""
     try:
         blob = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        # UnicodeEncodeError (a ValueError) comes from here: a JSON "\ud800" escape loads fine
+        # but is not encodable.
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
     except (TypeError, ValueError, RecursionError) as exc:
         raise IngestError(f"cannot hash document: {exc}") from exc
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 def _normalise(node: Any, budget: _Budget) -> Any:
@@ -108,6 +114,12 @@ def validate_spec(spec: Json) -> None:
         validate(spec)
     except (OpenAPIValidationError, OpenAPISpecValidatorError, Unresolvable, RecursionError) as exc:
         raise IngestError(f"invalid OpenAPI document: {exc}") from exc
+    except Exception as exc:
+        # The validator is third-party code reading untrusted input and can fail on unusual
+        # documents (a scalar `x-` entry under `paths` raises a bare KeyError).
+        raise IngestError(
+            f"cannot validate OpenAPI document ({type(exc).__name__}: {exc})"
+        ) from exc
 
 
 def _resolve_pointer(root: Json, ref: str) -> Any:
@@ -177,9 +189,16 @@ def build_operations(spec: Json) -> list[Operation]:
     operations: list[Operation] = []
     seen_ids: set[str] = set()
     default_security = spec.get("security", [])
+    total = _Budget(MAX_TOTAL_EXPANDED_NODES, "document after inlining references")
     for path, raw_item in spec.get("paths", {}).items():
+        if not path.startswith("/"):
+            continue  # a specification extension (`x-...`), not a path item
         try:
-            item = deref(raw_item, spec)
+            item = deref(
+                raw_item,
+                spec,
+                _budget=_Budget(MAX_EXPANDED_NODES, "operation after inlining references", total),
+            )
         except RecursionError as exc:
             raise IngestError(f"{path}: references are nested too deeply") from exc
         for method in HTTP_METHODS:
@@ -216,6 +235,7 @@ def build_operations(spec: Json) -> list[Operation]:
                             content=_content(resp.get("content", {})),
                         )
                         for status, resp in raw.get("responses", {}).items()
+                        if not status.startswith("x-")  # specification extension
                     ],
                     security=raw.get("security", default_security),
                     fragment_hash=canonical_hash(

@@ -355,3 +355,37 @@ def test_deep_reference_chain_is_a_clean_error() -> None:
     paths = {"/a": {"get": {"responses": {"200": {"description": "ok", "content": content}}}}}
     with pytest.raises(IngestError, match="nested too deeply"):
         build_operations(make_spec(paths, components={"schemas": schemas}))
+
+
+def test_lone_surrogate_in_json_is_a_clean_error() -> None:
+    document = json.loads('{"a": "\\ud800"}')  # loads fine, cannot be encoded as UTF-8
+    with pytest.raises(IngestError, match="cannot hash document"):
+        canonical_hash(document)
+
+
+def test_total_expansion_is_capped_across_path_items(monkeypatch: pytest.MonkeyPatch) -> None:
+    base = fan_out_spec(6)
+    shared = base["paths"]["/a"]
+    spec = {**base, "paths": {f"/p{i}": shared for i in range(50)}}
+    assert len(build_operations(spec)) == 50  # every path item is far below the per-item cap
+    monkeypatch.setattr(openapi_module, "MAX_TOTAL_EXPANDED_NODES", 2_000)
+    with pytest.raises(IngestError, match="document after inlining"):
+        build_operations(spec)
+
+
+def test_specification_extensions_are_ignored() -> None:
+    spec = make_spec(
+        {"x-internal": {"note": "ext"}, "/a": {"get": {"responses": {**OK, "x-note": "text"}}}}
+    )
+    validate_spec(spec)  # valid per the OpenAPI schema
+    (op,) = build_operations(spec)
+    assert [r.status for r in op.responses] == ["200"]
+
+
+@pytest.mark.parametrize("value", [True, None])
+def test_validator_crash_on_scalar_extension_is_a_clean_error(value: Any) -> None:
+    spec = make_spec({"x-internal": value, "/a": {"get": {"responses": OK}}})
+    with pytest.raises(IngestError, match=r"cannot validate OpenAPI document \(KeyError"):
+        validate_spec(spec)
+    (op,) = build_operations(spec)  # the builder itself skips the extension
+    assert op.path == "/a"
