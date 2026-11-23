@@ -15,6 +15,16 @@ def test_a_marked_test_is_accepted() -> None:
     )
 
 
+def test_attribute_names_that_match_forbidden_builtins_are_accepted() -> None:
+    validate_source(
+        "import re\n\n"
+        '@pytest.mark.operation("op")\n'
+        "def test_a(hermetic_client):\n"
+        "    assert re.compile('x') and hermetic_client.get('/').type\n",
+        "op",
+    )
+
+
 def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
     validate_source(
         "import pytest\n\n"
@@ -59,13 +69,27 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
         ("from string import Formatter\n", "importing `Formatter`"),
         (
             "import pytest\n@pytest.mark.skipif(\"os.system('x')\")\ndef test_a(): ...\n",
-            "may not take a string condition",
+            "may only take a constant condition",
         ),
         (
             "import pytest\n@pytest.mark.xfail(condition='1')\ndef test_a(): ...\n",
-            "may not take a string condition",
+            "may only take a constant condition",
         ),
         ("x = '{0.__class__}'.format(1)\n", "format string may not reach"),
+        ("(x for x in []).gi_frame.f_globals\n", "attribute `f_globals`"),
+        ("def f(g):\n    return g.gi_frame\n", "attribute `gi_frame`"),
+        ("pytest_plugins = ['pytester']\n", "`pytest_plugins` is not allowed"),
+        ("def test_a(pytester): ...\n", "fixture `pytester`"),
+        ("from typing import *\n", "importing `*`"),
+        ("get_type_hints\n", "`get_type_hints` is not allowed"),
+        ("from pytest import mark\n@mark.skipif('1')\ndef test_a(): ...\n", "constant condition"),
+        ("import pytest\nm = pytest.mark.skipif\n", "attribute `skipif`"),
+        (
+            "import pytest\nc = '1'\n@pytest.mark.skipif(c)\ndef test_a(): ...\n",
+            "constant condition",
+        ),
+        ("from pytest.mark import skipif\n", "importing `skipif`"),
+        ("skipif\n", "`skipif` is not allowed"),
         ("x = 1\n", "no top-level test_ function"),
         ("import pytest\ndef test_a(): ...\n", "lacks @pytest.mark.operation"),
         (

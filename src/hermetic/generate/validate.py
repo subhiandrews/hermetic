@@ -39,16 +39,20 @@ FORBIDDEN_ATTRIBUTES = frozenset(
         # Ways to reach the client's origin check, or to evaluate strings by name.
         "event_hooks", "base_url", "_transport", "_mounts",
         "ForwardRef", "Formatter", "get_type_hints", "_evaluate",
+        # Frame and traceback objects expose `f_globals`, and so the real builtins.
+        "gi_frame", "cr_frame", "ag_frame", "f_globals", "f_locals", "f_builtins", "f_back",
+        "tb_frame",
     }
 )  # fmt: skip
 # `pytest.mark.skipif("...")` and `xfail("...")` eval() a string condition at collection.
-EVALUATING_MARKS = frozenset({"pytest.mark.skipif", "pytest.mark.xfail"})
+# They are only allowed as a direct call whose arguments are all non-string constants.
+EVALUATING_MARKS = frozenset({"skipif", "xfail"})
 # `"{0.__class__}".format(x)` reaches dunder attributes by name, without an Attribute node.
 _FORMAT_DUNDER = re.compile(r"\{[^{}]*__")
 # Fixtures that give a test the file system or the environment; only `hermetic_client` is meant.
 FORBIDDEN_FIXTURES = frozenset(
-    {"cache", "capfd", "capsys", "monkeypatch", "pytestconfig", "request", "tmp_path",
-     "tmp_path_factory", "tmpdir", "tmpdir_factory"}
+    {"cache", "capfd", "capsys", "monkeypatch", "pytestconfig", "pytester", "request", "testdir",
+     "tmp_path", "tmp_path_factory", "tmpdir", "tmpdir_factory"}
 )  # fmt: skip
 MAX_SOURCE_BYTES = 256 * 1024
 
@@ -65,6 +69,7 @@ def validate_source(source: str, operation_id: str) -> None:
         tree = ast.parse(source)
     except (SyntaxError, ValueError) as exc:
         raise SourceRejected(f"the test is not valid Python: {exc}") from exc
+    safe_marks: set[int] = set()  # skipif/xfail nodes used as the callee of a harmless call
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -74,24 +79,32 @@ def validate_source(source: str, operation_id: str) -> None:
                 raise SourceRejected("relative imports are not allowed")
             _check_module(node.module)
             for alias in node.names:
-                if alias.name in FORBIDDEN_NAMES | FORBIDDEN_ATTRIBUTES:
+                if alias.name == "*" or alias.name in (
+                    FORBIDDEN_NAMES | FORBIDDEN_ATTRIBUTES | EVALUATING_MARKS
+                ):
                     raise SourceRejected(f"importing `{alias.name}` is not allowed in a test")
         elif isinstance(node, ast.Name) and (
-            node.id in FORBIDDEN_NAMES or node.id.startswith("__")
+            node.id in FORBIDDEN_NAMES
+            or node.id in FORBIDDEN_ATTRIBUTES
+            or node.id in EVALUATING_MARKS
+            or node.id.startswith(("__", "pytest_"))  # `pytest_plugins` loads any plugin
         ):
             raise SourceRejected(f"`{node.id}` is not allowed in a test")
         elif isinstance(node, ast.Attribute) and (
             node.attr in FORBIDDEN_ATTRIBUTES
-            or node.attr in FORBIDDEN_NAMES
             or node.attr.startswith("__")
+            or (node.attr in EVALUATING_MARKS and id(node) not in safe_marks)
         ):
             raise SourceRejected(f"attribute `{node.attr}` is not allowed in a test")
         elif isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load):
             raise SourceRejected(f"assigning to or deleting `.{node.attr}` is not allowed")
-        elif isinstance(node, ast.Call) and ast.unparse(node.func) in EVALUATING_MARKS:
+        elif isinstance(node, ast.Call) and _mark_name(node.func) in EVALUATING_MARKS:
             conditions = [*node.args, *(k.value for k in node.keywords if k.arg == "condition")]
-            if any(_is_string(condition) for condition in conditions):
-                raise SourceRejected(f"`{ast.unparse(node.func)}` may not take a string condition")
+            if any(not _is_plain_constant(condition) for condition in conditions):
+                raise SourceRejected(
+                    f"`{_mark_name(node.func)}` may only take a constant condition"
+                )
+            safe_marks.add(id(node.func))
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             if _FORMAT_DUNDER.search(node.value):
                 raise SourceRejected("a format string may not reach a name starting with `__`")
@@ -110,8 +123,14 @@ def validate_source(source: str, operation_id: str) -> None:
             raise SourceRejected(f"{function.name} lacks @pytest.mark.operation({operation_id!r})")
 
 
-def _is_string(node: ast.expr) -> bool:
-    return isinstance(node, ast.Constant) and isinstance(node.value, str)
+def _mark_name(func: ast.expr) -> str | None:
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return func.id if isinstance(func, ast.Name) else None
+
+
+def _is_plain_constant(node: ast.expr) -> bool:
+    return isinstance(node, ast.Constant) and not isinstance(node.value, str)
 
 
 def _check_module(name: str) -> None:

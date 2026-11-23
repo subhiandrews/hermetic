@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -103,3 +104,14 @@ def test_author_asks_the_model_and_parses_the_reply(monkeypatch: pytest.MonkeyPa
     assert author.prompt_version == PROMPT_VERSION
     assert author.write_test(request()).source == "x = 1\n"
     assert 'operationId: "updatePet"' in asked[0]
+
+
+def test_a_stalled_model_call_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def stalled(self: ClaudeAuthor, prompt: str) -> str:
+        await asyncio.sleep(5)
+        return ""
+
+    monkeypatch.setattr(ClaudeAuthor, "_ask", stalled)
+    monkeypatch.setattr("hermetic.agent.claude.AUTHOR_TIMEOUT_SECONDS", 0.01)
+    with pytest.raises(AuthorResponseError, match="did not answer within"):
+        ClaudeAuthor().write_test(request())

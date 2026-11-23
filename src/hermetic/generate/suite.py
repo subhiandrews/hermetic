@@ -86,12 +86,18 @@ def generate_suite(
             ) from exc
         return result, reason
 
-    # The model round trips are independent, so overlap them. `map` yields in spec order and
-    # raises the first failure in that order; nothing is written until every test is in hand.
+    # The model round trips are independent, so overlap them. Results are taken in spec order
+    # and the first failure in that order is raised, after queued calls are cancelled so no
+    # more paid requests start; nothing is written until every test is in hand.
     authored: dict[str, tuple[AuthoredTest, str]] = {}
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_AUTHORS) as pool:
-        for (operation, _, _), outcome in zip(work, pool.map(author_one, work), strict=True):
-            authored[operation.operation_id] = outcome
+        futures = [pool.submit(author_one, item) for item in work]
+        try:
+            for (operation, _, _), future in zip(work, futures, strict=True):
+                authored[operation.operation_id] = future.result()
+        except BaseException:
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
 
     changes: list[SuiteChange] = []
     for operation in plan.added:
