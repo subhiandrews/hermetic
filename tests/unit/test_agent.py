@@ -71,6 +71,7 @@ def test_the_system_prompt_lists_the_names_validation_refuses() -> None:
     for name in FORBIDDEN_NAMES:
         assert name in SYSTEM_PROMPT
     assert "even as variable names" in SYSTEM_PROMPT
+    assert "pytest.raises" in SYSTEM_PROMPT and "pytest.main" not in SYSTEM_PROMPT
 
 
 def test_spec_derived_lines_are_quoted_and_cannot_add_lines_or_close_tags() -> None:

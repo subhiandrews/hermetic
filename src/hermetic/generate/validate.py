@@ -8,7 +8,7 @@ a few dangerous builtins may not be called or referenced.
 from __future__ import annotations
 
 import ast
-import re
+import string
 
 ALLOWED_IMPORTS = frozenset(
     {
@@ -56,8 +56,9 @@ FORBIDDEN_ATTRIBUTES = frozenset(
 # They are only allowed as a direct call whose arguments are all non-string constants.
 EVALUATING_MARKS = frozenset({"skipif", "xfail"})
 FORMAT_METHODS = frozenset({"format", "format_map"})
-# `"{0.__class__}".format(x)` reaches dunder attributes by name, without an Attribute node.
-_FORMAT_DUNDER = re.compile(r"\{[^{}]*__")
+# The only `pytest` attributes a test may use. The rest of its public API starts plugins,
+# builds fixtures by hand or runs a nested session, so it is refused rather than listed.
+PYTEST_API = frozenset({"approx", "fail", "mark", "param", "raises", "skip"})
 # Fixtures that give a test the file system or the environment; only `hermetic_client` is meant.
 FORBIDDEN_FIXTURES = frozenset(
     {"cache", "capfd", "capsys", "monkeypatch", "pytestconfig", "pytester", "request", "testdir",
@@ -80,10 +81,24 @@ def validate_source(source: str, operation_id: str) -> None:
         raise SourceRejected(f"the test is not valid Python: {exc}") from exc
     safe_marks: set[int] = set()  # skipif/xfail nodes used as the callee of a harmless call
     safe_formats: set[int] = set()  # `.format` nodes called directly on a string literal
-    for node in ast.walk(tree):
+    attributed: set[int] = set()  # `pytest` names that are the base of an attribute access
+    for node in ast.walk(tree):  # parents come before their children, so `attributed` fills first
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "pytest"
+        ):
+            attributed.add(id(node.value))
+            if node.attr not in PYTEST_API:
+                allowed = ", ".join(sorted(PYTEST_API))
+                raise SourceRejected(
+                    f"attribute `{node.attr}` is not allowed in a test (from pytest: {allowed})"
+                )
         if isinstance(node, ast.Import):
             for alias in node.names:
                 _check_module(alias.name)
+                if alias.name == "pytest" and alias.asname:
+                    raise SourceRejected("`pytest` may not be imported under another name")
         elif isinstance(node, ast.ImportFrom):
             if node.level or node.module is None:
                 raise SourceRejected("relative imports are not allowed")
@@ -93,6 +108,7 @@ def validate_source(source: str, operation_id: str) -> None:
                     alias.name == "*"
                     or alias.name.startswith("_")  # private helpers: `uuid._get_command_stdout`
                     or alias.name in FORBIDDEN_NAMES | FORBIDDEN_ATTRIBUTES | EVALUATING_MARKS
+                    or (node.module == "pytest" and alias.name not in PYTEST_API)
                 ):
                     raise SourceRejected(f"importing `{alias.name}` is not allowed in a test")
         elif isinstance(node, ast.Name) and (
@@ -100,6 +116,7 @@ def validate_source(source: str, operation_id: str) -> None:
             or node.id in EVALUATING_MARKS
             or node.id == "usefixtures"
             or node.id.startswith(("__", "pytest_"))  # `pytest_plugins` loads any plugin
+            or (node.id == "pytest" and id(node) not in attributed)  # `p = pytest` hides the API
         ):
             raise SourceRejected(f"`{node.id}` is not allowed in a test")
         elif isinstance(node, ast.Attribute) and (
@@ -127,16 +144,18 @@ def validate_source(source: str, operation_id: str) -> None:
             and isinstance(node.func, ast.Attribute)
             and node.func.attr in FORMAT_METHODS
         ):
-            if not _is_string_literal(node.func.value):
+            receiver = node.func.value
+            if not (isinstance(receiver, ast.Constant) and isinstance(receiver.value, str)):
                 raise SourceRejected("`.format` may only be called on a single string literal")
+            if _has_field_access(receiver.value):
+                raise SourceRejected("a format field may not use attribute or index access")
             safe_formats.add(id(node.func))
-        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if _FORMAT_DUNDER.search(node.value):
-                raise SourceRejected("a format string may not reach a name starting with `__`")
         elif isinstance(node, ast.MatchClass) and any(a.startswith("_") for a in node.kwd_attrs):
             raise SourceRejected("class patterns may not bind private attributes")
         elif isinstance(node, ast.arg) and node.arg in FORBIDDEN_FIXTURES:
             raise SourceRejected(f"fixture `{node.arg}` is not allowed in a test")
+        elif isinstance(node, ast.keyword) and (node.arg or "").startswith("_"):
+            raise SourceRejected(f"keyword argument `{node.arg}` is not allowed in a test")
     tests = [
         node
         for node in tree.body
@@ -161,8 +180,22 @@ def _mark_name(func: ast.expr) -> str | None:
     return func.id if isinstance(func, ast.Name) else None
 
 
-def _is_string_literal(node: ast.expr) -> bool:
-    return isinstance(node, ast.Constant) and isinstance(node.value, str)
+def _has_field_access(template: str) -> bool:
+    """True if a replacement field, or a field nested in a format spec, uses `.` or `[`.
+
+    `"{0.sys.modules[os]}".format(typing)` reads attributes by name, outside any `ast.Attribute`
+    node, so the fields themselves are parsed.
+    """
+    try:
+        fields = list(string.Formatter().parse(template))
+    except ValueError:
+        return False  # not a valid format string, so `.format` raises on it anyway
+    for _, name, spec, _ in fields:
+        if name and ("." in name or "[" in name):
+            return True
+        if spec and _has_field_access(spec):
+            return True
+    return False
 
 
 def _is_plain_constant(node: ast.expr) -> bool:

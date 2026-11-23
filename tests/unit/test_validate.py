@@ -27,11 +27,15 @@ def test_attribute_names_that_match_forbidden_builtins_are_accepted() -> None:
 
 def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
     validate_source(
-        "import pytest\n\n"
+        "import pytest\nfrom pytest import approx\n\n"
         '@pytest.mark.operation("op")\n'
         "@pytest.mark.skipif(False, reason='not on this server')\n"
         "def test_a(hermetic_client):\n"
         "    system, main, operator, types = 1, 2, 3, 4  # ordinary variables are fine\n"
+        "    assert 1.0 == approx(1.0) and '{:.2f} {name!r} {{x}}'.format(1.5, name=1)\n"
+        "    body = '{\"__proto__\": 1}'  # plain JSON-looking text is not a format string\n"
+        "    with pytest.raises(ValueError):\n"
+        "        '{'.format()  # not a valid format string: fails at run time, not here\n"
         "    hermetic_client.headers['X-Test'] = 'a {b} c_d'\n"
         "    assert 'user_{}'.format(1) and '__' not in 'x'\n\n"
         "class TestShapes:\n"
@@ -81,7 +85,7 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
             "import pytest\n@pytest.mark.xfail(condition='1')\ndef test_a(): ...\n",
             "may only take a constant condition",
         ),
-        ("x = '{0.__class__}'.format(1)\n", "format string may not reach"),
+        ("x = '{0.__class__}'.format(1)\n", "format field may not use attribute or index"),
         ("(x for x in []).gi_frame.f_globals\n", "attribute `f_globals`"),
         ("def f(g):\n    return g.gi_frame\n", "attribute `gi_frame`"),
         ("pytest_plugins = ['pytester']\n", "`pytest_plugins` is not allowed"),
@@ -112,6 +116,21 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
         ("import pytest\npytest.MonkeyPatch()\n", "attribute `MonkeyPatch`"),
         ("import pytest\npytest.main([])\n", "attribute `main`"),
         ("import pytest\npytest.console_main()\n", "attribute `console_main`"),
+        (
+            "import pytest\npytest.PytestPluginManager().import_plugin('subprocess')\n",
+            "attribute `PytestPluginManager`",
+        ),
+        ("import pytest\npytest.TempPathFactory\n", "attribute `TempPathFactory`"),
+        ("from pytest import PytestPluginManager\n", "importing `PytestPluginManager`"),
+        ("import pytest as p\n", "may not be imported under another name"),
+        ("import pytest\np = pytest\n", "`pytest` is not allowed"),
+        ("import json\njson.dumps(1, _ispytest=True)\n", "keyword argument `_ispytest`"),
+        (
+            "x = '{0.sys.modules[os].environ}'.format(1)\n",
+            "format field may not use attribute or index access",
+        ),
+        ("x = '{0[a]}'.format({})\n", "format field may not use attribute or index access"),
+        ("x = '{:{0.x}}'.format(1)\n", "format field may not use attribute or index access"),
         ("import json\njson.codecs.open('x', 'w')\n", "attribute `(codecs|open)`"),
         ("import json\njson.codecs\n", "attribute `codecs`"),
         ("from json import codecs\n", "importing `codecs`"),

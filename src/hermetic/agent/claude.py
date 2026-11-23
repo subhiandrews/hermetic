@@ -13,13 +13,14 @@ import json
 import re
 
 from hermetic.generate.author import AuthoredTest, AuthorRequest
-from hermetic.generate.validate import FORBIDDEN_NAMES
+from hermetic.generate.validate import FORBIDDEN_NAMES, PYTEST_API
 
 # Bump when SYSTEM_PROMPT or build_prompt changes in a way that should rewrite every test.
 PROMPT_VERSION = "2"
 
 # One rejected test aborts the whole generation, so the names validation refuses are listed.
 _BANNED_NAMES = ", ".join(sorted(FORBIDDEN_NAMES))
+_PYTEST_NAMES = ", ".join(f"pytest.{name}" for name in sorted(PYTEST_API))
 
 SYSTEM_PROMPT = f"""\
 You write pytest tests for one operation of a REST API, using httpx.
@@ -38,6 +39,7 @@ Rules for the module:
   and a request that breaks a documented constraint. Assert on status code and on the
   response shape the spec describes. Do not assert on values the spec does not promise.
 - Never read files, spawn processes or use the network except through hermetic_client.
+- From pytest use only: {_PYTEST_NAMES}. Do not rename the pytest module or pass it around.
 - The tests are rejected if they use any of these names, even as variable names: {_BANNED_NAMES}.
   Also avoid names or attributes that start with an underscore, assigning to an attribute
   (hermetic_client.timeout = 1), and .format() on anything but a string literal.
