@@ -184,7 +184,12 @@ def _resolve_pointer(root: Json, ref: str) -> Any:
         key = part.replace("~1", "/").replace("~0", "~")
         if isinstance(node, dict) and key in node:
             node = node[key]
-        elif isinstance(node, list) and _is_array_index(key) and int(key) < len(node):
+        elif (
+            isinstance(node, list)
+            and _is_array_index(key)
+            and len(key) <= len(str(len(node)))  # also keeps int() clear of its 4300-digit limit
+            and int(key) < len(node)
+        ):
             node = node[int(key)]
         else:
             raise IngestError(f"unresolvable $ref {ref!r}")

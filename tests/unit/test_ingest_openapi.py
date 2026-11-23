@@ -577,6 +577,12 @@ def test_deref_rejects_invalid_array_indices(ref: str) -> None:
         deref({"$ref": ref}, {"items": [1, 2]})
 
 
+def test_deref_rejects_absurdly_long_array_indices() -> None:
+    # int() raises a plain ValueError past 4300 digits; this must stay an IngestError
+    with pytest.raises(IngestError, match="unresolvable"):
+        deref({"$ref": "#/items/" + "1" * 5000}, {"items": [1, 2]})
+
+
 def test_reference_into_an_array_ingests_end_to_end(tmp_path: Path) -> None:
     query = {"name": "q", "in": "query", "schema": {"type": "string"}}
     ref = {"$ref": "#/paths/~1pets/get/parameters/0"}
