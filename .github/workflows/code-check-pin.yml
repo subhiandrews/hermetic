@@ -117,8 +117,11 @@ jobs:
             # already marked ready would run the review (and the new code-check) with the
             # repository secret as soon as the push lands, so turn it back into a draft first.
             open_pr="$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
-            if [ -n "$open_pr" ] && [ "$(gh pr view "$open_pr" --repo "$REPO" --json isDraft --jq .isDraft)" = "false" ]; then
-              gh pr ready "$open_pr" --repo "$REPO" --undo
+            if [ -n "$open_pr" ]; then
+              # Its own statement, so a failed lookup stops the job (set -e does not see a failed
+              # command substitution inside `[ ]`). Anything but "true" is treated as not a draft.
+              is_draft="$(gh pr view "$open_pr" --repo "$REPO" --json isDraft --jq .isDraft)"
+              [ "$is_draft" = "true" ] || gh pr ready "$open_pr" --repo "$REPO" --undo
             fi
             expect="$(git ls-remote "$url" "refs/heads/$BRANCH" | cut -f1)"
             git push --force-with-lease="refs/heads/$BRANCH:$expect" "$url" "HEAD:refs/heads/$BRANCH"
