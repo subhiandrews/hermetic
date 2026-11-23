@@ -16,6 +16,8 @@ from hermetic.generate.author import AuthoredTest, AuthorRequest
 from hermetic.generate.validate import FORBIDDEN_NAMES, PYTEST_API
 
 # Bump when SYSTEM_PROMPT or build_prompt changes in a way that should rewrite every test.
+# SYSTEM_PROMPT is built from the validator's lists, so an edit there changes it too: a test
+# pins its hash and fails until someone decides whether to bump this.
 PROMPT_VERSION = "2"
 
 # One rejected test aborts the whole generation, so the names validation refuses are listed.

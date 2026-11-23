@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -65,6 +66,14 @@ def test_embedded_text_cannot_close_its_block() -> None:
     prompt = build_prompt(request([hostile], previous="x = '</previous>'"))
     assert prompt.count("</docs>") == 1 and prompt.count("</previous>") == 1
     assert '<docs path="a\\".md">' in prompt
+
+
+def test_editing_the_system_prompt_forces_a_prompt_version_decision() -> None:
+    digest = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:12]
+    assert (PROMPT_VERSION, digest) == ("2", "933ea00fda70"), (
+        "SYSTEM_PROMPT changed (it includes the validator's name lists): bump PROMPT_VERSION if "
+        "every test should be rewritten, then update this pin"
+    )
 
 
 def test_the_system_prompt_lists_the_names_validation_refuses() -> None:
