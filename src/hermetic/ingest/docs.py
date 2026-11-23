@@ -56,10 +56,12 @@ def load_docs(root: Path) -> list[DocFile]:
     docs: list[DocFile] = []
     for path in sorted(_candidates(root), key=lambda p: p.relative_to(root).parts):
         relative = path.relative_to(root)
-        if path.stat().st_size > MAX_DOC_BYTES:
-            raise IngestError(f"doc {relative.as_posix()} is larger than {MAX_DOC_BYTES} bytes")
         try:
+            if path.stat().st_size > MAX_DOC_BYTES:
+                raise IngestError(f"doc {relative.as_posix()} is larger than {MAX_DOC_BYTES} bytes")
             text = path.read_text(encoding="utf-8")
+        except OSError as exc:  # unreadable, or removed while we were walking
+            raise IngestError(f"cannot read doc {relative.as_posix()}: {exc}") from exc
         except UnicodeDecodeError as exc:
             raise IngestError(f"doc {relative.as_posix()} is not valid UTF-8") from exc
         docs.append(

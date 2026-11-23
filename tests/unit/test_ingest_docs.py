@@ -6,7 +6,27 @@ from typing import Any
 import pytest
 
 from hermetic.ingest import IngestError
+from hermetic.ingest import docs as docs_module
 from hermetic.ingest.docs import MAX_DOC_BYTES, load_docs
+
+
+def test_unreadable_doc_is_a_clean_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "a.md").write_text("x")
+
+    def denied(self: Path, *args: Any, **kwargs: Any) -> str:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(Path, "read_text", denied)
+    with pytest.raises(IngestError, match=r"cannot read doc a\.md"):
+        load_docs(tmp_path)
+
+
+def test_doc_removed_during_the_walk_is_a_clean_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(docs_module, "_candidates", lambda root: [root / "gone.md"])
+    with pytest.raises(IngestError, match=r"cannot read doc gone\.md"):
+        load_docs(tmp_path)
 
 
 def test_hidden_directories_are_never_entered(
