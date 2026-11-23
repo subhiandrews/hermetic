@@ -70,7 +70,10 @@ def _normalise(node: Any, budget: _Budget) -> Any:
         for key, value in node.items():
             if isinstance(key, bool) or not isinstance(key, str | int):
                 raise IngestError(f"unsupported key {key!r} in spec; quote it to use it as text")
-            normalised[str(key)] = _normalise(value, budget)
+            name = str(key)
+            if name in normalised:  # e.g. `200:` and `"200":` in the same mapping
+                raise IngestError(f"duplicate key {name!r} in spec")
+            normalised[name] = _normalise(value, budget)
         return normalised
     if isinstance(node, list):
         return [_normalise(value, budget) for value in node]
@@ -136,6 +139,11 @@ def validate_spec(spec: Json) -> None:
         ) from exc
 
 
+def _is_array_index(key: str) -> bool:
+    """RFC 6901 array index: ASCII digits, no leading zeros (``-`` is not resolvable)."""
+    return key.isascii() and key.isdigit() and (key == "0" or not key.startswith("0"))
+
+
 def _resolve_pointer(root: Json, ref: str) -> Any:
     node: Any = root
     # A $ref is a URI fragment (RFC 6901 section 6): percent-decode it, then split.
@@ -143,6 +151,8 @@ def _resolve_pointer(root: Json, ref: str) -> Any:
         key = part.replace("~1", "/").replace("~0", "~")
         if isinstance(node, dict) and key in node:
             node = node[key]
+        elif isinstance(node, list) and _is_array_index(key) and int(key) < len(node):
+            node = node[int(key)]
         else:
             raise IngestError(f"unresolvable $ref {ref!r}")
     return node

@@ -1,4 +1,6 @@
+import contextlib
 import json
+import socket
 from pathlib import Path
 from typing import Any
 
@@ -558,3 +560,78 @@ def test_self_referencing_path_item_is_an_error() -> None:
     spec = make_spec({"/a": {"$ref": "#/paths/~1a"}})
     with pytest.raises(IngestError, match="path item references itself"):
         build_operations(spec)
+
+
+def test_deref_resolves_array_indices() -> None:
+    root = {"items": [{"a": 1}, {"a": 2}]}
+    assert deref({"$ref": "#/items/1/a"}, root) == 2
+    assert deref({"$ref": "#/items/0"}, root) == {"a": 1}
+
+
+@pytest.mark.parametrize(
+    "ref", ["#/items/2", "#/items/-", "#/items/01", "#/items/x", "#/items/%C2%B2"]
+)
+def test_deref_rejects_invalid_array_indices(ref: str) -> None:
+    # out of range, "-", leading zero, not a number, and a non-ASCII digit ("²")
+    with pytest.raises(IngestError, match="unresolvable"):
+        deref({"$ref": ref}, {"items": [1, 2]})
+
+
+def test_reference_into_an_array_ingests_end_to_end(tmp_path: Path) -> None:
+    query = {"name": "q", "in": "query", "schema": {"type": "string"}}
+    ref = {"$ref": "#/paths/~1pets/get/parameters/0"}
+    spec = make_spec(
+        {
+            "/pets": {"get": {"parameters": [query], "responses": OK}},
+            "/other": {"get": {"parameters": [ref], "responses": OK}},
+        }
+    )
+    path = tmp_path / "api.json"
+    path.write_text(json.dumps(spec))
+    other = next(op for op in ingest(path).operations if op.path == "/other")
+    assert [p.name for p in other.parameters] == ["q"]
+
+
+def test_integer_key_and_its_quoted_twin_are_an_error(tmp_path: Path) -> None:
+    path = tmp_path / "x.yaml"
+    path.write_text('200: first\n"200": second\n')  # both become "200"; one would vanish
+    with pytest.raises(IngestError, match="duplicate key '200'"):
+        load_spec_file(path)
+
+
+def openapi_31_with_keyword(name: str) -> dict[str, Any]:
+    url = "http://127.0.0.1:9/never-fetched.json"
+    schema: dict[str, Any] = {
+        "id": {"$id": url, "$ref": "#/components/schemas/X"},
+        "schema": {"$schema": url, "type": "string"},
+        "dynamic": {"$dynamicRef": url},
+        "dialect": {"type": "string"},
+    }[name]
+    content = {"application/json": {"schema": schema}}
+    spec = {
+        "openapi": "3.1.0",
+        "info": {"title": "T", "version": "1"},
+        "components": {"schemas": {"X": {"type": "string"}}},
+        "paths": {"/a": {"get": {"responses": {"200": {"description": "ok", "content": content}}}}},
+    }
+    if name == "dialect":
+        spec["jsonSchemaDialect"] = url
+    return spec
+
+
+@pytest.mark.parametrize("name", ["id", "schema", "dynamic", "dialect"])
+def test_validation_never_opens_a_network_connection(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression guard: URL-valued JSON Schema keywords must not make the validator fetch
+    anything. Verified against the validator in use; this fails if an upgrade changes that."""
+    attempts: list[Any] = []
+
+    def refuse(self: socket.socket, address: Any) -> None:
+        attempts.append(address)
+        raise OSError("network disabled in tests")
+
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    with contextlib.suppress(IngestError):  # rejecting the document is fine
+        validate_spec(openapi_31_with_keyword(name))
+    assert attempts == []  # reaching for the network is not
