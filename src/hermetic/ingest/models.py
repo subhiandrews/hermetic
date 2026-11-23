@@ -18,6 +18,9 @@ class Parameter(_Frozen):
     location: Literal["path", "query", "header", "cookie"]
     required: bool
     json_schema: Json
+    # Set when the parameter is described with `content` instead of `schema` (valid OpenAPI);
+    # json_schema then holds that media type's schema.
+    media_type: str | None = None
 
 
 class RequestBody(_Frozen):

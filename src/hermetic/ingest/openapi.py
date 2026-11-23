@@ -7,7 +7,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 from openapi_spec_validator import validate
@@ -174,32 +174,63 @@ def _synthesized_id(method: str, path: str) -> str:
     return f"{method}_{re.sub(r'[^a-zA-Z0-9]+', '_', path).strip('_')}"
 
 
+def _parameter_schema(raw: Json) -> tuple[Json, str | None]:
+    """A parameter has either ``schema`` or a one-entry ``content`` map; return the schema
+    and, for the ``content`` form, its media type."""
+    if "schema" in raw:
+        return raw["schema"], None
+    content = raw.get("content", {})
+    if content:
+        media_type, body = next(iter(content.items()))
+        return body.get("schema", {}), media_type
+    return {}, None
+
+
 def _parameters(path_level: list[Json], op_level: list[Json]) -> list[Parameter]:
     merged: dict[tuple[str, str], Json] = {}
     for raw in (*path_level, *op_level):  # operation-level overrides path-level
         merged[(raw["in"], raw["name"])] = raw
-    return [
-        Parameter(
-            name=raw["name"],
-            location=raw["in"],
-            # path parameters are always required in OpenAPI
-            required=bool(raw.get("required", False)) or raw["in"] == "path",
-            json_schema=raw.get("schema", {}),
+    parameters: list[Parameter] = []
+    for raw in merged.values():
+        schema, media_type = _parameter_schema(raw)
+        parameters.append(
+            Parameter(
+                name=raw["name"],
+                location=raw["in"],
+                # path parameters are always required in OpenAPI
+                required=bool(raw.get("required", False)) or raw["in"] == "path",
+                json_schema=schema,
+                media_type=media_type,
+            )
         )
-        for raw in merged.values()
-    ]
+    return parameters
 
 
 def _content(raw: Json) -> dict[str, Json]:
     return {media: body.get("schema", {}) for media, body in raw.items()}
 
 
-def _security_schemes(spec: Json, security: list[dict[str, list[str]]]) -> Json:
-    """Definitions of the security schemes an operation's requirements name, references
-    resolved. Only those: changing an unrelated scheme must not mark every operation."""
+def _resolve_security_schemes(spec: Json, total: _Budget) -> Json:
+    """Resolve ``components.securitySchemes`` once, charged to the document-wide budget."""
     defined = spec.get("components", {}).get("securitySchemes", {})
+    try:
+        return cast(
+            Json,
+            deref(
+                defined,
+                spec,
+                _budget=_Budget(MAX_EXPANDED_NODES, "security schemes after inlining", total),
+            ),
+        )
+    except RecursionError as exc:
+        raise IngestError("security schemes: references are nested too deeply") from exc
+
+
+def _security_schemes(schemes: Json, security: list[dict[str, list[str]]]) -> Json:
+    """The resolved definitions of the schemes an operation's requirements name. Only those:
+    changing an unrelated scheme must not mark every operation."""
     names = sorted({name for requirement in security for name in requirement})
-    return {name: deref(defined[name], spec) for name in names if name in defined}
+    return {name: schemes[name] for name in names if name in schemes}
 
 
 def build_operations(spec: Json) -> list[Operation]:
@@ -208,6 +239,7 @@ def build_operations(spec: Json) -> list[Operation]:
     seen_ids: set[str] = set()
     default_security = spec.get("security", [])
     total = _Budget(MAX_TOTAL_EXPANDED_NODES, "document after inlining references")
+    schemes = _resolve_security_schemes(spec, total)
     for path, raw_item in spec.get("paths", {}).items():
         if not path.startswith("/"):
             continue  # a specification extension (`x-...`), not a path item
@@ -228,6 +260,8 @@ def build_operations(spec: Json) -> list[Operation]:
                 raise IngestError(f"duplicate operationId {op_id!r} ({method.upper()} {path})")
             seen_ids.add(op_id)
             security = raw.get("security", default_security)
+            # most specific wins: operation, then path item, then document
+            servers = raw.get("servers", item.get("servers", spec.get("servers", [])))
             body = raw.get("requestBody")
             operations.append(
                 Operation(
@@ -264,9 +298,10 @@ def build_operations(spec: Json) -> list[Operation]:
                             "path_parameters": item.get("parameters", []),
                             "operation": raw,
                             # What the operation inherits also decides its behaviour: the
-                            # document-level default and the definitions of the schemes it uses.
+                            # document-level defaults and the schemes it uses.
                             "security": security,
-                            "security_schemes": _security_schemes(spec, security),
+                            "security_schemes": _security_schemes(schemes, security),
+                            "servers": servers,
                         }
                     ),
                 )

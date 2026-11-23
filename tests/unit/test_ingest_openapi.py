@@ -454,3 +454,67 @@ def test_security_requirement_naming_an_undefined_scheme_is_tolerated() -> None:
     spec = auth_spec()
     spec["security"] = [{"missing": []}]
     assert fragment_hashes(spec)["get_a"]  # hashed without a definition, no crash
+
+
+def test_parameter_described_with_content_keeps_its_schema() -> None:
+    param = {
+        "name": "filter",
+        "in": "query",
+        "content": {"application/json": {"schema": {"type": "object"}}},
+    }
+    spec = make_spec({"/x": {"get": {"parameters": [param], "responses": OK}}})
+    (parameter,) = build_operations(spec)[0].parameters
+    assert (parameter.json_schema, parameter.media_type) == ({"type": "object"}, "application/json")
+
+
+def test_parameter_content_without_schema_and_plain_schema() -> None:
+    bare = {"name": "a", "in": "query", "content": {"text/plain": {}}}
+    plain = {"name": "b", "in": "query", "schema": {"type": "string"}}
+    spec = make_spec({"/x": {"get": {"parameters": [bare, plain], "responses": OK}}})
+    a, b = build_operations(spec)[0].parameters
+    assert (a.json_schema, a.media_type) == ({}, "text/plain")
+    assert (b.json_schema, b.media_type) == ({"type": "string"}, None)
+
+
+def chain_schemas(length: int) -> dict[str, Any]:
+    schemas: dict[str, Any] = {f"S{length}": {"type": "string"}}
+    for i in range(length):
+        schemas[f"S{i}"] = {"properties": {"x": {"$ref": f"#/components/schemas/S{i + 1}"}}}
+    return schemas
+
+
+def test_security_scheme_fan_out_counts_toward_the_total(monkeypatch: pytest.MonkeyPatch) -> None:
+    spec = auth_spec()
+    spec["components"]["schemas"] = fan_out_spec(6)["components"]["schemas"]
+    spec["components"]["securitySchemes"]["key"]["x-shape"] = {"$ref": "#/components/schemas/S5"}
+    assert fragment_hashes(spec)  # fine under the default caps
+    monkeypatch.setattr(openapi_module, "MAX_TOTAL_EXPANDED_NODES", 100)
+    with pytest.raises(IngestError, match="too large"):
+        build_operations(spec)
+
+
+def test_security_scheme_deep_reference_chain_is_a_clean_error() -> None:
+    spec = auth_spec()
+    spec["components"]["schemas"] = chain_schemas(2000)
+    spec["components"]["securitySchemes"]["key"]["x-deep"] = {"$ref": "#/components/schemas/S0"}
+    with pytest.raises(IngestError, match="security schemes: references are nested too deeply"):
+        build_operations(spec)
+
+
+def server_spec(document_url: str) -> dict[str, Any]:
+    return make_spec(
+        {
+            "/a": {"get": {"responses": OK}},  # inherits the document's servers
+            "/b": {"servers": [{"url": "https://path.example"}], "get": {"responses": OK}},
+            "/c": {"get": {"responses": OK, "servers": [{"url": "https://op.example"}]}},
+        },
+        servers=[{"url": document_url}],
+    )
+
+
+def test_fragment_hash_tracks_inherited_servers() -> None:
+    before = fragment_hashes(server_spec("https://one.example"))
+    after = fragment_hashes(server_spec("https://two.example"))
+    assert after["get_a"] != before["get_a"]  # inherits the changed document-level server
+    assert after["get_b"] == before["get_b"]  # path-item servers override it
+    assert after["get_c"] == before["get_c"]  # so do operation-level servers
