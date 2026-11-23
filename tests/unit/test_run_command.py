@@ -233,6 +233,23 @@ def test_generate_command_reports_failures_as_exit_2(
     assert missing.exit_code == 2
 
 
+def test_a_bad_report_name_fails_before_any_paid_generation(
+    server: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    author = FakeAuthor()
+    use_fake_author(monkeypatch, author)
+    suite = tmp_path / "suite"
+    result = runner.invoke(
+        app,
+        [
+            "run", str(suite), "--target", server, "--spec", str(SPEC),
+            "--generate", "--report", "nope",
+        ],
+    )  # fmt: skip
+    assert result.exit_code == 2 and "unknown sink" in result.output
+    assert author.requests == [] and not suite.exists()
+
+
 def test_run_generate_records_the_changes(
     server: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

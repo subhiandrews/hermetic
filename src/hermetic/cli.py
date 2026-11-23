@@ -117,14 +117,17 @@ def run(
         model: ServiceModel | None = run_ingest(spec, docs) if spec is not None else None
         changes: list[SuiteChange] = []
         author = make_author() if generate_first else None
+        # What a typo can break is checked before the step that pays for model calls and
+        # rewrites the suite, so a bad `--report` does not cost a generation.
+        sinks = load_sinks(report or ["stdout"], SinkContext(output_dir=report_dir))
+        store = open_store(history_dir)
         if model is not None and author is not None:
             changes = generate_suite(model, author, suite)
             _echo_changes(changes)
-        sinks = load_sinks(report or ["stdout"], SinkContext(output_dir=report_dir))
         record = run_suite(
             suite,
             target,
-            open_store(history_dir),
+            store,
             sinks,
             model=model,
             changes=changes,
