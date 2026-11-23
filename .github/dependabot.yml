@@ -1,0 +1,25 @@
+version: 2
+updates:
+  # Keeps the SHA-pinned actions in .github/workflows current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Keeps the digest-pinned base images in docker/Dockerfile current.
+  - package-ecosystem: docker
+    directory: /docker
+    schedule:
+      interval: weekly
+
+  # Keeps uv.lock (the image's runtime dependencies and the dev tools) current.
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]
