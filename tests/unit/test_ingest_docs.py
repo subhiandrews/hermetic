@@ -1,9 +1,57 @@
+import os
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from hermetic.ingest import IngestError
 from hermetic.ingest.docs import MAX_DOC_BYTES, load_docs
+
+
+def test_hidden_directories_are_never_entered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / ".venv" / "lib").mkdir(parents=True)
+    (tmp_path / ".venv" / "lib" / "x.md").write_text("never read")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "a.md").write_text("a")
+    visited: list[str] = []
+    real_walk = os.walk
+
+    def spy(top: Any, **kwargs: Any) -> Iterator[Any]:
+        for entry in real_walk(top, **kwargs):
+            visited.append(entry[0])
+            yield entry
+
+    monkeypatch.setattr(os, "walk", spy)
+    assert [d.path for d in load_docs(tmp_path)] == ["sub/a.md"]
+    assert not any(".venv" in v for v in visited)  # pruned, not walked and filtered
+
+
+def test_symlinked_directories_are_not_followed(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.md").write_text("elsewhere")
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "linked").symlink_to(outside, target_is_directory=True)
+    (docs / "ok.md").write_text("ok")
+    assert [d.path for d in load_docs(docs)] == ["ok.md"]
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs POSIX named pipes")
+def test_special_files_are_skipped_not_read(tmp_path: Path) -> None:
+    os.mkfifo(tmp_path / "pipe.md")  # reading it would block forever
+    (tmp_path / "ok.md").write_text("ok")
+    assert [d.path for d in load_docs(tmp_path)] == ["ok.md"]
+
+
+def test_directories_sort_before_files_with_the_same_prefix(tmp_path: Path) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "b.md").write_text("nested")
+    (tmp_path / "a.md").write_text("flat")
+    assert [d.path for d in load_docs(tmp_path)] == ["a/b.md", "a.md"]
 
 
 def test_loads_recognised_docs_sorted_with_kinds(tmp_path: Path) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -25,24 +26,36 @@ KINDS: dict[str, Kind] = {
 MAX_DOC_BYTES = 256_000
 
 
+def _candidates(root: Path) -> list[Path]:
+    """Recognised document files under ``root``. Hidden directories are pruned before they
+    are entered (so pointing at a repository root never walks ``.git`` or ``.venv``), and
+    symlinks are not followed (a link could point outside the docs directory)."""
+    found: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = [name for name in dirnames if not name.startswith(".")]
+        for name in filenames:
+            path = Path(dirpath, name)
+            if (
+                name.startswith(".")
+                or path.suffix.lower() not in KINDS
+                or path.is_symlink()
+                or not path.is_file()
+            ):
+                continue
+            found.append(path)
+    return found
+
+
 def load_docs(root: Path) -> list[DocFile]:
     """Read every recognised document under ``root``, sorted by path.
 
-    Hidden files and directories and symlinks are skipped (a symlink could point outside
-    the docs directory). A file over ``MAX_DOC_BYTES`` or that is not UTF-8 is an error
-    rather than a silent omission, so the agent never reasons from a partial picture."""
+    A file over ``MAX_DOC_BYTES`` or that is not UTF-8 is an error rather than a silent
+    omission, so the agent never reasons from a partial picture."""
     if not root.is_dir():
         raise IngestError(f"docs path {root} is not a directory")
     docs: list[DocFile] = []
-    for path in sorted(root.rglob("*")):
+    for path in sorted(_candidates(root), key=lambda p: p.relative_to(root).parts):
         relative = path.relative_to(root)
-        if (
-            any(part.startswith(".") for part in relative.parts)
-            or path.is_symlink()
-            or not path.is_file()
-            or path.suffix.lower() not in KINDS
-        ):
-            continue
         if path.stat().st_size > MAX_DOC_BYTES:
             raise IngestError(f"doc {relative.as_posix()} is larger than {MAX_DOC_BYTES} bytes")
         try:
