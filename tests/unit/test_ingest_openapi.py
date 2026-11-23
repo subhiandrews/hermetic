@@ -1,0 +1,213 @@
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+import yaml
+
+from hermetic.ingest import IngestError, ingest
+from hermetic.ingest.openapi import (
+    build_operations,
+    canonical_hash,
+    deref,
+    load_spec_file,
+    validate_spec,
+)
+
+PETSTORE = Path(__file__).parent.parent / "fixtures" / "petstore" / "openapi.json"
+OK = {"200": {"description": "ok"}}
+
+
+def make_spec(paths: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    return {"openapi": "3.0.3", "info": {"title": "T", "version": "1"}, "paths": paths, **extra}
+
+
+def fragment_hashes(spec: dict[str, Any]) -> dict[str, str]:
+    return {op.operation_id: op.fragment_hash for op in build_operations(spec)}
+
+
+# --- Petstore fixture -------------------------------------------------------------------
+
+
+def test_petstore_model() -> None:
+    model = ingest(PETSTORE)
+    assert model.title == "Swagger Petstore - OpenAPI 3.0"
+    assert model.openapi_version.startswith("3.0")
+    assert model.servers == ["/api/v3"]
+    assert model.docs == []
+    ids = {op.operation_id for op in model.operations}
+    assert {"addPet", "getPetById", "findPetsByStatus", "deletePet"} <= ids
+    assert len(model.operations) == len(ids)  # operation ids are unique
+
+
+def test_petstore_operation_details() -> None:
+    ops = {op.operation_id: op for op in ingest(PETSTORE).operations}
+    get_pet = ops["getPetById"]
+    assert (get_pet.method, get_pet.path) == ("GET", "/pet/{petId}")
+    (param,) = get_pet.parameters
+    assert (param.name, param.location, param.required) == ("petId", "path", True)
+    assert {r.status for r in get_pet.responses} >= {"200", "400", "404"}
+    add_pet = ops["addPet"]
+    assert add_pet.request_body is not None
+    assert add_pet.request_body.required is True
+    schema = add_pet.request_body.content["application/json"]
+    assert "$ref" not in json.dumps(schema)  # references were inlined
+    assert "name" in schema["properties"]
+
+
+def test_hash_is_stable_and_tracks_changes() -> None:
+    assert ingest(PETSTORE).spec_hash == ingest(PETSTORE).spec_hash
+    original = json.loads(PETSTORE.read_text())
+    changed = json.loads(PETSTORE.read_text())
+    changed["components"]["schemas"]["Pet"]["properties"]["name"]["example"] = "changed"
+    before, after = fragment_hashes(original), fragment_hashes(changed)
+    # a change to a referenced component changes the operations that use it, and only those
+    assert before["addPet"] != after["addPet"]
+    assert before["getPetById"] != after["getPetById"]
+    assert before["deletePet"] == after["deletePet"]
+    assert canonical_hash(original) != canonical_hash(changed)
+    assert canonical_hash(original) == ingest(PETSTORE).spec_hash
+
+
+# --- loading and validation -------------------------------------------------------------
+
+
+def test_yaml_spec_loads(tmp_path: Path) -> None:
+    path = tmp_path / "api.yaml"
+    path.write_text(yaml.safe_dump(make_spec({"/a": {"get": {"responses": OK}}})))
+    assert [op.operation_id for op in ingest(path).operations] == ["get_a"]
+
+
+def test_unreadable_spec(tmp_path: Path) -> None:
+    with pytest.raises(IngestError, match="cannot read spec"):
+        load_spec_file(tmp_path / "missing.yaml")
+
+
+@pytest.mark.parametrize(("name", "text"), [("a.json", "{nope"), ("a.yaml", "key: [unclosed")])
+def test_unparseable_spec(tmp_path: Path, name: str, text: str) -> None:
+    path = tmp_path / name
+    path.write_text(text)
+    with pytest.raises(IngestError, match="cannot parse spec"):
+        load_spec_file(path)
+
+
+def test_spec_must_be_an_object(tmp_path: Path) -> None:
+    path = tmp_path / "a.yaml"
+    path.write_text("- just\n- a list\n")
+    with pytest.raises(IngestError, match="top level"):
+        load_spec_file(path)
+
+
+@pytest.mark.parametrize("spec", [{"swagger": "2.0"}, {"openapi": "2.0"}, {"openapi": 3}])
+def test_only_openapi_3_is_supported(spec: dict[str, Any]) -> None:
+    with pytest.raises(IngestError, match=r"only OpenAPI 3\.x"):
+        validate_spec(spec)
+
+
+def test_invalid_document_is_rejected() -> None:
+    with pytest.raises(IngestError, match="invalid OpenAPI document"):
+        validate_spec({"openapi": "3.0.3", "info": {"title": "T"}, "paths": {}})
+
+
+# --- $ref handling ----------------------------------------------------------------------
+
+
+def test_deref_inlines_local_refs() -> None:
+    root = {"components": {"schemas": {"A": {"type": "string"}}}}
+    node = {"items": [{"$ref": "#/components/schemas/A"}], "n": 1}
+    assert deref(node, root) == {"items": [{"type": "string"}], "n": 1}
+
+
+def test_deref_leaves_recursive_refs_in_place() -> None:
+    child = {"$ref": "#/components/schemas/Node"}
+    root = {"components": {"schemas": {"Node": {"properties": {"child": child}}}}}
+    result = deref({"$ref": "#/components/schemas/Node"}, root)
+    assert result["properties"]["child"] == child
+
+
+def test_deref_property_named_ref_is_not_a_reference() -> None:
+    node = {"properties": {"$ref": {"type": "string"}}}
+    assert deref(node, {}) == node
+
+
+def test_deref_rejects_external_refs() -> None:
+    with pytest.raises(IngestError, match="only local"):
+        deref({"$ref": "other.yaml#/X"}, {})
+
+
+@pytest.mark.parametrize("ref", ["#/components/missing", "#/a/b"])
+def test_deref_rejects_unresolvable_refs(ref: str) -> None:
+    with pytest.raises(IngestError, match="unresolvable"):
+        deref({"$ref": ref}, {"a": {"b2": 1}})
+
+
+def test_deref_handles_escaped_pointer_segments() -> None:
+    root = {"paths": {"/a~b": {"x": 1}}}
+    assert deref({"$ref": "#/paths/~1a~0b/x"}, root) == 1
+
+
+# --- operation building -----------------------------------------------------------------
+
+
+def test_synthesized_ids_and_duplicates() -> None:
+    spec = make_spec({"/pets/{id}": {"get": {"responses": OK}}})
+    assert build_operations(spec)[0].operation_id == "get_pets_id"
+    clash = make_spec({"/a-b": {"get": {"responses": OK}}, "/a_b": {"get": {"responses": OK}}})
+    with pytest.raises(IngestError, match="duplicate operationId"):
+        build_operations(clash)
+
+
+def test_path_parameters_are_merged_and_overridden() -> None:
+    shared = {"name": "id", "in": "path", "schema": {"type": "string"}}
+    q = {"name": "q", "in": "query", "schema": {"type": "string"}}
+    override = {**q, "required": True}
+    spec = make_spec(
+        {
+            "/x/{id}": {
+                "parameters": [shared, q],
+                "get": {"operationId": "x", "parameters": [override], "responses": OK},
+            }
+        }
+    )
+    params = {p.name: p for p in build_operations(spec)[0].parameters}
+    assert params["id"].required is True  # path params are always required
+    assert params["q"].required is True  # operation-level override wins
+    assert params["id"].json_schema == {"type": "string"}
+
+
+def test_optional_parameter_without_schema() -> None:
+    spec = make_spec(
+        {"/x": {"get": {"parameters": [{"name": "h", "in": "header"}], "responses": OK}}}
+    )
+    (param,) = build_operations(spec)[0].parameters
+    assert (param.required, param.json_schema) == (False, {})
+
+
+def test_security_defaults_and_overrides() -> None:
+    spec = make_spec(
+        {
+            "/a": {"get": {"responses": OK}},
+            "/b": {"get": {"responses": OK, "security": []}},
+        },
+        security=[{"key": []}],
+        components={"securitySchemes": {"key": {"type": "apiKey", "name": "k", "in": "header"}}},
+    )
+    a, b = build_operations(spec)
+    assert a.security == [{"key": []}]
+    assert b.security == []
+
+
+def test_request_body_without_required_and_deprecated_flag() -> None:
+    body: dict[str, Any] = {"content": {"text/plain": {}}}
+    spec = make_spec({"/x": {"post": {"requestBody": body, "deprecated": True, "responses": OK}}})
+    (op,) = build_operations(spec)
+    assert op.deprecated is True
+    assert op.request_body is not None
+    assert (op.request_body.required, op.request_body.content) == (False, {"text/plain": {}})
+
+
+def test_operation_without_body_and_non_method_keys_ignored() -> None:
+    spec = make_spec({"/x": {"summary": "not a method", "get": {"responses": OK}}})
+    (op,) = build_operations(spec)
+    assert op.request_body is None
+    assert op.tags == []

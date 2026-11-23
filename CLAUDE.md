@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Hermetic is an open-source agentic tester for REST microservices: given an OpenAPI spec and design docs, it infers the service's dependencies, provisions mocks, generates and runs a pytest/httpx suite, and records each run. Status is pre-alpha (milestone M0): only the package skeleton and a `hermetic version` CLI stub exist. The pipeline in `docs/architecture.md` is the target design, not current behavior; check the code before assuming a stage exists.
+Hermetic is an open-source agentic tester for REST microservices: given an OpenAPI spec and design docs, it infers the service's dependencies, provisions mocks, generates and runs a pytest/httpx suite, and records each run. Status is pre-alpha and stages land milestone by milestone. The pipeline in `docs/architecture.md` is the target design, not current behavior; check `src/hermetic` and `hermetic --help` before assuming a stage exists.
 
 ## Commands
 

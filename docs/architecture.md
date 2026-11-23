@@ -17,6 +17,17 @@ hermetic run --spec openapi.yaml --docs ./docs --target http://svc:8080
   9. Publish     optional pluggable sinks (interface only in v1)
 ```
 
+## Ingest
+
+`hermetic.ingest` turns an OpenAPI 3.x file (JSON or YAML) and an optional docs directory into a frozen `ServiceModel`. Decisions that later stages depend on:
+
+- Only OpenAPI 3.x is accepted; the document is validated first and a failure stops the run.
+- Only local `$ref` pointers (`#/...`) are resolved. External references are an error. A reference to a schema that is already being expanded (a recursive schema) is left as `{"$ref": ...}` rather than expanded forever.
+- Each operation carries a `fragment_hash`: a hash of the fully resolved operation, including any component schema it references. The diff stage uses it to find added, modified and dropped operations, so a change to a shared schema correctly marks every operation that uses it.
+- `spec_hash` hashes the whole parsed document, independent of key order and formatting.
+- An operation without an `operationId` gets a synthesized one (`get_pets_id`); duplicate ids are an error.
+- The docs loader reads Markdown, plain text and diagrams-as-text (PlantUML, Mermaid), sorted by path. It skips hidden files and symlinks, and fails on a file that is too large or not UTF-8 instead of silently dropping it.
+
 ## Run history
 
 Flat files, no database. Each run is `.hermetic/runs/<run_id>.json` plus an `index.json` for fast listing. Access is through a `RunStore` protocol (`save`, `get`, `list`) with `FileRunStore` as the only v1 implementation, so a database store can replace it later without changing the CLI or UI. `.hermetic/runs/` is gitignored; the test manifest at `tests/.hermetic/manifest.json` is not history and is committed.
