@@ -8,6 +8,7 @@ a few dangerous builtins may not be called or referenced.
 from __future__ import annotations
 
 import ast
+import re
 
 ALLOWED_IMPORTS = frozenset(
     {
@@ -35,8 +36,15 @@ FORBIDDEN_ATTRIBUTES = frozenset(
     {
         "builtins", "import_module", "importorskip", "modules", "os", "popen", "subprocess",
         "sys", "system",
+        # Ways to reach the client's origin check, or to evaluate strings by name.
+        "event_hooks", "base_url", "_transport", "_mounts",
+        "ForwardRef", "Formatter", "get_type_hints", "_evaluate",
     }
 )  # fmt: skip
+# `pytest.mark.skipif("...")` and `xfail("...")` eval() a string condition at collection.
+EVALUATING_MARKS = frozenset({"pytest.mark.skipif", "pytest.mark.xfail"})
+# `"{0.__class__}".format(x)` reaches dunder attributes by name, without an Attribute node.
+_FORMAT_DUNDER = re.compile(r"\{[^{}]*__")
 # Fixtures that give a test the file system or the environment; only `hermetic_client` is meant.
 FORBIDDEN_FIXTURES = frozenset(
     {"cache", "capfd", "capsys", "monkeypatch", "pytestconfig", "request", "tmp_path",
@@ -78,6 +86,15 @@ def validate_source(source: str, operation_id: str) -> None:
             or node.attr.startswith("__")
         ):
             raise SourceRejected(f"attribute `{node.attr}` is not allowed in a test")
+        elif isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load):
+            raise SourceRejected(f"assigning to or deleting `.{node.attr}` is not allowed")
+        elif isinstance(node, ast.Call) and ast.unparse(node.func) in EVALUATING_MARKS:
+            conditions = [*node.args, *(k.value for k in node.keywords if k.arg == "condition")]
+            if any(_is_string(condition) for condition in conditions):
+                raise SourceRejected(f"`{ast.unparse(node.func)}` may not take a string condition")
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if _FORMAT_DUNDER.search(node.value):
+                raise SourceRejected("a format string may not reach a name starting with `__`")
         elif isinstance(node, ast.arg) and node.arg in FORBIDDEN_FIXTURES:
             raise SourceRejected(f"fixture `{node.arg}` is not allowed in a test")
     tests = [
@@ -91,6 +108,10 @@ def validate_source(source: str, operation_id: str) -> None:
     for function in tests:
         if not any(_marks_operation(d, operation_id) for d in function.decorator_list):
             raise SourceRejected(f"{function.name} lacks @pytest.mark.operation({operation_id!r})")
+
+
+def _is_string(node: ast.expr) -> bool:
+    return isinstance(node, ast.Constant) and isinstance(node.value, str)
 
 
 def _check_module(name: str) -> None:

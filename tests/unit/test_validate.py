@@ -15,6 +15,18 @@ def test_a_marked_test_is_accepted() -> None:
     )
 
 
+def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
+    validate_source(
+        "import pytest\n\n"
+        '@pytest.mark.operation("op")\n'
+        "@pytest.mark.skipif(False, reason='not on this server')\n"
+        "def test_a(hermetic_client):\n"
+        "    hermetic_client.headers['X-Test'] = 'a {b} c_d'\n"
+        "    assert 'user_{}'.format(1) and '__' not in 'x'\n",
+        "op",
+    )
+
+
 @pytest.mark.parametrize(
     ("source", "message"),
     [
@@ -36,6 +48,24 @@ def test_a_marked_test_is_accepted() -> None:
         ("eval('1')\n", "`eval` is not allowed"),
         ("x = open\n", "`open` is not allowed"),
         ("x = ().__class__\n", "attribute `__class__`"),
+        ("def test_a(hermetic_client):\n    hermetic_client.event_hooks = {}\n", "`event_hooks`"),
+        ("def test_a(hermetic_client):\n    hermetic_client.base_url = 'x'\n", "`base_url`"),
+        ("def test_a(c):\n    c.timeout = 1\n", "assigning to or deleting `.timeout`"),
+        ("def test_a(c):\n    c.timeout += 1\n", "assigning to or deleting `.timeout`"),
+        ("def test_a(c):\n    del c.timeout\n", "assigning to or deleting `.timeout`"),
+        ("import typing\ntyping.get_type_hints(1)\n", "attribute `get_type_hints`"),
+        ("import typing\ntyping.ForwardRef('os')\n", "attribute `ForwardRef`"),
+        ("import string\nstring.Formatter()\n", "attribute `Formatter`"),
+        ("from string import Formatter\n", "importing `Formatter`"),
+        (
+            "import pytest\n@pytest.mark.skipif(\"os.system('x')\")\ndef test_a(): ...\n",
+            "may not take a string condition",
+        ),
+        (
+            "import pytest\n@pytest.mark.xfail(condition='1')\ndef test_a(): ...\n",
+            "may not take a string condition",
+        ),
+        ("x = '{0.__class__}'.format(1)\n", "format string may not reach"),
         ("x = 1\n", "no top-level test_ function"),
         ("import pytest\ndef test_a(): ...\n", "lacks @pytest.mark.operation"),
         (
