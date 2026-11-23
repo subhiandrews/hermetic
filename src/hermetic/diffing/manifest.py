@@ -60,7 +60,7 @@ def load_manifest(path: Path) -> Manifest:
         raise ManifestError(f"manifest {path} is larger than {MAX_MANIFEST_BYTES} bytes")
     try:
         manifest = Manifest.model_validate(json.loads(path.read_text(encoding="utf-8")))
-    except (OSError, ValueError, ValidationError) as exc:
+    except (OSError, ValueError, ValidationError, RecursionError) as exc:
         raise ManifestError(f"manifest {path} is not valid: {exc}") from exc
     if manifest.version != MANIFEST_VERSION:
         raise ManifestError(

@@ -73,7 +73,7 @@ def build_prompt(request: AuthorRequest) -> str:
         f"Service: {_quoted(request.service_title)}",
         f"Servers: {', '.join(_quoted(s) for s in request.servers) or '(none listed)'}",
         f"operationId: {_quoted(request.operation.operation_id)}",
-        f"Why this test is being written: {request.reason}",
+        f"Why this test is being written: {_quoted(request.reason)}",
         "<spec>",
         _data(json.dumps(operation, indent=2, sort_keys=True, ensure_ascii=False)),
         "</spec>",

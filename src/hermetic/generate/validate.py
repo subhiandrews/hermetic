@@ -27,8 +27,8 @@ ALLOWED_IMPORTS = frozenset(
 )
 FORBIDDEN_NAMES = frozenset(
     {
-        "breakpoint", "compile", "delattr", "eval", "exec", "getattr", "globals", "importorskip",
-        "locals", "open", "setattr", "type", "vars",
+        "breakpoint", "compile", "delattr", "eval", "exec", "getattr", "globals", "help",
+        "importorskip", "locals", "open", "setattr", "type", "usefixtures", "vars",
     }
 )  # fmt: skip
 # Attributes that reach the interpreter or the system from an allowed module (`typing.sys`).
@@ -46,6 +46,8 @@ FORBIDDEN_ATTRIBUTES = frozenset(
         # pytest session or get a fixture by hand (`pytest.main`, `pytest.MonkeyPatch`).
         "functools", "operator", "types", "attrgetter", "itemgetter", "methodcaller",
         "MonkeyPatch", "Pytester", "main", "console_main",
+        # Requests a fixture by name, bypassing the FORBIDDEN_FIXTURES check on arguments.
+        "usefixtures",
         # File access through a module an allowed one imports (`json.codecs.open`).
         "codecs", "io", "open",
     }
@@ -77,6 +79,7 @@ def validate_source(source: str, operation_id: str) -> None:
     except (SyntaxError, ValueError) as exc:
         raise SourceRejected(f"the test is not valid Python: {exc}") from exc
     safe_marks: set[int] = set()  # skipif/xfail nodes used as the callee of a harmless call
+    safe_formats: set[int] = set()  # `.format` nodes called directly on a string literal
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -95,6 +98,7 @@ def validate_source(source: str, operation_id: str) -> None:
         elif isinstance(node, ast.Name) and (
             node.id in FORBIDDEN_NAMES
             or node.id in EVALUATING_MARKS
+            or node.id == "usefixtures"
             or node.id.startswith(("__", "pytest_"))  # `pytest_plugins` loads any plugin
         ):
             raise SourceRejected(f"`{node.id}` is not allowed in a test")
@@ -102,6 +106,7 @@ def validate_source(source: str, operation_id: str) -> None:
             node.attr in FORBIDDEN_ATTRIBUTES
             or node.attr.startswith("_")  # private and dunder attributes alike
             or (node.attr in EVALUATING_MARKS and id(node) not in safe_marks)
+            or (node.attr in FORMAT_METHODS and id(node) not in safe_formats)
         ):
             raise SourceRejected(f"attribute `{node.attr}` is not allowed in a test")
         elif isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load):
@@ -121,12 +126,15 @@ def validate_source(source: str, operation_id: str) -> None:
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr in FORMAT_METHODS
-            and not _is_string_literal(node.func.value)
         ):
-            raise SourceRejected("`.format` may only be called on a single string literal")
+            if not _is_string_literal(node.func.value):
+                raise SourceRejected("`.format` may only be called on a single string literal")
+            safe_formats.add(id(node.func))
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             if _FORMAT_DUNDER.search(node.value):
                 raise SourceRejected("a format string may not reach a name starting with `__`")
+        elif isinstance(node, ast.MatchClass) and any(a.startswith("_") for a in node.kwd_attrs):
+            raise SourceRejected("class patterns may not bind private attributes")
         elif isinstance(node, ast.arg) and node.arg in FORBIDDEN_FIXTURES:
             raise SourceRejected(f"fixture `{node.arg}` is not allowed in a test")
     tests = [

@@ -262,3 +262,10 @@ def test_save_cleans_up_when_the_write_fails(tmp_path: Path) -> None:
     with pytest.raises(OSError):
         save_manifest(target, Manifest())
     assert not list(tmp_path.glob(".manifest-*"))
+
+
+def test_a_deeply_nested_manifest_is_rejected_not_a_traceback(tmp_path: Path) -> None:
+    path = tmp_path / "manifest.json"
+    path.write_text("[" * 100_000)
+    with pytest.raises(ManifestError, match="not valid"):
+        load_manifest(path)
