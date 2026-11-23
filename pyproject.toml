@@ -60,7 +60,7 @@ files = ["src", "tests"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers"
+addopts = "-ra --strict-markers -m 'not live'"
 markers = [
   "live: tests that call the real Claude API (opt-in, run with -m live)",
   "integration: tests that need Docker and example services",
