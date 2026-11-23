@@ -72,7 +72,8 @@ def run(
 ) -> None:
     """Run a hand-written suite against a target, record the run and publish reports."""
     if docs is not None and spec is None:
-        raise typer.BadParameter("--docs needs --spec: the docs are read together with the spec")
+        typer.echo("error: --docs needs --spec: the docs are read together with it", err=True)
+        raise typer.Exit(code=2)
     try:
         model: ServiceModel | None = run_ingest(spec, docs) if spec is not None else None
         sinks = load_sinks(report or ["stdout"], SinkContext(output_dir=report_dir))
