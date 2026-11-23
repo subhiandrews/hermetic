@@ -50,6 +50,9 @@ FORBIDDEN_ATTRIBUTES = frozenset(
         "usefixtures",
         # File access through a module an allowed one imports (`json.codecs.open`).
         "codecs", "io", "open",
+        # `pytest.raises(...) as e` gives `e.traceback[0].frame.eval(...)`, which evals with the
+        # frame's real globals; `with_args` adds a string condition to a skipif/xfail mark.
+        "eval", "exec", "frame", "traceback", "tb", "getrepr", "with_args",
     }
 )  # fmt: skip
 # `pytest.mark.skipif("...")` and `xfail("...")` eval() a string condition at collection.
@@ -128,6 +131,13 @@ def validate_source(source: str, operation_id: str) -> None:
             raise SourceRejected(f"attribute `{node.attr}` is not allowed in a test")
         elif isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load):
             raise SourceRejected(f"assigning to or deleting `.{node.attr}` is not allowed")
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Call)
+            and _mark_name(node.func.func) in EVALUATING_MARKS
+        ):
+            # `skipif(False)("os.system('id')")` adds a string condition after the checked call.
+            raise SourceRejected("a skipif/xfail mark may not be called a second time")
         elif isinstance(node, ast.Call) and _mark_name(node.func) in EVALUATING_MARKS:
             # `**{...}` has no keyword name; its value is a dict, which is not a constant either.
             conditions = [

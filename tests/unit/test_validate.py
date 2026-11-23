@@ -98,6 +98,21 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
             "constant condition",
         ),
         ("from pytest.mark import skipif\n", "importing `skipif`"),
+        (
+            "import pytest\n@pytest.mark.skipif(False)(\"os.system('id')\")\ndef test_a(): ...\n",
+            "called a second time",
+        ),
+        (
+            "import pytest\nm = pytest.mark.skipif(False).with_args('x')\n",
+            "attribute `with_args`",
+        ),
+        (
+            "import pytest\nwith pytest.raises(ZeroDivisionError) as e:\n    1 / 0\n"
+            "e.traceback[0].frame.eval('1')\n",
+            "attribute `eval`",
+        ),
+        ("def f(e):\n    return e.frame.eval('1')\n", "attribute `eval`"),
+        ("def f(e):\n    return e.exec('1')\n", "attribute `exec`"),
         ("skipif\n", "`skipif` is not allowed"),
         ("import uuid\nuuid._get_command_stdout('sh')\n", "attribute `_get_command_stdout`"),
         ("from uuid import _get_command_stdout\n", "importing `_get_command_stdout`"),
