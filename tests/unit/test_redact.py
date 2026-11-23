@@ -107,9 +107,14 @@ def test_redact_body_reports_the_values_it_masked() -> None:
     assert found == {"pw", "deep", "123456"}  # numbers count, booleans do not
 
 
-def test_deeply_nested_json_is_kept_as_text() -> None:
+def test_json_nested_too_deeply_to_redact_is_omitted() -> None:
+    from hermetic.redact import NESTED_BODY, capture_body
+
     nested = b"[" * 100_000 + b"]" * 100_000
-    assert (redact_body(nested) or "").startswith("[[[")
+    assert capture_body(nested) == (NESTED_BODY, False)
+    # parses (the C parser allows more depth) but overflows the redaction walk
+    near_limit = b'{"password": "pw99", "x": ' + b"[" * 3000 + b"]" * 3000 + b"}"
+    assert capture_body(near_limit) == (NESTED_BODY, False)
 
 
 def test_url_headers_are_redacted() -> None:
@@ -226,3 +231,8 @@ def test_a_numeric_credential_echoed_as_a_number_is_masked() -> None:
     body = json.dumps({"echo": 123456, "list": [123456.0, 123456], "short": 12, "ok": True})
     found = json.loads(redact_body(body.encode(), secrets) or "")
     assert found == {"echo": REDACTED, "list": [123456.0, REDACTED], "short": 12, "ok": True}
+
+
+@pytest.mark.parametrize("name", ["pwd", "passphrase", "passcode", "user_pwd"])
+def test_more_password_field_names_are_masked(name: str) -> None:
+    assert json.loads(redact_body(json.dumps({name: "v"}).encode()) or "") == {name: REDACTED}

@@ -57,12 +57,14 @@ class _Recording:
             body: bytes | None = request.content
         except httpx.RequestNotRead:
             body = None
-        self.secrets |= secret_values(request.headers) | url_secrets(str(request.url))
+        self._learn(secret_values(request.headers) | url_secrets(str(request.url)))
         request.extensions["hermetic_started"] = time.perf_counter()
-        captured = capture_body(body or b"", self.secrets)
+        known = self.known()
+        captured = capture_body(body or b"", known)
+        self._learn(known)  # includes what capture_body found in this body
         exchange = Exchange(
             method=request.method,
-            url=mask_secrets(redact_url(str(request.url)), self.secrets),
+            url=mask_secrets(redact_url(str(request.url)), known),
             request_headers=self._headers(request.headers),
             request_body=captured.text,
             request_body_complete=captured.complete,
@@ -76,15 +78,50 @@ class _Recording:
             request.extensions["hermetic_index"] = len(self.exchanges)
             self.exchanges.append(exchange)
 
+    def _learn(self, values: set[str]) -> None:
+        with self._lock:
+            self.secrets |= values
+
+    def known(self) -> set[str]:
+        """A snapshot: another thread may add secrets while this one is masking."""
+        with self._lock:
+            return set(self.secrets)
+
+    def final_exchanges(self) -> list[Exchange]:
+        """The exchanges re-masked with every credential the test eventually saw.
+
+        A credential learned late (a token read from one response, sent in the next request)
+        was unknown when the earlier exchanges were recorded.
+        """
+        known = self.known()
+        return [
+            e.model_copy(
+                update={
+                    "url": mask_secrets(e.url, known),
+                    "request_headers": {
+                        k: mask_secrets(v, known) for k, v in e.request_headers.items()
+                    },
+                    "request_body": None
+                    if e.request_body is None
+                    else mask_secrets(e.request_body, known),
+                    "response_headers": {
+                        k: mask_secrets(v, known) for k, v in e.response_headers.items()
+                    },
+                    "response_body": None
+                    if e.response_body is None
+                    else mask_secrets(e.response_body, known),
+                }
+            )
+            for e in self.exchanges
+        ]
+
     def _headers(self, headers: httpx.Headers) -> dict[str, str]:
         """Headers for storage: sensitive ones masked, then any credential already seen."""
-        return {
-            name: mask_secrets(value, self.secrets)
-            for name, value in redact_headers(headers).items()
-        }
+        known = self.known()
+        return {name: mask_secrets(value, known) for name, value in redact_headers(headers).items()}
 
     def on_response(self, response: httpx.Response) -> None:
-        self.secrets |= secret_values(response.headers)
+        self._learn(secret_values(response.headers))
         # Read only a body that is announced and small: reading here would otherwise make
         # client.stream() block on an endless or huge response.
         # A compressed body is skipped: reading decodes it, so its size is not bounded.
@@ -98,7 +135,9 @@ class _Recording:
             and encoding == "identity"
         ):
             response.read()
-            body = redact_body(response.content, self.secrets)
+            known = self.known()
+            body = redact_body(response.content, known)
+            self._learn(known)
         started = response.request.extensions["hermetic_started"]
         index = response.request.extensions["hermetic_index"]
         pending = self.exchanges[index]
@@ -188,10 +227,10 @@ class HermeticPlugin:
     def _masked(self, nodeid: str, report: pytest.TestReport) -> str | None:
         """The report's message with any credential this test sent or received masked."""
         recording = self._recordings.get(nodeid)
-        return _message_of(report, recording.secrets if recording else set())
+        return _message_of(report, recording.known() if recording else set())
 
     def _result(self, nodeid: str, status: TestStatus, message: str | None) -> TestResult:
-        exchanges = list(self._recordings.get(nodeid, _Recording(self._allowed)).exchanges)
+        exchanges = self._recordings.get(nodeid, _Recording(self._allowed)).final_exchanges()
         return TestResult(
             test_id=nodeid,
             operation_id=self._operations.get(nodeid),

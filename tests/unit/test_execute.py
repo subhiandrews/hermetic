@@ -437,7 +437,7 @@ def test_odd_bodies(hermetic_client):
     assert result.status == "passed"
     gz, deep = result.exchanges
     assert gz.response_body is None  # compressed: not read in the hook
-    assert deep.response_body is not None and deep.response_body.startswith("[[[")
+    assert deep.response_body == "<body omitted: nested too deeply to redact>"
 
 
 def test_recorded_bodies_mask_credentials_echoed_under_innocent_keys(
@@ -629,3 +629,53 @@ def test_skip(hermetic_client):
     (result,) = execute_suite(suite, server)
     assert result.status == "skipped"
     assert "SKIPSECRET99" not in (result.message or "") and "saw" in (result.message or "")
+
+
+def test_a_credential_learned_late_is_masked_in_earlier_exchanges(
+    server: str, tmp_path: Path
+) -> None:
+    suite = write_suite(
+        tmp_path,
+        """
+def test_late(hermetic_client):
+    body = hermetic_client.post("/pets", json={"greeting": "LATETOKEN99"}).text
+    hermetic_client.get("/ok", headers={"X-Api-Key": "LATETOKEN99"})
+    assert False
+""",
+    )
+    (result,) = execute_suite(suite, server)
+    assert "LATETOKEN99" not in str(result.exchanges[0])
+    assert "LATETOKEN99" not in str(result.exchanges[1])
+
+
+def test_the_secrets_set_survives_hooks_running_on_many_threads() -> None:
+    import threading
+
+    import httpx
+
+    from hermetic.execute.plugin import _Recording, origin_of
+
+    recording = _Recording({origin_of("http://svc")})
+    errors: list[BaseException] = []
+
+    def work(n: int) -> None:
+        try:
+            for i in range(60):
+                request = httpx.Request(
+                    "POST",
+                    "http://svc/x",
+                    headers={"X-Api-Key": f"key-{n}-{i}-secret"},
+                    json={"n": i},
+                )
+                recording.on_request(request)
+                recording.on_response(httpx.Response(200, content=b"{}", request=request))
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=work, args=(n,)) for n in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == [] and len(recording.exchanges) == 360
+    assert all(e.status_code == 200 for e in recording.exchanges)

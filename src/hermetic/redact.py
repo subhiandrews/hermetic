@@ -11,6 +11,7 @@ from urllib.parse import parse_qsl, unquote_plus, urlencode, urlsplit, urlunspli
 
 REDACTED = "[REDACTED]"
 MAX_BODY_CHARS = 64 * 1024
+NESTED_BODY = "<body omitted: nested too deeply to redact>"
 
 _SENSITIVE_HEADERS = frozenset(
     {
@@ -27,6 +28,9 @@ _SENSITIVE_HEADERS = frozenset(
 _SENSITIVE_KEY_PARTS = (
     "password",
     "passwd",
+    "passphrase",
+    "passcode",
+    "pwd",
     "secret",
     "token",
     "apikey",
@@ -237,19 +241,25 @@ def capture_body(raw: bytes, secrets: set[str] | None = None) -> Captured:
         return Captured(f"<{len(raw)} bytes of binary data>", False)
     found: set[str] = set()
     try:
-        # RecursionError: a few KB of `[` is enough to overflow the parser.
-        redacted = _redact_json(json.loads(text), found)
-        if secrets is not None:
-            secrets |= found
-            redacted = _mask_json_strings(redacted, secrets)  # on values, not escaped text
-        text = json.dumps(redacted)
-    except (ValueError, RecursionError):
-        text = _redact_form(text, found) or text  # not JSON: a form, or plain text kept as is
+        parsed = json.loads(text)
+    except ValueError:  # not JSON: a form, or plain text kept as is
+        text = _redact_form(text, found) or text
         if secrets is not None:
             secrets |= found
             text = mask_secrets(
                 text, secrets
             )  # before the cut: a credential across it would escape
+    except RecursionError:  # nested too deeply to parse, so too deeply to redact
+        return Captured(NESTED_BODY, False)
+    else:
+        try:
+            redacted = _redact_json(parsed, found)
+            if secrets is not None:
+                secrets |= found
+                redacted = _mask_json_strings(redacted, secrets)  # on values, not escaped text
+            text = json.dumps(redacted)
+        except RecursionError:  # parsed, but too deep for the redaction walk: store nothing
+            return Captured(NESTED_BODY, False)
     if len(text) > MAX_BODY_CHARS:
         return Captured(text[:MAX_BODY_CHARS] + f"... [truncated, {len(text)} characters]", False)
     return Captured(text, True)
