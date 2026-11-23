@@ -222,3 +222,20 @@ def test_a_save_after_a_lost_update_keeps_every_run(tmp_path: Path) -> None:
     (root / "index.json").write_text(stale)
     store.save(make_record("r3"))
     assert sorted(s.run_id for s in store.list()) == ["r1", "r2", "r3"]
+
+
+@pytest.mark.parametrize("run_id", ["Index", "INDEX"])
+def test_the_reserved_index_name_is_rejected_in_any_case(tmp_path: Path, run_id: str) -> None:
+    with pytest.raises(RunStoreError):
+        FileRunStore(tmp_path / "runs").save(make_record(run_id))
+
+
+def test_an_unreadable_run_file_does_not_rewrite_the_index_on_every_read(tmp_path: Path) -> None:
+    root = tmp_path / "runs"
+    store = FileRunStore(root)
+    store.save(make_record("r1"))
+    (root / "broken.json").write_text("{")
+    before = (root / "index.json").stat().st_mtime_ns
+    assert [s.run_id for s in store.list()] == ["r1"]
+    assert [s.run_id for s in store.list()] == ["r1"]
+    assert (root / "index.json").stat().st_mtime_ns == before

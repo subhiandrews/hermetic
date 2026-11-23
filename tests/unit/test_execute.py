@@ -613,3 +613,19 @@ def test_a_non_ascii_content_length_does_not_break_the_hook() -> None:
     response = httpx.Response(200, headers=[(b"Content-Length", "٣".encode())], request=request)
     recording.on_response(response)
     assert recording.exchanges[0].response_body is None
+
+
+def test_credentials_quoted_in_a_skip_reason_are_masked(server: str, tmp_path: Path) -> None:
+    suite = write_suite(
+        tmp_path,
+        """
+import pytest
+
+def test_skip(hermetic_client):
+    hermetic_client.get("/ok", headers={"X-Api-Key": "SKIPSECRET99"})
+    pytest.skip("saw SKIPSECRET99 in the request")
+""",
+    )
+    (result,) = execute_suite(suite, server)
+    assert result.status == "skipped"
+    assert "SKIPSECRET99" not in (result.message or "") and "saw" in (result.message or "")

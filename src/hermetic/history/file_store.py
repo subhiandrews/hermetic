@@ -23,7 +23,7 @@ _INDEX = TypeAdapter(Summaries)
 
 
 def _check_run_id(run_id: str) -> None:
-    if _RUN_ID.fullmatch(run_id) is None or run_id == INDEX_NAME.removesuffix(".json"):
+    if _RUN_ID.fullmatch(run_id) is None or run_id.lower() == INDEX_NAME.removesuffix(".json"):
         raise RunStoreError(f"invalid run id: {run_id!r}")
 
 
@@ -99,7 +99,10 @@ class FileRunStore:
             missing = [name for name in self._run_ids() if name not in known]
             if not missing:
                 return summaries
-            summaries = [*summaries, *self._summaries_of(missing)]
+            added = self._summaries_of(missing)
+            if not added:  # only unreadable run files are missing: nothing new to write
+                return summaries
+            summaries = [*summaries, *added]
         with contextlib.suppress(OSError):
             self._write_index(summaries)
         return summaries

@@ -233,11 +233,14 @@ def _message_of(
     """Failure text for a failed report, the reason for a skipped one, else None."""
     longrepr: Any = report.longrepr
     if report.skipped:
-        return str(longrepr[2]) if isinstance(longrepr, tuple) and len(longrepr) == 3 else None
-    if not report.failed:
+        text = str(longrepr[2]) if isinstance(longrepr, tuple) and len(longrepr) == 3 else None
+    elif report.failed:
+        crash = getattr(longrepr, "reprcrash", None)
+        text = str(crash.message) if crash is not None else str(longrepr)
+    else:
+        text = None
+    if text is None:
         return None
-    crash = getattr(longrepr, "reprcrash", None)
-    text = str(crash.message) if crash is not None else str(longrepr)
     # Mask before cutting: a credential that straddles the cut would no longer match.
     return mask_secrets(text, secrets or set())[:MAX_MESSAGE_CHARS]
 
