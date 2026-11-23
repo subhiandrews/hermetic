@@ -199,3 +199,26 @@ def test_a_rebuild_that_cannot_be_saved_still_lists(tmp_path: Path) -> None:
         assert [s.run_id for s in store.list()] == ["r1"]
     finally:
         root.chmod(0o700)
+
+
+def test_a_valid_index_that_lacks_a_run_is_repaired(tmp_path: Path) -> None:
+    root = tmp_path / "runs"
+    store = FileRunStore(root)
+    store.save(make_record("r1"))
+    stale = (root / "index.json").read_text()
+    store.save(make_record("r2"))
+    (root / "index.json").write_text(stale)  # the last writer of a race, without r2
+    (root / "broken.json").write_text("{")  # a corrupt run file is skipped
+    assert sorted(s.run_id for s in store.list()) == ["r1", "r2"]
+    assert "r2" in (root / "index.json").read_text()
+
+
+def test_a_save_after_a_lost_update_keeps_every_run(tmp_path: Path) -> None:
+    root = tmp_path / "runs"
+    store = FileRunStore(root)
+    store.save(make_record("r1"))
+    stale = (root / "index.json").read_text()
+    store.save(make_record("r2"))
+    (root / "index.json").write_text(stale)
+    store.save(make_record("r3"))
+    assert sorted(s.run_id for s in store.list()) == ["r1", "r2", "r3"]

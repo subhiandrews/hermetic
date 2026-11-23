@@ -30,6 +30,13 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.write(b"5\r\nhello\r\n0\r\n\r\n")
         elif self.path == "/echo-auth":
             self._reply(401, {"detail": f"bad credential {self.headers.get('Authorization')}"})
+        elif self.path == "/echo-header":
+            body = b"{}"
+            self.send_response(200)
+            self.send_header("X-Debug", self.headers.get("Authorization", ""))
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         elif self.path == "/redirect":
             self.send_response(302)
             self.send_header(

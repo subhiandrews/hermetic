@@ -545,3 +545,25 @@ def test_many_tests_keep_their_own_results(server: str, tmp_path: Path) -> None:
     source = "\n".join(f"def test_{n}(hermetic_client):\n    assert {n} != 7\n" for n in range(12))
     results = execute_suite(write_suite(tmp_path, source), server)
     assert [r.status for r in results].count("failed") == 1 and len(results) == 12
+
+
+def test_a_header_that_echoes_a_known_credential_is_masked(server: str, tmp_path: Path) -> None:
+    suite = write_suite(
+        tmp_path,
+        """
+def test_echo(hermetic_client):
+    hermetic_client.get("/echo-header", headers={"Authorization": "Bearer HDRECHO99"})
+""",
+    )
+    (result,) = execute_suite(suite, server)
+    assert "HDRECHO99" not in str(result.exchanges[0].response_headers)
+    assert "HDRECHO99" not in str(result.exchanges[0].request_headers)
+
+
+def test_target_credentials_are_masked_in_collection_errors(tmp_path: Path) -> None:
+    suite = write_suite(
+        tmp_path, "raise RuntimeError('http://u:TARGETPW77@127.0.0.1:1/?token=TT99')\n"
+    )
+    (result,) = execute_suite(suite, "http://u:TARGETPW77@127.0.0.1:1/?token=TT99")
+    assert result.status == "error"
+    assert "TARGETPW77" not in (result.message or "") and "TT99" not in (result.message or "")

@@ -62,7 +62,7 @@ class _Recording:
             Exchange(
                 method=request.method,
                 url=redact_url(str(request.url)),
-                request_headers=redact_headers(request.headers),
+                request_headers=self._headers(request.headers),
                 request_body=captured.text,
                 request_body_complete=captured.complete,
                 status_code=None,
@@ -71,6 +71,13 @@ class _Recording:
                 duration_ms=0.0,
             )
         )
+
+    def _headers(self, headers: httpx.Headers) -> dict[str, str]:
+        """Headers for storage: sensitive ones masked, then any credential already seen."""
+        return {
+            name: mask_secrets(value, self.secrets)
+            for name, value in redact_headers(headers).items()
+        }
 
     def on_response(self, response: httpx.Response) -> None:
         self.secrets |= secret_values(response.headers)
@@ -88,7 +95,7 @@ class _Recording:
         self.exchanges[-1] = pending.model_copy(
             update={
                 "status_code": response.status_code,
-                "response_headers": redact_headers(response.headers),
+                "response_headers": self._headers(response.headers),
                 "response_body": body,
                 "duration_ms": (time.perf_counter() - started) * 1000,
             }
@@ -162,7 +169,7 @@ class HermeticPlugin:
                     operation_id=None,
                     status="error",
                     duration_ms=0.0,
-                    message=_message_of(report),
+                    message=_message_of(report, url_secrets(self._target)),
                     exchanges=[],
                     curl=None,
                 )

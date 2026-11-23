@@ -17,7 +17,8 @@ from hermetic.history.store import RunNotFoundError, RunStoreError
 INDEX_NAME = "index.json"
 # run_id becomes a file name, so it must not be able to name a path.
 _RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
-Summaries = list[RunSummary]  # alias: `list` is shadowed by the method inside the class
+RunIds = list[str]  # aliases: `list` is shadowed by the method inside the class
+Summaries = list[RunSummary]
 _INDEX = TypeAdapter(Summaries)
 
 
@@ -82,23 +83,39 @@ class FileRunStore:
         return _newest_first(self._read_index())
 
     def _read_index(self) -> Summaries:
-        """The index, rebuilt from the run files when it is missing or unreadable."""
+        """The index, reconciled with the run files.
+
+        A missing or unreadable index is rebuilt from every run file. A valid index that lacks
+        a run (two processes saved at once and the last writer won, or a crash between the
+        two writes) gets that run added. Either way the result is written back, so the
+        parsing is a one-time cost.
+        """
         try:
-            return _INDEX.validate_json((self._root / INDEX_NAME).read_text(encoding="utf-8"))
+            summaries = _INDEX.validate_json((self._root / INDEX_NAME).read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, ValidationError):
             summaries = self._rebuild_index()
-            with contextlib.suppress(OSError):  # make the rebuild a one-time cost
-                self._write_index(summaries)
-            return summaries
+        else:
+            known = {summary.run_id for summary in summaries}
+            missing = [name for name in self._run_ids() if name not in known]
+            if not missing:
+                return summaries
+            summaries = [*summaries, *self._summaries_of(missing)]
+        with contextlib.suppress(OSError):
+            self._write_index(summaries)
+        return summaries
+
+    def _run_ids(self) -> RunIds:
+        return sorted(p.stem for p in self._root.glob("*.json") if p.name != INDEX_NAME)
+
+    def _summaries_of(self, run_ids: RunIds) -> Summaries:
+        summaries: Summaries = []
+        for run_id in run_ids:
+            with contextlib.suppress(RunStoreError):  # a corrupt run file is skipped, not fatal
+                summaries.append(summarize(self.get(run_id)))
+        return summaries
 
     def _rebuild_index(self) -> Summaries:
-        summaries: Summaries = []
-        for path in sorted(self._root.glob("*.json")):
-            if path.name == INDEX_NAME:
-                continue
-            with contextlib.suppress(RunStoreError):  # a corrupt run file is skipped, not fatal
-                summaries.append(summarize(self.get(path.stem)))
-        return summaries
+        return self._summaries_of(self._run_ids())
 
     def _write_index(self, summaries: Summaries) -> None:
         _write_atomic(self._root / INDEX_NAME, json.dumps(_INDEX.dump_python(summaries), indent=2))
