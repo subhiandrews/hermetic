@@ -53,13 +53,18 @@ def _data(text: str) -> str:
     return text.replace("</", "<\\/")
 
 
+def _quoted(text: str) -> str:
+    """A JSON string literal on one line, so spec text cannot add lines or close a tag."""
+    return _data(json.dumps(text, ensure_ascii=False))
+
+
 def build_prompt(request: AuthorRequest) -> str:
     """The user prompt for one operation. Docs are truncated to a fixed size, in order."""
     operation = request.operation.model_dump(mode="json", exclude={"fragment_hash"})
     parts = [
-        f"Service: {request.service_title}",
-        f"Servers: {', '.join(request.servers) or '(none listed)'}",
-        f"operationId: {request.operation.operation_id}",
+        f"Service: {_quoted(request.service_title)}",
+        f"Servers: {', '.join(_quoted(s) for s in request.servers) or '(none listed)'}",
+        f"operationId: {_quoted(request.operation.operation_id)}",
         f"Why this test is being written: {request.reason}",
         "<spec>",
         _data(json.dumps(operation, indent=2, sort_keys=True, ensure_ascii=False)),
@@ -69,7 +74,7 @@ def build_prompt(request: AuthorRequest) -> str:
     for doc in request.docs:
         if budget <= 0:
             break
-        parts.extend([f"<docs path={json.dumps(doc.path)}>", _data(doc.text[:budget]), "</docs>"])
+        parts.extend([f"<docs path={_quoted(doc.path)}>", _data(doc.text[:budget]), "</docs>"])
         budget -= len(doc.text)
     if request.previous_source is not None:
         parts.extend(
