@@ -17,8 +17,6 @@ hermetic run --spec openapi.yaml --docs ./docs --target http://svc:8080
   9. Publish     optional pluggable sinks (interface only in v1)
 ```
 
-Milestone status: only the package skeleton and CLI stub exist (M0). Everything above lands in later milestones.
-
 ## Run history
 
 Flat files, no database. Each run is `.hermetic/runs/<run_id>.json` plus an `index.json` for fast listing. Access is through a `RunStore` protocol (`save`, `get`, `list`) with `FileRunStore` as the only v1 implementation, so a database store can replace it later without changing the CLI or UI. `.hermetic/runs/` is gitignored; the test manifest at `tests/.hermetic/manifest.json` is not history and is committed.
