@@ -15,6 +15,10 @@ permissions:
 
 jobs:
   review:
+    # Drafts are not reviewed. code-check-pin.yml opens its version-bump PRs as drafts so a new
+    # code-check release does not run with the repository secret until a maintainer marks the
+    # PR ready; this condition makes this repository enforce that, not only the action.
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:

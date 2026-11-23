@@ -1,0 +1,142 @@
+name: code-check-pin
+
+# Opens a draft PR when `code-check-ref` in code-check.yml is behind the newest code-check release
+# tag. It never merges anything: review the draft, then mark it ready and merge it.
+#
+# The PR is a draft on purpose. code-check.yml skips drafts, so a new upstream release does not run
+# with this repository's CLAUDE_CODE_OAUTH_TOKEN until a maintainer has looked at it and marked
+# the PR ready. The pin is written as the release's commit SHA plus its tag (`<sha> # v1.2.3`), so
+# the diff shows exactly what will run and a tag moved later cannot change it.
+on:
+  schedule:
+    # 06:00, 12:00 and 18:00 Pacific Standard Time (UTC-8). Cron is UTC only, so on the clock
+    # these run an hour later in summer (Pacific Daylight Time). Runs can start a few minutes late.
+    - cron: "0 2,14,20 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: code-check-pin
+  cancel-in-progress: false
+
+jobs:
+  pin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      SOURCE: subhiandrews/codecheck
+      BRANCH: bot/code-check-pin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Bump the pin when a newer release exists
+        id: bump
+        env:
+          GH_TOKEN: ${{ github.token }} # read-only: lists the public tags of the source repository
+        run: |
+          set -euo pipefail
+          workflow=.github/workflows/code-check.yml
+          tag_re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+
+          # The pin is a tag (`v1.2.3`) or a commit SHA followed by its tag (`<sha> # v1.2.3`).
+          line="$(grep -E '^[[:space:]]*code-check-ref:' "$workflow" | head -n1)"
+          value="$(sed -E 's/^[[:space:]]*code-check-ref:[[:space:]]*([^[:space:]#]+).*$/\1/' <<<"$line")"
+          commented="$(sed -nE 's/^[^#]*#[[:space:]]*(v[^[:space:]]+).*$/\1/p' <<<"$line")"
+          if grep -qE "$tag_re" <<<"$value"; then current="$value"; else current="$commented"; fi
+
+          # A failed API call (rate limit, outage, wrong SOURCE) must fail the job, not pass
+          # silently, so it is not swallowed: only "no tag matched" is tolerated below.
+          tags="$(gh api "repos/${SOURCE}/tags" --paginate --jq '.[] | "\(.name) \(.commit.sha)"')"
+          newest="$(awk '{print $1}' <<<"$tags" | grep -E "$tag_re" | sort -V | tail -n1 || true)"
+          sha="$(awk -v tag="$newest" '$1 == tag {print $2}' <<<"$tags")"
+          echo "pinned: ${current:-none}, newest: ${newest:-none} (${sha:-no commit})"
+
+          action=none
+          if ! grep -qE "$tag_re" <<<"$current"; then
+            echo "::notice::the pin is neither a vX.Y.Z tag nor '<sha> # vX.Y.Z', so it is left alone"
+          elif [ -z "$newest" ]; then
+            echo "::warning::no release tags found in ${SOURCE}"
+          elif ! grep -qE '^[0-9a-f]{40}$' <<<"$sha"; then
+            echo "::error::could not resolve ${newest} to a commit SHA"
+            exit 1
+          elif [ "$current" != "$newest" ] && [ "$(printf '%s\n%s\n' "$current" "$newest" | sort -V | tail -n1)" = "$newest" ]; then
+            # only a strictly newer tag replaces the pin, so this can never downgrade it
+            sed -i -E "s|^([[:space:]]*code-check-ref:[[:space:]]*).*$|\1${sha} # ${newest}|" "$workflow"
+            action=bump
+          fi
+          {
+            echo "action=$action"
+            echo "from=$current"
+            echo "to=$newest"
+            echo "sha=$sha"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Commit, push and open or update the draft PR
+        if: steps.bump.outputs.action == 'bump'
+        env:
+          # A fine-grained PAT (or app token) with Contents, Pull requests and Workflows write on
+          # this repository. The default GITHUB_TOKEN cannot push changes under .github/workflows,
+          # and a PR it opens would not trigger CI.
+          GH_TOKEN: ${{ secrets.CI_PIN_BOT_TOKEN }}
+          REPO: ${{ github.repository }}
+          FROM: ${{ steps.bump.outputs.from }}
+          TO: ${{ steps.bump.outputs.to }}
+          SHA: ${{ steps.bump.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::A bump needs the repository secret CI_PIN_BOT_TOKEN (fine-grained PAT or app token with Contents, Pull requests and Workflows write)."
+            exit 1
+          fi
+          url="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q -B "$BRANCH"
+          git commit -q -am "ci: pin code-check to $TO"
+
+          # Skip when the branch already holds this pin, so repeat runs do not re-run CI. Compare only
+          # the pin line: the tree changes whenever unrelated work merges to main.
+          remote_pin=""
+          if git fetch --quiet --depth=1 "$url" "refs/heads/$BRANCH" 2>/dev/null; then
+            remote_pin="$(git show FETCH_HEAD:.github/workflows/code-check.yml | grep -E '^[[:space:]]*code-check-ref:' | head -n1 || true)"
+          fi
+          local_pin="$(grep -E '^[[:space:]]*code-check-ref:' .github/workflows/code-check.yml | head -n1)"
+          if [ -n "$remote_pin" ] && [ "$remote_pin" = "$local_pin" ]; then
+            proposed="$(gh pr list --repo "$REPO" --head "$BRANCH" --state all --json number --jq length)"
+            if [ "$proposed" -gt 0 ]; then
+              echo "$TO is already proposed (open, merged or closed); nothing to do."
+              exit 0
+            fi
+          else
+            # The draft gate must hold for every new release, not only the first. A PR a maintainer
+            # already marked ready would run the review (and the new code-check) with the
+            # repository secret as soon as the push lands, so turn it back into a draft first.
+            open_pr="$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+            if [ -n "$open_pr" ]; then
+              # Its own statement, so a failed lookup stops the job (set -e does not see a failed
+              # command substitution inside `[ ]`). Anything but "true" is treated as not a draft.
+              is_draft="$(gh pr view "$open_pr" --repo "$REPO" --json isDraft --jq .isDraft)"
+              [ "$is_draft" = "true" ] || gh pr ready "$open_pr" --repo "$REPO" --undo
+            fi
+            expect="$(git ls-remote "$url" "refs/heads/$BRANCH" | cut -f1)"
+            git push --force-with-lease="refs/heads/$BRANCH:$expect" "$url" "HEAD:refs/heads/$BRANCH"
+          fi
+
+          body="Bot-made. CI reviews pull requests with code-check \`$FROM\`; the newest release is \`$TO\` (\`$SHA\`), so this moves \`code-check-ref\` in \`.github/workflows/code-check.yml\` from \`$FROM\` to that commit.
+
+          Release: https://github.com/${SOURCE}/releases/tag/${TO}
+          Changes: https://github.com/${SOURCE}/compare/${FROM}...${TO}
+
+          This is a **draft** on purpose: drafts are not reviewed (code-check.yml skips them), so the new release does not run with the repository's secrets until you have read the changes above. Mark it ready for review to run it, then merge. If a newer release lands while this is open, the bot turns it back into a draft before updating it. Opened by \`.github/workflows/code-check-pin.yml\`; not auto-merged."
+          existing="$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --repo "$REPO" --title "ci: pin code-check to $TO" --body "$body"
+          else
+            gh pr create --repo "$REPO" --base main --head "$BRANCH" --draft --title "ci: pin code-check to $TO" --body "$body"
+          fi
