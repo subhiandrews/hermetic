@@ -679,3 +679,22 @@ def test_the_secrets_set_survives_hooks_running_on_many_threads() -> None:
         thread.join()
     assert errors == [] and len(recording.exchanges) == 360
     assert all(e.status_code == 200 for e in recording.exchanges)
+
+
+def test_a_credential_in_a_parametrize_id_is_masked_in_the_test_id(
+    server: str, tmp_path: Path
+) -> None:
+    suite = write_suite(
+        tmp_path,
+        """
+import pytest
+
+@pytest.mark.parametrize("key", ["PARAMSECRET99"])
+def test_param(hermetic_client, key):
+    hermetic_client.get("/ok", headers={"X-Api-Key": key})
+""",
+    )
+    (result,) = execute_suite(suite, server)
+    assert "PARAMSECRET99" not in result.test_id and result.test_id.startswith(
+        "test_api.py::test_param["
+    )

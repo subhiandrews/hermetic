@@ -191,16 +191,19 @@ def test_a_rebuilt_index_is_written_back(tmp_path: Path) -> None:
     assert json.loads((root / "index.json").read_text())[0]["run_id"] == "r1"
 
 
-def test_a_rebuild_that_cannot_be_saved_still_lists(tmp_path: Path) -> None:
+def test_a_rebuild_that_cannot_be_saved_still_lists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root = tmp_path / "runs"
     store = FileRunStore(root)
     store.save(make_record("r1"))
     (root / "index.json").write_text("not json")
-    root.chmod(0o500)  # readable, not writable
-    try:
-        assert [s.run_id for s in store.list()] == ["r1"]
-    finally:
-        root.chmod(0o700)
+
+    def refuse(self: FileRunStore, summaries: object) -> None:
+        raise OSError("read-only")
+
+    monkeypatch.setattr(FileRunStore, "_write_index", refuse)  # independent of the user's rights
+    assert [s.run_id for s in store.list()] == ["r1"]
 
 
 def test_a_valid_index_that_lacks_a_run_is_repaired(tmp_path: Path) -> None:

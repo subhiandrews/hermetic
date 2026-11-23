@@ -230,9 +230,11 @@ class HermeticPlugin:
         return _message_of(report, recording.known() if recording else set())
 
     def _result(self, nodeid: str, status: TestStatus, message: str | None) -> TestResult:
-        exchanges = self._recordings.get(nodeid, _Recording(self._allowed)).final_exchanges()
+        recording = self._recordings.get(nodeid, _Recording(self._allowed))
+        exchanges = recording.final_exchanges()
         return TestResult(
-            test_id=nodeid,
+            # Parametrize ids are used verbatim, so one can carry a credential the test also sent.
+            test_id=mask_secrets(nodeid, recording.known()),
             operation_id=self._operations.get(nodeid),
             status=status,
             duration_ms=self._durations.get(nodeid, 0.0),
