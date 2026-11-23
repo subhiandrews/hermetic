@@ -20,7 +20,7 @@ uv run mypy                                      # strict, covers src and tests
 docker build -f docker/Dockerfile -t hermetic:dev . && docker run --rm hermetic:dev version
 ```
 
-CI (`.github/workflows/ci.yml`) runs exactly the lint, mypy, pytest-with-coverage and Docker build steps above, on Python 3.12 and 3.13.
+CI (`.github/workflows/ci.yml`) runs the lint, mypy and pytest-with-coverage steps above on Python 3.12 and 3.13, plus a Docker build (without pushing). `release.yml` reuses it as a gate before publishing.
 
 ## Architecture decisions that span files
 
