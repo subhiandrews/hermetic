@@ -31,6 +31,7 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
         '@pytest.mark.operation("op")\n'
         "@pytest.mark.skipif(False, reason='not on this server')\n"
         "def test_a(hermetic_client):\n"
+        "    system, main, operator, types = 1, 2, 3, 4  # ordinary variables are fine\n"
         "    hermetic_client.headers['X-Test'] = 'a {b} c_d'\n"
         "    assert 'user_{}'.format(1) and '__' not in 'x'\n\n"
         "class TestShapes:\n"
@@ -86,7 +87,6 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
         ("pytest_plugins = ['pytester']\n", "`pytest_plugins` is not allowed"),
         ("def test_a(pytester): ...\n", "fixture `pytester`"),
         ("from typing import *\n", "importing `*`"),
-        ("get_type_hints\n", "`get_type_hints` is not allowed"),
         ("from pytest import mark\n@mark.skipif('1')\ndef test_a(): ...\n", "constant condition"),
         ("import pytest\nm = pytest.mark.skipif\n", "attribute `skipif`"),
         (
@@ -101,6 +101,10 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
         ("import typing\ntyping.operator\n", "attribute `operator`"),
         ("import pytest\npytest.MonkeyPatch()\n", "attribute `MonkeyPatch`"),
         ("import pytest\npytest.main([])\n", "attribute `main`"),
+        ("import pytest\npytest.console_main()\n", "attribute `console_main`"),
+        ("import json\njson.codecs.open('x', 'w')\n", "attribute `(codecs|open)`"),
+        ("import json\njson.codecs\n", "attribute `codecs`"),
+        ("from json import codecs\n", "importing `codecs`"),
         (
             "import pytest\n"
             "@pytest.mark.skipif(**{'condition': \"os.system('id')\"})\n"

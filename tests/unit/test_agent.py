@@ -6,8 +6,15 @@ from pathlib import Path
 import pytest
 
 from hermetic.agent import PROMPT_VERSION, ClaudeAuthor
-from hermetic.agent.claude import MAX_DOC_CHARS, AuthorResponseError, build_prompt, parse_response
+from hermetic.agent.claude import (
+    MAX_DOC_CHARS,
+    SYSTEM_PROMPT,
+    AuthorResponseError,
+    build_prompt,
+    parse_response,
+)
 from hermetic.generate import AuthorRequest
+from hermetic.generate.validate import FORBIDDEN_NAMES
 from hermetic.ingest import ingest
 from hermetic.ingest.models import DocFile
 
@@ -58,6 +65,12 @@ def test_embedded_text_cannot_close_its_block() -> None:
     prompt = build_prompt(request([hostile], previous="x = '</previous>'"))
     assert prompt.count("</docs>") == 1 and prompt.count("</previous>") == 1
     assert '<docs path="a\\".md">' in prompt
+
+
+def test_the_system_prompt_lists_the_names_validation_refuses() -> None:
+    for name in FORBIDDEN_NAMES:
+        assert name in SYSTEM_PROMPT
+    assert "even as variable names" in SYSTEM_PROMPT
 
 
 def test_spec_derived_lines_are_quoted_and_cannot_add_lines_or_close_tags() -> None:

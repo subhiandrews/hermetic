@@ -45,7 +45,9 @@ FORBIDDEN_ATTRIBUTES = frozenset(
         # Modules an allowed module re-exports (`typing.operator`), and ways to start another
         # pytest session or get a fixture by hand (`pytest.main`, `pytest.MonkeyPatch`).
         "functools", "operator", "types", "attrgetter", "itemgetter", "methodcaller",
-        "MonkeyPatch", "Pytester", "main",
+        "MonkeyPatch", "Pytester", "main", "console_main",
+        # File access through a module an allowed one imports (`json.codecs.open`).
+        "codecs", "io", "open",
     }
 )  # fmt: skip
 # `pytest.mark.skipif("...")` and `xfail("...")` eval() a string condition at collection.
@@ -92,7 +94,6 @@ def validate_source(source: str, operation_id: str) -> None:
                     raise SourceRejected(f"importing `{alias.name}` is not allowed in a test")
         elif isinstance(node, ast.Name) and (
             node.id in FORBIDDEN_NAMES
-            or node.id in FORBIDDEN_ATTRIBUTES
             or node.id in EVALUATING_MARKS
             or node.id.startswith(("__", "pytest_"))  # `pytest_plugins` loads any plugin
         ):
