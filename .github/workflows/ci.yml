@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_call: # reused by release.yml as the gate before publishing
 
 permissions:
   contents: read
