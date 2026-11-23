@@ -34,6 +34,4 @@ A run record holds metadata (target, spec/doc hashes, prompt and tool versions),
 
 ## Distribution
 
-- Image: `ghcr.io/subhiandrews/hermetic` (multi-arch), built by `release.yml` on `v*` tags.
-- Package: `hermetic` on PyPI via trusted publishing.
-- CI (`ci.yml`): ruff, mypy, pytest with the coverage gate, and a Docker build on every pull request.
+Releases are tag-driven and defined in `.github/workflows/release.yml`, which reuses `.github/workflows/ci.yml` as its gate. They publish a container image to GHCR and the package to PyPI via trusted publishing.
