@@ -8,7 +8,7 @@ from pathlib import Path
 
 from hermetic import __version__
 from hermetic.execute import execute_suite
-from hermetic.history import RunRecord, RunStore, RunStoreError
+from hermetic.history import RunRecord, RunStore, RunStoreError, SuiteChange
 from hermetic.ingest import ServiceModel
 from hermetic.redact import redact_url
 from hermetic.report import ReportSink, SinkError
@@ -26,6 +26,8 @@ def run_suite(
     sinks: list[ReportSink],
     *,
     model: ServiceModel | None = None,
+    changes: list[SuiteChange] | None = None,
+    prompt_version: str | None = None,
     timeout: float = 30.0,
 ) -> RunRecord:
     """Execute the suite, save the run to the store, then publish it to every sink."""
@@ -39,9 +41,10 @@ def run_suite(
         target=redact_url(target),
         spec_hash=model.spec_hash if model else None,
         doc_hashes={doc.path: doc.sha256 for doc in model.docs} if model else {},
-        prompt_version=None,
+        prompt_version=prompt_version,
         tool_version=__version__,
         results=results,
+        changes=changes or [],
     )
     try:
         store.save(record)
