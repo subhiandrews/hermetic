@@ -8,7 +8,13 @@ from hermetic.history.models import RunRecord, RunSummary
 
 
 class RunStoreError(Exception):
-    """The store could not complete the operation (corrupt data, I/O failure)."""
+    """The store could not complete the operation (corrupt data, I/O failure).
+
+    `record` is set by run_suite when saving failed after the suite had run, so the caller
+    can still derive the exit code from the results.
+    """
+
+    record: RunRecord | None = None
 
 
 class RunNotFoundError(RunStoreError):

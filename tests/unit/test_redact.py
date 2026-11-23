@@ -204,3 +204,18 @@ def test_url_fragment_parameters_are_masked_and_collected() -> None:
     )
     assert url_secrets(url) == {"SIGV", "FRAGTOK"}
     assert redact_url("http://h/p#section-2") == "http://h/p#section-2"
+
+
+def test_url_secrets_include_the_encoded_form() -> None:
+    from hermetic.redact import url_secrets
+
+    found = url_secrets("http://h/p?sig=a%2Bb%2Fc%3D&q=1#access_token=x%20y")
+    assert {"a%2Bb%2Fc%3D", "a+b/c=", "x%20y", "x y"} <= found
+    assert not any(value in ("1", "q") for value in found)
+
+
+def test_known_secrets_are_masked_inside_json_despite_escaping() -> None:
+    secrets = {'pässword"\\x'}
+    body = json.dumps({"note": 'pässword"\\x', "list": ['pässword"\\x'], "n": 1}).encode()
+    text = redact_body(body, secrets) or ""
+    assert "pässword" not in text and "p\\u00e4ssword" not in text and REDACTED in text

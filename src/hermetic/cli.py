@@ -83,8 +83,8 @@ def run(
         )
     except (IngestError, ExecuteError, RunStoreError, SinkError) as exc:
         typer.echo(f"error: {exc}", err=True)
-        # A sink failure comes after the run happened: tests that failed still exit 1.
-        record = exc.record if isinstance(exc, SinkError) else None
+        # A sink or store failure comes after the run happened: tests that failed still exit 1.
+        record = exc.record if isinstance(exc, SinkError | RunStoreError) else None
         if record is None:
             raise typer.Exit(code=2) from exc
         raise typer.Exit(code=1 if _any_failed(record) else 2) from exc

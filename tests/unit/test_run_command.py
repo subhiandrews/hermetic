@@ -185,3 +185,18 @@ def test_sink_failure_still_exits_1_when_tests_failed(server: str, tmp_path: Pat
     (passing_suite / "test_ok.py").write_text("def test_ok():\n    pass\n")
     passing = runner.invoke(app, ["run", str(passing_suite), *args, "--report", "json"])
     assert passing.exit_code == 2
+
+
+def test_store_failure_after_the_run_still_exits_1_when_tests_failed(
+    server: str, tmp_path: Path
+) -> None:
+    blocker = tmp_path / "history"
+    blocker.write_text("a file")
+    failing = runner.invoke(
+        app,
+        [
+            "run", str(write_suite(tmp_path, "== 500")), "--target", server,
+            "--history-dir", str(blocker),
+        ],
+    )  # fmt: skip
+    assert failing.exit_code == 1 and "cannot write run" in failing.output

@@ -7,7 +7,7 @@ import re
 from collections.abc import Mapping
 from http.cookies import CookieError, SimpleCookie
 from typing import Any, NamedTuple
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote_plus, urlencode, urlsplit, urlunsplit
 
 REDACTED = "[REDACTED]"
 MAX_BODY_CHARS = 64 * 1024
@@ -138,12 +138,13 @@ def url_secrets(url: str) -> set[str]:
         parts = urlsplit(url)
     except ValueError:  # a buggy service can send a malformed URL; there is nothing to mask
         return set()
-    found = {
-        value
-        for encoded in (parts.query, parts.fragment)
-        for key, value in parse_qsl(encoded)
-        if _is_sensitive_key(key) and value
-    }
+    found: set[str] = set()
+    for encoded in (parts.query, parts.fragment):
+        for pair in encoded.split("&"):
+            key, _, raw = pair.partition("=")
+            if raw and _is_sensitive_key(unquote_plus(key)):
+                # Both forms: error text quotes the encoded URL, a test quotes the decoded value.
+                found |= {raw, unquote_plus(raw)}
     if parts.password:
         found.add(parts.password)
     return found
@@ -166,6 +167,17 @@ def redact_url(url: str) -> str:
             fragment=_mask_params(parts.fragment) if "=" in parts.fragment else parts.fragment,
         )
     )
+
+
+def _mask_json_strings(value: Any, secrets: set[str]) -> Any:
+    """Mask known credentials inside decoded string values, so JSON escaping cannot hide them."""
+    if isinstance(value, str):
+        return mask_secrets(value, secrets)
+    if isinstance(value, dict):
+        return {key: _mask_json_strings(item, secrets) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_mask_json_strings(item, secrets) for item in value]
+    return value
 
 
 def _redact_json(value: Any, found: set[str]) -> Any:
@@ -223,12 +235,18 @@ def capture_body(raw: bytes, secrets: set[str] | None = None) -> Captured:
     found: set[str] = set()
     try:
         # RecursionError: a few KB of `[` is enough to overflow the parser.
-        text = json.dumps(_redact_json(json.loads(text), found))
+        redacted = _redact_json(json.loads(text), found)
+        if secrets is not None:
+            secrets |= found
+            redacted = _mask_json_strings(redacted, secrets)  # on values, not escaped text
+        text = json.dumps(redacted)
     except (ValueError, RecursionError):
         text = _redact_form(text, found) or text  # not JSON: a form, or plain text kept as is
-    if secrets is not None:
-        secrets |= found
-        text = mask_secrets(text, secrets)  # before the cut: a credential across it would escape
+        if secrets is not None:
+            secrets |= found
+            text = mask_secrets(
+                text, secrets
+            )  # before the cut: a credential across it would escape
     if len(text) > MAX_BODY_CHARS:
         return Captured(text[:MAX_BODY_CHARS] + f"... [truncated, {len(text)} characters]", False)
     return Captured(text, True)

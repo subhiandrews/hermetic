@@ -8,7 +8,7 @@ from pathlib import Path
 
 from hermetic import __version__
 from hermetic.execute import execute_suite
-from hermetic.history import RunRecord, RunStore
+from hermetic.history import RunRecord, RunStore, RunStoreError
 from hermetic.ingest import ServiceModel
 from hermetic.redact import redact_url
 from hermetic.report import ReportSink, SinkError
@@ -43,7 +43,11 @@ def run_suite(
         tool_version=__version__,
         results=results,
     )
-    store.save(record)
+    try:
+        store.save(record)
+    except RunStoreError as exc:
+        exc.record = record
+        raise
     failures: list[str] = []
     for sink in sinks:  # one broken sink must not stop the others
         try:
