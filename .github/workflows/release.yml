@@ -57,14 +57,16 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Own cache scope: never reuse layers written by the PR/CI docker job.
+          cache-from: type=gha,scope=release
+          cache-to: type=gha,scope=release,mode=max
 
   pypi:
     needs: [check-version, ci]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
+      contents: read
       id-token: write # PyPI trusted publishing
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
