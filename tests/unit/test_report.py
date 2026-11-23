@@ -182,3 +182,15 @@ def test_report_can_be_imported_first() -> None:
         check=False,
     )
     assert done.returncode == 0, done.stderr
+
+
+def test_stdout_escapes_terminal_control_sequences(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    record = failing_record()
+    result = record.results[0].model_copy(update={"message": "evil \x1b]0;pwned\x07 \x1b[31mred"})
+    (sink,) = load_sinks(["stdout"], SinkContext(output_dir=tmp_path))
+    sink.publish(record.model_copy(update={"results": [result]}))
+    out = capsys.readouterr().out
+    assert "\x1b" not in out and "\x07" not in out
+    assert "\\x1b]0;pwned\\x07" in out and "\n" in out

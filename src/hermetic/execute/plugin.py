@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Iterator
 from typing import Any
@@ -43,6 +44,7 @@ class _Recording:
     def __init__(self, allowed: set[tuple[str, str, int]]) -> None:
         self.allowed = allowed
         self.exchanges: list[Exchange] = []
+        self._lock = threading.Lock()  # a test may share the client across threads
         self.secrets: set[str] = set()  # raw credential values seen, to mask failure text
 
     def on_request(self, request: httpx.Request) -> None:
@@ -58,19 +60,21 @@ class _Recording:
         self.secrets |= secret_values(request.headers) | url_secrets(str(request.url))
         request.extensions["hermetic_started"] = time.perf_counter()
         captured = capture_body(body or b"", self.secrets)
-        self.exchanges.append(
-            Exchange(
-                method=request.method,
-                url=redact_url(str(request.url)),
-                request_headers=self._headers(request.headers),
-                request_body=captured.text,
-                request_body_complete=captured.complete,
-                status_code=None,
-                response_headers={},
-                response_body=None,
-                duration_ms=0.0,
-            )
+        exchange = Exchange(
+            method=request.method,
+            url=mask_secrets(redact_url(str(request.url)), self.secrets),
+            request_headers=self._headers(request.headers),
+            request_body=captured.text,
+            request_body_complete=captured.complete,
+            status_code=None,
+            response_headers={},
+            response_body=None,
+            duration_ms=0.0,
         )
+        with self._lock:
+            # The response hook finds its exchange through the request, not by position.
+            request.extensions["hermetic_index"] = len(self.exchanges)
+            self.exchanges.append(exchange)
 
     def _headers(self, headers: httpx.Headers) -> dict[str, str]:
         """Headers for storage: sensitive ones masked, then any credential already seen."""
@@ -87,12 +91,18 @@ class _Recording:
         length = response.headers.get("content-length", "")
         encoding = response.headers.get("content-encoding", "identity").lower()
         body = None
-        if length.isdigit() and int(length) <= MAX_BODY_CHARS and encoding == "identity":
+        if (
+            length.isascii()
+            and length.isdigit()
+            and int(length) <= MAX_BODY_CHARS
+            and encoding == "identity"
+        ):
             response.read()
             body = redact_body(response.content, self.secrets)
         started = response.request.extensions["hermetic_started"]
-        pending = self.exchanges[-1]
-        self.exchanges[-1] = pending.model_copy(
+        index = response.request.extensions["hermetic_index"]
+        pending = self.exchanges[index]
+        self.exchanges[index] = pending.model_copy(
             update={
                 "status_code": response.status_code,
                 "response_headers": self._headers(response.headers),

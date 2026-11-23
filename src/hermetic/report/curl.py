@@ -15,7 +15,9 @@ _SKIPPED_HEADERS = frozenset(
 
 
 def _placeholder(name: str) -> str:
-    return re.sub(r"[^A-Z0-9]+", "_", name.upper()).strip("_") or "SECRET"
+    cleaned = re.sub(r"[^A-Z0-9]+", "_", name.upper()).strip("_") or "SECRET"
+    # A shell reads `$1_X` as positional parameter 1 followed by `_X`.
+    return f"H_{cleaned}" if cleaned[0].isdigit() else cleaned
 
 
 def build_curl(exchange: Exchange) -> str:

@@ -567,3 +567,49 @@ def test_target_credentials_are_masked_in_collection_errors(tmp_path: Path) -> N
     (result,) = execute_suite(suite, "http://u:TARGETPW77@127.0.0.1:1/?token=TT99")
     assert result.status == "error"
     assert "TARGETPW77" not in (result.message or "") and "TT99" not in (result.message or "")
+
+
+def test_a_known_credential_is_masked_in_the_url_path(server: str, tmp_path: Path) -> None:
+    suite = write_suite(
+        tmp_path,
+        """
+def test_path(hermetic_client):
+    hermetic_client.get("/ok", headers={"X-Api-Key": "PATHSECRET99"})
+    hermetic_client.get("/reset/PATHSECRET99")
+    assert False
+""",
+    )
+    (result,) = execute_suite(suite, server)
+    assert "PATHSECRET99" not in result.exchanges[1].url
+    assert result.curl is not None and "PATHSECRET99" not in result.curl
+
+
+def test_responses_are_paired_with_their_own_request() -> None:
+    import httpx
+
+    from hermetic.execute.plugin import _Recording, origin_of
+
+    recording = _Recording({origin_of("http://svc")})
+    first = httpx.Request("GET", "http://svc/first")
+    second = httpx.Request("GET", "http://svc/second")
+    recording.on_request(first)
+    recording.on_request(second)
+    # the second response arrives first
+    recording.on_response(httpx.Response(201, content=b"b", request=second))
+    recording.on_response(httpx.Response(200, content=b"a", request=first))
+    by_url = {e.url: e for e in recording.exchanges}
+    assert by_url["http://svc/first"].status_code == 200
+    assert by_url["http://svc/second"].status_code == 201
+
+
+def test_a_non_ascii_content_length_does_not_break_the_hook() -> None:
+    import httpx
+
+    from hermetic.execute.plugin import _Recording, origin_of
+
+    recording = _Recording({origin_of("http://svc")})
+    request = httpx.Request("GET", "http://svc/x")
+    recording.on_request(request)
+    response = httpx.Response(200, headers=[(b"Content-Length", "٣".encode())], request=request)
+    recording.on_response(response)
+    assert recording.exchanges[0].response_body is None

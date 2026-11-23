@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import typer
 
 from hermetic.history.models import RunRecord, summarize
@@ -59,9 +61,17 @@ class MarkdownSink:
         (self._dir / f"{record.run_id}.md").write_text(render_markdown(record), encoding="utf-8")
 
 
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def _printable(text: str) -> str:
+    """Escape control characters (ANSI, OSC) so target-controlled text cannot drive a terminal."""
+    return _CONTROL.sub(lambda m: f"\\x{ord(m.group()):02x}", text)
+
+
 class StdoutSink:
     def __init__(self, context: SinkContext) -> None:
         del context
 
     def publish(self, record: RunRecord) -> None:
-        typer.echo(render_markdown(record))
+        typer.echo(_printable(render_markdown(record)))

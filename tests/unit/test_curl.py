@@ -57,3 +57,8 @@ def test_an_incomplete_body_is_not_replayed() -> None:
     )
     assert "--data-raw" not in command
     assert command.endswith("not reproduced here")
+
+
+def test_placeholders_never_start_with_a_digit() -> None:
+    command = build_curl(_exchange(request_headers={"1-Token": REDACTED}, request_body=None))
+    assert '"1-Token: $H_1_TOKEN"' in command
