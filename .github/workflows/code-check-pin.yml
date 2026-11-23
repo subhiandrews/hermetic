@@ -100,11 +100,8 @@ jobs:
           git checkout -q -B "$BRANCH"
           git commit -q -am "ci: pin code-check to $TO"
 
-          # Scheduled runs repeat this work. Pushing an identical bump again would re-run CI on the
-          # open PR three times a day, so skip when the branch already holds this pin.
-          # Only the pin line is compared, not the whole tree: the tree also changes whenever
-          # anything unrelated merges to main, which would make an unchanged bump look new (and
-          # re-draft, force-push or reopen a PR for it). The PR merges just that line anyway.
+          # Skip when the branch already holds this pin, so repeat runs do not re-run CI. Compare only
+          # the pin line: the tree changes whenever unrelated work merges to main.
           remote_pin=""
           if git fetch --quiet --depth=1 "$url" "refs/heads/$BRANCH" 2>/dev/null; then
             remote_pin="$(git show FETCH_HEAD:.github/workflows/code-check.yml | grep -E '^[[:space:]]*code-check-ref:' | head -n1 || true)"
