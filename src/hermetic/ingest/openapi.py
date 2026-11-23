@@ -6,6 +6,7 @@ import datetime
 import hashlib
 import json
 import re
+import stat
 from collections.abc import Hashable
 from pathlib import Path
 from typing import Any, cast
@@ -117,9 +118,17 @@ class _UniqueKeyLoader(yaml.SafeLoader):
 def load_spec_file(path: Path) -> Json:
     """Read a JSON or YAML OpenAPI file into a dict of plain JSON types. Does not validate it."""
     try:
-        if path.stat().st_size > MAX_SPEC_BYTES:
+        # stat() raises for a missing or unreadable path (reported as "cannot read"); a device
+        # or FIFO reports size 0 and can be endless or block, so only regular files are read.
+        if not stat.S_ISREG(path.stat().st_mode):
+            raise IngestError(f"spec {path} is not a regular file")
+        with path.open("rb") as handle:
+            # The read is bounded, not just the size on disk: a file can grow after it is
+            # checked, and a size is only a claim.
+            raw = handle.read(MAX_SPEC_BYTES + 1)
+        if len(raw) > MAX_SPEC_BYTES:
             raise IngestError(f"spec {path} is larger than {MAX_SPEC_BYTES} bytes")
-        text = path.read_text(encoding="utf-8")
+        text = raw.decode("utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise IngestError(f"cannot read spec {path}: {exc}") from exc
     try:
@@ -240,7 +249,7 @@ def _synthesized_id(method: str, path: str) -> str:
     return f"{method}_{re.sub(r'[^a-zA-Z0-9]+', '_', path).strip('_')}"
 
 
-def _parameter_schema(raw: Json) -> tuple[Json, str | None]:
+def _parameter_schema(raw: Json) -> tuple[Json | bool, str | None]:
     """A parameter has either ``schema`` or a one-entry ``content`` map; return the schema
     and, for the ``content`` form, its media type."""
     if "schema" in raw:
@@ -272,7 +281,7 @@ def _parameters(path_level: list[Json], op_level: list[Json]) -> list[Parameter]
     return parameters
 
 
-def _content(raw: Json) -> dict[str, Json]:
+def _content(raw: Json) -> dict[str, Json | bool]:
     return {media: body.get("schema", {}) for media, body in raw.items()}
 
 

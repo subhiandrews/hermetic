@@ -1,5 +1,6 @@
 import contextlib
 import json
+import os
 import socket
 from pathlib import Path
 from typing import Any
@@ -7,6 +8,7 @@ from typing import Any
 import pytest
 import yaml
 
+import hermetic.ingest as ingest_module
 from hermetic.ingest import IngestError, ingest
 from hermetic.ingest import openapi as openapi_module
 from hermetic.ingest.openapi import (
@@ -54,6 +56,7 @@ def test_petstore_operation_details() -> None:
     assert add_pet.request_body is not None
     assert add_pet.request_body.required is True
     schema = add_pet.request_body.content["application/json"]
+    assert isinstance(schema, dict)
     assert "$ref" not in json.dumps(schema)  # references were inlined
     assert "name" in schema["properties"]
 
@@ -240,7 +243,9 @@ def test_yaml_dates_and_int_keys_are_normalised(tmp_path: Path) -> None:
     model = ingest(path)  # used to crash in canonical_hash with a TypeError
     (op,) = model.operations
     assert [r.status for r in op.responses] == ["200", "default"]
-    assert op.responses[0].content["application/json"]["example"] == "2024-01-01"
+    schema = op.responses[0].content["application/json"]
+    assert isinstance(schema, dict)
+    assert schema["example"] == "2024-01-01"
     assert len(model.spec_hash) == 64
 
 
@@ -346,7 +351,9 @@ def test_reference_fan_out_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_modest_fan_out_still_works() -> None:
     (op,) = build_operations(fan_out_spec(6))
-    assert op.responses[0].content["application/json"]["type"] == "object"
+    schema = op.responses[0].content["application/json"]
+    assert isinstance(schema, dict)
+    assert schema["type"] == "object"
 
 
 def test_deep_reference_chain_is_a_clean_error() -> None:
@@ -522,19 +529,85 @@ def test_fragment_hash_tracks_inherited_servers() -> None:
     assert after["get_c"] == before["get_c"]  # so do operation-level servers
 
 
-def test_oversized_spec_is_rejected_before_it_is_read(
+def test_oversized_spec_is_rejected_and_the_read_is_bounded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "big.yaml"
-    path.write_text("openapi: 3.0.3\n" + "# padding\n" * 50)
+    path.write_text("openapi: 3.0.3\n" + "# padding\n" * 5000)  # far over the limit
     monkeypatch.setattr(openapi_module, "MAX_SPEC_BYTES", 100)
+    requested: list[int] = []
+    real_open = Path.open
 
-    def must_not_read(self: Path, *args: Any, **kwargs: Any) -> str:
-        raise AssertionError("the file was read into memory")
+    class SpyFile:
+        def __init__(self, inner: Any) -> None:
+            self._inner = inner
 
-    monkeypatch.setattr(Path, "read_text", must_not_read)
+        def __enter__(self) -> "SpyFile":
+            return self
+
+        def __exit__(self, *exc: Any) -> None:
+            self._inner.close()
+
+        def read(self, size: int = -1) -> bytes:
+            requested.append(size)
+            return bytes(self._inner.read(size))
+
+    def spy_open(self: Path, *args: Any, **kwargs: Any) -> SpyFile:
+        return SpyFile(real_open(self, *args, **kwargs))
+
+    monkeypatch.setattr(Path, "open", spy_open)
     with pytest.raises(IngestError, match="larger than 100 bytes"):
         load_spec_file(path)
+    # asked for one byte more than the limit, never "everything": a size on disk can lie
+    assert requested == [101]
+
+
+def test_directory_is_not_a_spec(tmp_path: Path) -> None:
+    with pytest.raises(IngestError, match="not a regular file"):
+        load_spec_file(tmp_path)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs POSIX named pipes")
+def test_named_pipe_is_rejected_instead_of_blocking(tmp_path: Path) -> None:
+    pipe = tmp_path / "spec.yaml"
+    os.mkfifo(pipe)  # opening it for reading would wait forever for a writer
+    with pytest.raises(IngestError, match="not a regular file"):
+        load_spec_file(pipe)
+
+
+def test_boolean_schemas_are_kept_in_openapi_31(tmp_path: Path) -> None:
+    spec = {
+        "openapi": "3.1.0",
+        "info": {"title": "T", "version": "1"},
+        "paths": {
+            "/a": {
+                "post": {
+                    "parameters": [{"name": "q", "in": "query", "schema": True}],
+                    "requestBody": {"content": {"application/json": {"schema": False}}},
+                    "responses": {
+                        "200": {"description": "ok", "content": {"text/plain": {"schema": True}}}
+                    },
+                }
+            }
+        },
+    }
+    path = tmp_path / "api.json"
+    path.write_text(json.dumps(spec))
+    (op,) = ingest(path).operations
+    assert op.parameters[0].json_schema is True
+    assert op.request_body is not None
+    assert op.request_body.content["application/json"] is False
+    assert op.responses[0].content["text/plain"] is True
+
+
+def test_model_construction_failures_become_ingest_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "api.json"
+    path.write_text(json.dumps(make_spec({"/a": {"get": {"responses": OK}}})))
+    monkeypatch.setattr(ingest_module, "build_operations", lambda spec: [object()])
+    with pytest.raises(IngestError, match="does not fit the service model"):
+        ingest(path)
 
 
 def test_deref_percent_decodes_pointer_segments() -> None:

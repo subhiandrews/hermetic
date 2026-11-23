@@ -22,7 +22,7 @@ class Parameter(_Frozen):
     name: str
     location: Literal["path", "query", "header", "cookie"]
     required: bool
-    json_schema: Json
+    json_schema: Json | bool  # OpenAPI 3.1 allows the boolean schemas true and false
     # Set when the parameter is described with `content` instead of `schema` (valid OpenAPI);
     # json_schema then holds that media type's schema.
     media_type: str | None = None
@@ -30,14 +30,14 @@ class Parameter(_Frozen):
 
 class RequestBody(_Frozen):
     required: bool
-    # media type -> JSON schema (references already resolved)
-    content: dict[str, Json]
+    # media type -> JSON schema (references already resolved; may be a boolean in 3.1)
+    content: dict[str, Json | bool]
 
 
 class Response(_Frozen):
     status: str  # "200", "404", "default", ...
     description: str
-    content: dict[str, Json]
+    content: dict[str, Json | bool]
 
 
 class Operation(_Frozen):
