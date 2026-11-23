@@ -1,0 +1,94 @@
+name: code-check-pin
+
+# Opens a PR when `code-check-ref` in code-check.yml is behind the newest code-check release tag.
+# It never merges anything: review and merge the PR it opens.
+on:
+  schedule:
+    # 06:00, 12:00 and 18:00 Pacific Standard Time (UTC-8). Cron is UTC only, so on the clock
+    # these run an hour later in summer (Pacific Daylight Time). Runs can start a few minutes late.
+    - cron: "0 2,14,20 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: code-check-pin
+  cancel-in-progress: false
+
+jobs:
+  pin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      SOURCE: subhiandrews/codecheck
+      BRANCH: bot/code-check-pin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Bump the pin when a newer release exists
+        id: bump
+        env:
+          GH_TOKEN: ${{ github.token }} # read-only: lists the public tags of the source repository
+        run: |
+          set -euo pipefail
+          workflow=.github/workflows/code-check.yml
+          tag_re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          current="$(sed -nE 's/^[[:space:]]*code-check-ref:[[:space:]]*([^[:space:]#]+).*$/\1/p' "$workflow" | head -n1)"
+          newest="$(gh api "repos/${SOURCE}/tags" --paginate --jq '.[].name' | grep -E "$tag_re" | sort -V | tail -n1 || true)"
+          echo "pinned: ${current:-none}, newest: ${newest:-none}"
+          action=none
+          if [ -z "$current" ] || ! grep -qE "$tag_re" <<<"$current"; then
+            echo "::notice::the pin is not a plain vX.Y.Z tag, so it is left alone"
+          elif [ -z "$newest" ]; then
+            echo "::warning::no release tags found in ${SOURCE}"
+          elif [ "$current" != "$newest" ] && [ "$(printf '%s\n%s\n' "$current" "$newest" | sort -V | tail -n1)" = "$newest" ]; then
+            # only a strictly newer tag replaces the pin, so this can never downgrade it
+            sed -i -E "s|^([[:space:]]*code-check-ref:[[:space:]]*)[^[:space:]#]+|\1${newest}|" "$workflow"
+            action=bump
+          fi
+          {
+            echo "action=$action"
+            echo "from=$current"
+            echo "to=$newest"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Commit, push and open or update the PR
+        if: steps.bump.outputs.action == 'bump'
+        env:
+          # A fine-grained PAT (or app token) with Contents, Pull requests and Workflows write on
+          # this repository. The default GITHUB_TOKEN cannot push changes under .github/workflows,
+          # and a PR it opens would not trigger CI or the code-check review.
+          GH_TOKEN: ${{ secrets.CI_PIN_BOT_TOKEN }}
+          REPO: ${{ github.repository }}
+          FROM: ${{ steps.bump.outputs.from }}
+          TO: ${{ steps.bump.outputs.to }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::A bump needs the repository secret CI_PIN_BOT_TOKEN (fine-grained PAT or app token with Contents, Pull requests and Workflows write)."
+            exit 1
+          fi
+          url="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git commit -am "ci: pin code-check to $TO"
+          expect="$(git ls-remote "$url" "refs/heads/$BRANCH" | cut -f1)"
+          git push --force-with-lease="refs/heads/$BRANCH:$expect" "$url" "HEAD:refs/heads/$BRANCH"
+          body="Bot-made. CI reviews pull requests with code-check \`$FROM\`; the newest release is \`$TO\`, so this moves \`code-check-ref\` in \`.github/workflows/code-check.yml\` from \`$FROM\` to \`$TO\`.
+
+          Release: https://github.com/${SOURCE}/releases/tag/${TO}
+          Changes: https://github.com/${SOURCE}/compare/${FROM}...${TO}
+
+          Opened by \`.github/workflows/code-check-pin.yml\`. Not auto-merged: review and merge it."
+          existing="$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --repo "$REPO" --title "ci: pin code-check to $TO" --body "$body"
+          else
+            gh pr create --repo "$REPO" --base main --head "$BRANCH" --title "ci: pin code-check to $TO" --body "$body"
+          fi
