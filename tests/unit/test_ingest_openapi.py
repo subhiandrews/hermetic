@@ -518,3 +518,43 @@ def test_fragment_hash_tracks_inherited_servers() -> None:
     assert after["get_a"] != before["get_a"]  # inherits the changed document-level server
     assert after["get_b"] == before["get_b"]  # path-item servers override it
     assert after["get_c"] == before["get_c"]  # so do operation-level servers
+
+
+def test_oversized_spec_is_rejected_before_it_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "big.yaml"
+    path.write_text("openapi: 3.0.3\n" + "# padding\n" * 50)
+    monkeypatch.setattr(openapi_module, "MAX_SPEC_BYTES", 100)
+
+    def must_not_read(self: Path, *args: Any, **kwargs: Any) -> str:
+        raise AssertionError("the file was read into memory")
+
+    monkeypatch.setattr(Path, "read_text", must_not_read)
+    with pytest.raises(IngestError, match="larger than 100 bytes"):
+        load_spec_file(path)
+
+
+def test_deref_percent_decodes_pointer_segments() -> None:
+    root = {"components": {"schemas": {"Foo Bar": {"type": "string"}}}, "paths": {"/a/{id}": 1}}
+    assert deref({"$ref": "#/components/schemas/Foo%20Bar"}, root) == {"type": "string"}
+    assert deref({"$ref": "#/paths/~1a~1%7Bid%7D"}, root) == 1
+
+
+def test_percent_encoded_reference_ingests_end_to_end(tmp_path: Path) -> None:
+    schema = {"$ref": "#/components/schemas/Foo%20Bar"}
+    content = {"application/json": {"schema": schema}}
+    spec = make_spec(
+        {"/a": {"get": {"responses": {"200": {"description": "ok", "content": content}}}}},
+        components={"schemas": {"Foo Bar": {"type": "string"}}},
+    )
+    path = tmp_path / "api.json"
+    path.write_text(json.dumps(spec))
+    (op,) = ingest(path).operations
+    assert op.responses[0].content["application/json"] == {"type": "string"}
+
+
+def test_self_referencing_path_item_is_an_error() -> None:
+    spec = make_spec({"/a": {"$ref": "#/paths/~1a"}})
+    with pytest.raises(IngestError, match="path item references itself"):
+        build_operations(spec)

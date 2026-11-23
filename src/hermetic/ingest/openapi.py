@@ -8,6 +8,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import unquote
 
 import yaml
 from openapi_spec_validator import validate
@@ -22,6 +23,7 @@ HTTP_METHODS = ("get", "put", "post", "delete", "options", "head", "patch", "tra
 
 # Node caps. A few KB of YAML can expand into billions of nodes (alias bombs, or schemas that
 # reference each other with fan-out), so every traversal that copies the document is bounded.
+MAX_SPEC_BYTES = 25_000_000  # the spec file, checked before it is read into memory
 MAX_SPEC_NODES = 1_000_000  # the whole document, after YAML aliases are expanded
 MAX_EXPANDED_NODES = 500_000  # one path item, after its $refs are inlined
 MAX_TOTAL_EXPANDED_NODES = 2_000_000  # all path items together: bounds total memory
@@ -82,6 +84,8 @@ def _normalise(node: Any, budget: _Budget) -> Any:
 def load_spec_file(path: Path) -> Json:
     """Read a JSON or YAML OpenAPI file into a dict of plain JSON types. Does not validate it."""
     try:
+        if path.stat().st_size > MAX_SPEC_BYTES:
+            raise IngestError(f"spec {path} is larger than {MAX_SPEC_BYTES} bytes")
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise IngestError(f"cannot read spec {path}: {exc}") from exc
@@ -134,7 +138,8 @@ def validate_spec(spec: Json) -> None:
 
 def _resolve_pointer(root: Json, ref: str) -> Any:
     node: Any = root
-    for part in ref[2:].split("/"):
+    # A $ref is a URI fragment (RFC 6901 section 6): percent-decode it, then split.
+    for part in unquote(ref[2:]).split("/"):
         key = part.replace("~1", "/").replace("~0", "~")
         if isinstance(node, dict) and key in node:
             node = node[key]
@@ -251,6 +256,8 @@ def build_operations(spec: Json) -> list[Operation]:
             )
         except RecursionError as exc:
             raise IngestError(f"{path}: references are nested too deeply") from exc
+        if "$ref" in item:  # deref leaves a reference only where it would loop forever
+            raise IngestError(f"{path}: path item references itself")
         for method in HTTP_METHODS:
             if method not in item:
                 continue
