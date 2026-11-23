@@ -133,7 +133,7 @@ def load_spec_file(path: Path) -> Json:
             raw = handle.read(MAX_SPEC_BYTES + 1)
         if len(raw) > MAX_SPEC_BYTES:
             raise IngestError(f"spec {path} is larger than {MAX_SPEC_BYTES} bytes")
-        text = raw.decode("utf-8")
+        text = raw.decode("utf-8-sig")  # tolerate the BOM some editors add; json.loads rejects it
     except (OSError, UnicodeDecodeError) as exc:
         raise IngestError(f"cannot read spec {path}: {exc}") from exc
     try:
@@ -306,11 +306,12 @@ def _resolve_security_schemes(spec: Json, total: _Budget) -> Json:
         raise IngestError("security schemes: references are nested too deeply") from exc
 
 
-def _security_schemes(schemes: Json, security: list[dict[str, list[str]]]) -> Json:
-    """The resolved definitions of the schemes an operation's requirements name. Only those:
-    changing an unrelated scheme must not mark every operation."""
+def _security_schemes(digests: dict[str, str], security: list[dict[str, list[str]]]) -> Json:
+    """Digests of the schemes an operation's requirements name. Only those: changing an
+    unrelated scheme must not mark every operation. Digests, not definitions, because each
+    scheme is hashed once instead of once per operation that names it."""
     names = sorted({name for requirement in security for name in requirement})
-    return {name: schemes[name] for name in names if name in schemes}
+    return {name: digests[name] for name in names if name in digests}
 
 
 def build_operations(spec: Json) -> list[Operation]:
@@ -320,6 +321,7 @@ def build_operations(spec: Json) -> list[Operation]:
     default_security = spec.get("security", [])
     total = _Budget(MAX_TOTAL_EXPANDED_NODES, "document after inlining references")
     schemes = _resolve_security_schemes(spec, total)
+    scheme_digests = {name: canonical_hash(definition) for name, definition in schemes.items()}
     for path, raw_item in spec.get("paths", {}).items():
         if not path.startswith("/"):
             continue  # a specification extension (`x-...`), not a path item
@@ -382,7 +384,7 @@ def build_operations(spec: Json) -> list[Operation]:
                             # What the operation inherits also decides its behaviour: the
                             # document-level defaults and the schemes it uses.
                             "security": security,
-                            "security_schemes": _security_schemes(schemes, security),
+                            "security_schemes": _security_schemes(scheme_digests, security),
                             "servers": servers,
                         }
                     ),

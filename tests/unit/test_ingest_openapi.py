@@ -775,6 +775,30 @@ def test_sibling_only_edit_changes_the_hash_in_31_but_not_in_30() -> None:
     assert hash_for("3.0.3", "one") == hash_for("3.0.3", "two")  # ignored by the spec
 
 
+def test_each_security_scheme_is_hashed_once_not_per_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = auth_spec()
+    spec["paths"] = {f"/p{i}": {"get": {"responses": OK}} for i in range(10)}  # all inherit "key"
+    key_definition = spec["components"]["securitySchemes"]["key"]
+    hashed: list[Any] = []
+    real_hash = canonical_hash
+
+    def counting(value: Any) -> str:
+        hashed.append(value)
+        return real_hash(value)
+
+    monkeypatch.setattr(openapi_module, "canonical_hash", counting)
+    assert len(build_operations(spec)) == 10
+    assert hashed.count(key_definition) == 1  # not 10
+
+
+def test_json_with_a_byte_order_mark_is_accepted(tmp_path: Path) -> None:
+    path = tmp_path / "bom.json"
+    path.write_bytes(b"\xef\xbb\xbf" + json.dumps({"a": 1}).encode())
+    assert load_spec_file(path) == {"a": 1}
+
+
 @pytest.mark.parametrize(
     ("name", "text"),
     [
