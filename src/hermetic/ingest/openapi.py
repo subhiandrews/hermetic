@@ -57,11 +57,19 @@ def canonical_hash(value: Any) -> str:
 
 
 def _normalise(node: Any, budget: _Budget) -> Any:
-    """Turn what YAML can produce into plain JSON types: keys become strings (``200:`` next
-    to ``default:``), dates become ISO strings, anything else non-JSON is rejected."""
+    """Turn what YAML can produce into plain JSON types: integer keys become strings (``200:``
+    next to ``default:``), dates become ISO strings, anything else non-JSON is rejected.
+
+    Other non-string keys are rejected rather than converted: YAML 1.1 reads ``on``, ``yes``
+    and ``null`` as booleans and None, and ``str()`` would silently rename them."""
     budget.spend()
     if isinstance(node, dict):
-        return {str(key): _normalise(value, budget) for key, value in node.items()}
+        normalised: dict[str, Any] = {}
+        for key, value in node.items():
+            if isinstance(key, bool) or not isinstance(key, str | int):
+                raise IngestError(f"unsupported key {key!r} in spec; quote it to use it as text")
+            normalised[str(key)] = _normalise(value, budget)
+        return normalised
     if isinstance(node, list):
         return [_normalise(value, budget) for value in node]
     if isinstance(node, datetime.date):  # datetime.datetime is a subclass
@@ -82,7 +90,9 @@ def load_spec_file(path: Path) -> Json:
         if not isinstance(data, dict):
             raise IngestError(f"spec {path} must be a JSON/YAML object at the top level")
         normalised: Json = _normalise(data, _Budget(MAX_SPEC_NODES, "spec"))
-    except (json.JSONDecodeError, yaml.YAMLError, RecursionError) as exc:
+    except (ValueError, yaml.YAMLError, RecursionError) as exc:
+        # ValueError covers JSONDecodeError and also an integer literal over Python's
+        # 4300-digit limit, which both parsers raise as a plain ValueError.
         raise IngestError(f"cannot parse spec {path}: {exc}") from exc
     return normalised
 
@@ -184,6 +194,14 @@ def _content(raw: Json) -> dict[str, Json]:
     return {media: body.get("schema", {}) for media, body in raw.items()}
 
 
+def _security_schemes(spec: Json, security: list[dict[str, list[str]]]) -> Json:
+    """Definitions of the security schemes an operation's requirements name, references
+    resolved. Only those: changing an unrelated scheme must not mark every operation."""
+    defined = spec.get("components", {}).get("securitySchemes", {})
+    names = sorted({name for requirement in security for name in requirement})
+    return {name: deref(defined[name], spec) for name in names if name in defined}
+
+
 def build_operations(spec: Json) -> list[Operation]:
     """One Operation per path+method, in document order, with references resolved."""
     operations: list[Operation] = []
@@ -209,6 +227,7 @@ def build_operations(spec: Json) -> list[Operation]:
             if op_id in seen_ids:
                 raise IngestError(f"duplicate operationId {op_id!r} ({method.upper()} {path})")
             seen_ids.add(op_id)
+            security = raw.get("security", default_security)
             body = raw.get("requestBody")
             operations.append(
                 Operation(
@@ -237,13 +256,17 @@ def build_operations(spec: Json) -> list[Operation]:
                         for status, resp in raw.get("responses", {}).items()
                         if not status.startswith("x-")  # specification extension
                     ],
-                    security=raw.get("security", default_security),
+                    security=security,
                     fragment_hash=canonical_hash(
                         {
                             "method": method,
                             "path": path,
                             "path_parameters": item.get("parameters", []),
                             "operation": raw,
+                            # What the operation inherits also decides its behaviour: the
+                            # document-level default and the definitions of the schemes it uses.
+                            "security": security,
+                            "security_schemes": _security_schemes(spec, security),
                         }
                     ),
                 )

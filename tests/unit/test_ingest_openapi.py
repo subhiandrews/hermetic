@@ -389,3 +389,68 @@ def test_validator_crash_on_scalar_extension_is_a_clean_error(value: Any) -> Non
         validate_spec(spec)
     (op,) = build_operations(spec)  # the builder itself skips the extension
     assert op.path == "/a"
+
+
+@pytest.mark.parametrize("key", ["on", "yes", "null", "~"])
+def test_yaml_keyword_keys_are_rejected_not_renamed(tmp_path: Path, key: str) -> None:
+    path = tmp_path / "x.yaml"
+    path.write_text(f"{key}: 1\n")  # YAML 1.1 reads these as True / None
+    with pytest.raises(IngestError, match="quote it"):
+        load_spec_file(path)
+
+
+def test_quoted_keyword_keys_stay_text(tmp_path: Path) -> None:
+    path = tmp_path / "x.yaml"
+    path.write_text('"on": 1\n"null": 2\n404: 3\n')
+    assert load_spec_file(path) == {"on": 1, "null": 2, "404": 3}
+
+
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [("a.json", '{"a": ' + "1" * 5000 + "}"), ("a.yaml", "a: " + "1" * 5000)],
+)
+def test_huge_integer_literals_are_a_clean_error(tmp_path: Path, name: str, text: str) -> None:
+    path = tmp_path / name
+    path.write_text(text)  # int() refuses more than 4300 digits with a plain ValueError
+    with pytest.raises(IngestError, match="cannot parse spec"):
+        load_spec_file(path)
+
+
+def auth_spec() -> dict[str, Any]:
+    scheme = {"type": "apiKey", "in": "header"}
+    return make_spec(
+        {
+            "/a": {"get": {"responses": OK}},  # inherits the document-level security
+            "/b": {"get": {"responses": OK, "security": []}},  # opts out
+        },
+        security=[{"key": []}],
+        components={
+            "securitySchemes": {"key": {**scheme, "name": "k"}, "unused": {**scheme, "name": "u"}}
+        },
+    )
+
+
+def test_fragment_hash_tracks_inherited_security() -> None:
+    base = fragment_hashes(auth_spec())
+
+    default_changed = auth_spec()
+    default_changed["security"] = [{"unused": []}]
+    after = fragment_hashes(default_changed)
+    assert after["get_a"] != base["get_a"]  # inherits the changed default
+    assert after["get_b"] == base["get_b"]  # explicit security is untouched
+
+    scheme_changed = auth_spec()
+    scheme_changed["components"]["securitySchemes"]["key"]["name"] = "renamed"
+    after = fragment_hashes(scheme_changed)
+    assert after["get_a"] != base["get_a"]  # the scheme it uses changed
+    assert after["get_b"] == base["get_b"]
+
+    unrelated = auth_spec()
+    unrelated["components"]["securitySchemes"]["unused"]["name"] = "renamed"
+    assert fragment_hashes(unrelated) == base  # a scheme nobody uses marks nothing
+
+
+def test_security_requirement_naming_an_undefined_scheme_is_tolerated() -> None:
+    spec = auth_spec()
+    spec["security"] = [{"missing": []}]
+    assert fragment_hashes(spec)["get_a"]  # hashed without a definition, no crash
