@@ -13,12 +13,65 @@ from hermetic.ingest.docs import MAX_DOC_BYTES, load_docs
 def test_unreadable_doc_is_a_clean_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "a.md").write_text("x")
 
-    def denied(self: Path, *args: Any, **kwargs: Any) -> str:
+    def denied(*args: Any, **kwargs: Any) -> int:
         raise PermissionError("denied")
 
-    monkeypatch.setattr(Path, "read_text", denied)
+    monkeypatch.setattr(os, "open", denied)
     with pytest.raises(IngestError, match=r"cannot read doc a\.md"):
         load_docs(tmp_path)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs POSIX named pipes")
+def test_pipe_swapped_in_after_listing_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pipe = tmp_path / "swapped.md"
+    os.mkfifo(pipe)  # what a file could be replaced with between listing and reading
+    monkeypatch.setattr(docs_module, "_candidates", lambda root: [pipe])
+    with pytest.raises(IngestError, match=r"swapped\.md is not a regular file"):
+        load_docs(tmp_path)  # returns instead of blocking on the pipe
+
+
+def test_symlink_swapped_in_after_listing_is_not_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "real.md").write_text("elsewhere")
+    link = tmp_path / "link.md"
+    link.symlink_to(tmp_path / "real.md")
+    monkeypatch.setattr(docs_module, "_candidates", lambda root: [link])
+    with pytest.raises(IngestError, match=r"cannot read doc link\.md"):
+        load_docs(tmp_path)
+
+
+def test_doc_read_is_bounded_not_trusting_the_size_on_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "grown.md").write_text("x" * 500)
+    monkeypatch.setattr(docs_module, "MAX_DOC_BYTES", 50)
+    requested: list[int] = []
+    real_fdopen = os.fdopen
+
+    class SpyFile:
+        def __init__(self, inner: Any) -> None:
+            self._inner = inner
+
+        def __enter__(self) -> "SpyFile":
+            return self
+
+        def __exit__(self, *exc: Any) -> None:
+            self._inner.close()
+
+        def fileno(self) -> int:
+            return int(self._inner.fileno())
+
+        def read(self, size: int = -1) -> bytes:
+            requested.append(size)
+            return bytes(self._inner.read(size))
+
+    monkeypatch.setattr(os, "fdopen", lambda *a, **k: SpyFile(real_fdopen(*a, **k)))
+    with pytest.raises(IngestError, match="larger than 50 bytes"):
+        load_docs(tmp_path)
+    assert requested == [51]  # one byte more than the limit, never "everything"
 
 
 def test_unlistable_directory_is_a_clean_error(

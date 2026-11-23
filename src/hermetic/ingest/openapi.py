@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import math
 import re
 import stat
 from collections.abc import Hashable
@@ -26,7 +27,7 @@ HTTP_METHODS = ("get", "put", "post", "delete", "options", "head", "patch", "tra
 
 # Node caps. A few KB of YAML can expand into billions of nodes (alias bombs, or schemas that
 # reference each other with fan-out), so every traversal that copies the document is bounded.
-MAX_SPEC_BYTES = 25_000_000  # the spec file, checked before it is read into memory
+MAX_SPEC_BYTES = 25_000_000  # the spec file; the read itself is capped at this size + 1 byte
 MAX_SPEC_NODES = 1_000_000  # the whole document, after YAML aliases are expanded
 MAX_EXPANDED_NODES = 500_000  # one path item, after its $refs are inlined
 MAX_TOTAL_EXPANDED_NODES = 2_000_000  # all path items together: bounds total memory
@@ -82,6 +83,10 @@ def _normalise(node: Any, budget: _Budget) -> Any:
         return [_normalise(value, budget) for value in node]
     if isinstance(node, datetime.date):  # datetime.datetime is a subclass
         return node.isoformat()
+    if isinstance(node, float) and not math.isfinite(node):
+        # YAML `.nan` / `.inf` and JSON NaN / Infinity load as floats, but JSON cannot
+        # represent them: the hash would emit invalid tokens and the printed model `null`.
+        raise IngestError("unsupported number (NaN or infinity) in spec")
     if node is None or isinstance(node, str | int | float | bool):
         return node
     raise IngestError(f"unsupported value of type {type(node).__name__} in spec")

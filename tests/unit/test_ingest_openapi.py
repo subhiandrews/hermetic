@@ -773,3 +773,20 @@ def test_sibling_only_edit_changes_the_hash_in_31_but_not_in_30() -> None:
 
     assert hash_for("3.1.0", "one") != hash_for("3.1.0", "two")  # siblings are meaningful
     assert hash_for("3.0.3", "one") == hash_for("3.0.3", "two")  # ignored by the spec
+
+
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [
+        ("a.yaml", "x: .nan\n"),
+        ("a.yaml", "x: .inf\n"),
+        ("a.yaml", "x: -.inf\n"),
+        ("a.json", '{"x": NaN}'),
+        ("a.json", '{"x": Infinity}'),
+    ],
+)
+def test_non_finite_numbers_are_rejected(tmp_path: Path, name: str, text: str) -> None:
+    path = tmp_path / name
+    path.write_text(text)  # both parsers accept these; JSON cannot represent them
+    with pytest.raises(IngestError, match="NaN or infinity"):
+        load_spec_file(path)
