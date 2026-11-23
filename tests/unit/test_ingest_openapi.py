@@ -6,6 +6,7 @@ import pytest
 import yaml
 
 from hermetic.ingest import IngestError, ingest
+from hermetic.ingest import openapi as openapi_module
 from hermetic.ingest.openapi import (
     build_operations,
     canonical_hash,
@@ -211,3 +212,146 @@ def test_operation_without_body_and_non_method_keys_ignored() -> None:
     (op,) = build_operations(spec)
     assert op.request_body is None
     assert op.tags == []
+
+
+# --- hostile and awkward input ----------------------------------------------------------
+
+YAML_WITH_DATES_AND_INT_KEYS = """
+openapi: 3.0.3
+info: {title: T, version: '1'}
+paths:
+  /a:
+    get:
+      responses:
+        200:
+          description: ok
+          content:
+            application/json:
+              schema: {type: string, example: 2024-01-01}
+        default: {description: error}
+"""
+
+
+def test_yaml_dates_and_int_keys_are_normalised(tmp_path: Path) -> None:
+    path = tmp_path / "api.yaml"
+    path.write_text(YAML_WITH_DATES_AND_INT_KEYS)
+    model = ingest(path)  # used to crash in canonical_hash with a TypeError
+    (op,) = model.operations
+    assert [r.status for r in op.responses] == ["200", "default"]
+    assert op.responses[0].content["application/json"]["example"] == "2024-01-01"
+    assert len(model.spec_hash) == 64
+
+
+def test_yaml_datetimes_become_iso_strings(tmp_path: Path) -> None:
+    path = tmp_path / "x.yaml"
+    path.write_text("when: 2024-01-01 10:30:00\n")
+    assert load_spec_file(path) == {"when": "2024-01-01T10:30:00"}
+
+
+@pytest.mark.parametrize("tag", ["!!binary aGk=", "!!set {a, b}"])
+def test_non_json_yaml_values_are_rejected(tmp_path: Path, tag: str) -> None:
+    path = tmp_path / "x.yaml"
+    path.write_text(f"value: {tag}\n")
+    with pytest.raises(IngestError, match="unsupported value"):
+        load_spec_file(path)
+
+
+def test_yaml_alias_bomb_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(openapi_module, "MAX_SPEC_NODES", 10_000)
+    lines = ["l0: &l0 [x, x, x, x, x, x, x, x, x, x]"]
+    for level in range(1, 8):  # each level is 10 references to the previous one
+        refs = ", ".join([f"*l{level - 1}"] * 10)
+        lines.append(f"l{level}: &l{level} [{refs}]")
+    path = tmp_path / "bomb.yaml"
+    path.write_text("\n".join(lines) + "\n")
+    with pytest.raises(IngestError, match="too large"):
+        load_spec_file(path)
+
+
+def test_deeply_nested_document_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "deep.json"
+    path.write_text("[" * 20_000 + "]" * 20_000)
+    with pytest.raises(IngestError, match="cannot parse spec"):
+        load_spec_file(path)
+
+
+def test_canonical_hash_reports_unhashable_values() -> None:
+    circular: dict[str, Any] = {}
+    circular["self"] = circular
+    deep: Any = []
+    for _ in range(20_000):  # above the C JSON encoder's recursion limit
+        deep = [deep]
+    for bad in ({"a": object()}, {1: "a", "b": 2}, circular, deep):
+        with pytest.raises(IngestError, match="cannot hash document"):
+            canonical_hash(bad)
+
+
+@pytest.mark.parametrize(
+    "ref", ["file:///etc/hostname", "http://127.0.0.1:9/x.yaml#/A", "other.yaml"]
+)
+def test_external_refs_are_rejected_before_the_validator_runs(
+    ref: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def must_not_run(spec: Any) -> None:
+        raise AssertionError("the validator would have resolved the reference")
+
+    monkeypatch.setattr(openapi_module, "validate", must_not_run)
+    schema = {"allOf": [{"$ref": ref}]}  # nested inside a list
+    content = {"application/json": {"schema": schema}}
+    spec = make_spec(
+        {"/a": {"get": {"responses": {"200": {"description": "ok", "content": content}}}}}
+    )
+    with pytest.raises(IngestError, match="only local"):
+        validate_spec(spec)
+
+
+def test_unresolvable_local_ref_is_a_clean_error() -> None:
+    schema = {"$ref": "#/components/schemas/Nope"}
+    content = {"application/json": {"schema": schema}}
+    spec = make_spec(
+        {"/a": {"get": {"responses": {"200": {"description": "ok", "content": content}}}}}
+    )
+    with pytest.raises(IngestError, match="invalid OpenAPI document"):
+        validate_spec(spec)
+
+
+def test_validator_recursion_error_is_a_clean_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def too_deep(spec: Any) -> None:
+        raise RecursionError
+
+    monkeypatch.setattr(openapi_module, "validate", too_deep)
+    with pytest.raises(IngestError, match="invalid OpenAPI document"):
+        validate_spec(make_spec({}))
+
+
+def fan_out_spec(levels: int) -> dict[str, Any]:
+    """Each schema references the previous one twice, so inlining doubles at every level."""
+    schemas: dict[str, Any] = {"S0": {"type": "string"}}
+    for i in range(1, levels):
+        prev = {"$ref": f"#/components/schemas/S{i - 1}"}
+        schemas[f"S{i}"] = {"type": "object", "properties": {"a": prev, "b": prev}}
+    schema = {"$ref": f"#/components/schemas/S{levels - 1}"}
+    content = {"application/json": {"schema": schema}}
+    paths = {"/a": {"get": {"responses": {"200": {"description": "ok", "content": content}}}}}
+    return make_spec(paths, components={"schemas": schemas})
+
+
+def test_reference_fan_out_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(openapi_module, "MAX_EXPANDED_NODES", 5_000)
+    with pytest.raises(IngestError, match="too large"):
+        build_operations(fan_out_spec(30))  # would expand to about 2**30 nodes
+
+
+def test_modest_fan_out_still_works() -> None:
+    (op,) = build_operations(fan_out_spec(6))
+    assert op.responses[0].content["application/json"]["type"] == "object"
+
+
+def test_deep_reference_chain_is_a_clean_error() -> None:
+    schemas: dict[str, Any] = {"S2000": {"type": "string"}}
+    for i in range(2000):
+        schemas[f"S{i}"] = {"properties": {"x": {"$ref": f"#/components/schemas/S{i + 1}"}}}
+    content = {"application/json": {"schema": {"$ref": "#/components/schemas/S0"}}}
+    paths = {"/a": {"get": {"responses": {"200": {"description": "ok", "content": content}}}}}
+    with pytest.raises(IngestError, match="nested too deeply"):
+        build_operations(make_spec(paths, components={"schemas": schemas}))

@@ -2,41 +2,100 @@
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import re
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import yaml
 from openapi_spec_validator import validate
+from openapi_spec_validator.exceptions import OpenAPISpecValidatorError
 from openapi_spec_validator.validation.exceptions import OpenAPIValidationError
+from referencing.exceptions import Unresolvable
 
 from hermetic.ingest.errors import IngestError
 from hermetic.ingest.models import Json, Operation, Parameter, RequestBody, Response
 
 HTTP_METHODS = ("get", "put", "post", "delete", "options", "head", "patch", "trace")
 
+# Node caps. A few KB of YAML can expand into billions of nodes (alias bombs, or schemas that
+# reference each other with fan-out), so every traversal that copies the document is bounded.
+MAX_SPEC_NODES = 1_000_000  # the whole document, after YAML aliases are expanded
+MAX_EXPANDED_NODES = 500_000  # one path item, after its $refs are inlined
+
+
+class _Budget:
+    def __init__(self, limit: int, what: str) -> None:
+        self._limit = limit
+        self._left = limit
+        self._what = what
+
+    def spend(self) -> None:
+        self._left -= 1
+        if self._left < 0:
+            raise IngestError(
+                f"{self._what} is too large or has too much shared structure "
+                f"(more than {self._limit} nodes)"
+            )
+
 
 def canonical_hash(value: Any) -> str:
     """SHA-256 of a JSON-serialisable value, independent of key order and formatting."""
-    blob = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    try:
+        blob = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise IngestError(f"cannot hash document: {exc}") from exc
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+def _normalise(node: Any, budget: _Budget) -> Any:
+    """Turn what YAML can produce into plain JSON types: keys become strings (``200:`` next
+    to ``default:``), dates become ISO strings, anything else non-JSON is rejected."""
+    budget.spend()
+    if isinstance(node, dict):
+        return {str(key): _normalise(value, budget) for key, value in node.items()}
+    if isinstance(node, list):
+        return [_normalise(value, budget) for value in node]
+    if isinstance(node, datetime.date):  # datetime.datetime is a subclass
+        return node.isoformat()
+    if node is None or isinstance(node, str | int | float | bool):
+        return node
+    raise IngestError(f"unsupported value of type {type(node).__name__} in spec")
+
+
 def load_spec_file(path: Path) -> Json:
-    """Read a JSON or YAML OpenAPI file into a dict. Does not validate it."""
+    """Read a JSON or YAML OpenAPI file into a dict of plain JSON types. Does not validate it."""
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise IngestError(f"cannot read spec {path}: {exc}") from exc
     try:
         data = json.loads(text) if path.suffix.lower() == ".json" else yaml.safe_load(text)
-    except (json.JSONDecodeError, yaml.YAMLError) as exc:
+        if not isinstance(data, dict):
+            raise IngestError(f"spec {path} must be a JSON/YAML object at the top level")
+        normalised: Json = _normalise(data, _Budget(MAX_SPEC_NODES, "spec"))
+    except (json.JSONDecodeError, yaml.YAMLError, RecursionError) as exc:
         raise IngestError(f"cannot parse spec {path}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise IngestError(f"spec {path} must be a JSON/YAML object at the top level")
-    return cast(Json, data)
+    return normalised
+
+
+def _reject_external_refs(spec: Json) -> None:
+    """Refuse any ``$ref`` that is not a local ``#/...`` pointer. This must run before the
+    validator, whose resolver would otherwise fetch http(s) URLs or read local files."""
+    stack: list[Any] = [spec]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and not ref.startswith("#/"):
+                raise IngestError(
+                    f"unsupported $ref {ref!r}: only local '#/...' references are supported"
+                )
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
 
 
 def validate_spec(spec: Json) -> None:
@@ -44,9 +103,10 @@ def validate_spec(spec: Json) -> None:
     version = spec.get("openapi")
     if not isinstance(version, str) or not version.startswith("3."):
         raise IngestError(f"only OpenAPI 3.x is supported (found openapi={version!r})")
+    _reject_external_refs(spec)
     try:
         validate(spec)
-    except OpenAPIValidationError as exc:
+    except (OpenAPIValidationError, OpenAPISpecValidatorError, Unresolvable, RecursionError) as exc:
         raise IngestError(f"invalid OpenAPI document: {exc}") from exc
 
 
@@ -61,9 +121,17 @@ def _resolve_pointer(root: Json, ref: str) -> Any:
     return node
 
 
-def deref(node: Any, root: Json, _stack: tuple[str, ...] = ()) -> Any:
+def deref(
+    node: Any,
+    root: Json,
+    _stack: tuple[str, ...] = (),
+    _budget: _Budget | None = None,
+) -> Any:
     """Inline local ``$ref`` pointers. A reference to a schema already being expanded
-    (a recursive schema) is left as ``{"$ref": ...}`` instead of looping forever."""
+    (a recursive schema) is left as ``{"$ref": ...}`` instead of looping forever, and the
+    total size of the expansion is capped at ``MAX_EXPANDED_NODES``."""
+    budget = _budget or _Budget(MAX_EXPANDED_NODES, "operation after inlining references")
+    budget.spend()
     if isinstance(node, dict):
         ref = node.get("$ref")
         if isinstance(ref, str):
@@ -73,10 +141,10 @@ def deref(node: Any, root: Json, _stack: tuple[str, ...] = ()) -> Any:
                 )
             if ref in _stack:
                 return {"$ref": ref}
-            return deref(_resolve_pointer(root, ref), root, (*_stack, ref))
-        return {key: deref(value, root, _stack) for key, value in node.items()}
+            return deref(_resolve_pointer(root, ref), root, (*_stack, ref), budget)
+        return {key: deref(value, root, _stack, budget) for key, value in node.items()}
     if isinstance(node, list):
-        return [deref(value, root, _stack) for value in node]
+        return [deref(value, root, _stack, budget) for value in node]
     return node
 
 
@@ -110,7 +178,10 @@ def build_operations(spec: Json) -> list[Operation]:
     seen_ids: set[str] = set()
     default_security = spec.get("security", [])
     for path, raw_item in spec.get("paths", {}).items():
-        item = deref(raw_item, spec)
+        try:
+            item = deref(raw_item, spec)
+        except RecursionError as exc:
+            raise IngestError(f"{path}: references are nested too deeply") from exc
         for method in HTTP_METHODS:
             if method not in item:
                 continue
