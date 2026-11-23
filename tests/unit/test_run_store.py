@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -260,11 +261,19 @@ def test_an_unreadable_run_file_is_parsed_once_until_it_changes(
     store.list()
     store.list()
     assert reads == ["broken"]  # not parsed again on the second read
-    (root / "broken.json").write_text(make_record("broken").model_dump_json())
+    broken = root / "broken.json"
+    stamp = broken.stat().st_mtime_ns
+    broken.write_text(make_record("broken").model_dump_json())
+    os.utime(broken, ns=(stamp + 10**9, stamp + 10**9))  # coarse clocks can repeat a timestamp
     assert sorted(s.run_id for s in store.list()) == ["broken", "r1"]
     assert reads == ["broken", "broken"]  # a changed file is tried again
 
 
-def test_a_run_file_that_vanishes_mid_scan_is_skipped(tmp_path: Path) -> None:
+def test_a_run_file_that_vanishes_mid_scan_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     store = FileRunStore(tmp_path / "runs")
-    assert store._mtime("gone") == 0
+    store.save(make_record("r1"))
+    # the directory listing names a file that is gone by the time it is read
+    monkeypatch.setattr(FileRunStore, "_run_ids", lambda self: ["r1", "ghost"])
+    assert [s.run_id for s in store.list()] == ["r1"]

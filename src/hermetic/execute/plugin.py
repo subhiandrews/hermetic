@@ -202,7 +202,7 @@ class HermeticPlugin:
             # Only a teardown failure can settle a test twice.
             teardown = self._masked(nodeid, report)
             if existing.status == "failed":  # keep the assertion text, add the teardown error
-                teardown = f"{existing.message}\n\nteardown error: {teardown}"
+                teardown = f"{existing.message}\n\nteardown error: {teardown}"[:MAX_MESSAGE_CHARS]
             if existing.status != "error":  # an earlier setup error keeps its own message
                 self._replace(position, status="error", message=teardown)
             return

@@ -187,16 +187,31 @@ def _mask_json_strings(value: Any, secrets: set[str]) -> Any:
     return value
 
 
+def _collect_secret_values(value: Any, found: set[str]) -> None:
+    """Add every string and number inside `value` to `found`.
+
+    Iterative: the value may be nested as deeply as the JSON parser allows.
+    """
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            found.add(item)
+        elif isinstance(item, int | float) and not isinstance(item, bool):
+            found.add(str(item))
+        elif isinstance(item, dict):
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+
+
 def _redact_json(value: Any, found: set[str]) -> Any:
     """Mask secret-looking fields; the string values masked are added to `found`."""
     if isinstance(value, dict):
         masked: dict[str, Any] = {}
         for key, item in value.items():
             if _is_sensitive_key(key):
-                if isinstance(item, str):
-                    found.add(item)
-                elif isinstance(item, int | float) and not isinstance(item, bool):
-                    found.add(str(item))
+                _collect_secret_values(item, found)
                 masked[key] = REDACTED
             else:
                 masked[key] = _redact_json(item, found)

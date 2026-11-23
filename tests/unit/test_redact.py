@@ -236,3 +236,11 @@ def test_a_numeric_credential_echoed_as_a_number_is_masked() -> None:
 @pytest.mark.parametrize("name", ["pwd", "passphrase", "passcode", "user_pwd"])
 def test_more_password_field_names_are_masked(name: str) -> None:
     assert json.loads(redact_body(json.dumps({name: "v"}).encode()) or "") == {name: REDACTED}
+
+
+def test_credentials_nested_under_a_secret_key_are_collected() -> None:
+    found: set[str] = set()
+    body = b'{"credentials": {"refresh": "RT-1234", "list": ["a-secret", 987654, true]}, "ok": 1}'
+    text = redact_body(body, found) or ""
+    assert json.loads(text) == {"credentials": REDACTED, "ok": 1}
+    assert found == {"RT-1234", "a-secret", "987654"}
