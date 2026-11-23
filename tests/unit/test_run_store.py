@@ -11,6 +11,7 @@ import pytest
 from hermetic.history import (
     FileRunStore,
     RunNotFoundError,
+    RunRecord,
     RunStore,
     RunStoreError,
     SuiteChange,
@@ -239,3 +240,31 @@ def test_an_unreadable_run_file_does_not_rewrite_the_index_on_every_read(tmp_pat
     assert [s.run_id for s in store.list()] == ["r1"]
     assert [s.run_id for s in store.list()] == ["r1"]
     assert (root / "index.json").stat().st_mtime_ns == before
+
+
+def test_an_unreadable_run_file_is_parsed_once_until_it_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "runs"
+    store = FileRunStore(root)
+    store.save(make_record("r1"))
+    (root / "broken.json").write_text("{")
+    reads: list[str] = []
+    original = FileRunStore.get
+
+    def counting_get(self: FileRunStore, run_id: str) -> RunRecord:
+        reads.append(run_id)
+        return original(self, run_id)
+
+    monkeypatch.setattr(FileRunStore, "get", counting_get)
+    store.list()
+    store.list()
+    assert reads == ["broken"]  # not parsed again on the second read
+    (root / "broken.json").write_text(make_record("broken").model_dump_json())
+    assert sorted(s.run_id for s in store.list()) == ["broken", "r1"]
+    assert reads == ["broken", "broken"]  # a changed file is tried again
+
+
+def test_a_run_file_that_vanishes_mid_scan_is_skipped(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path / "runs")
+    assert store._mtime("gone") == 0

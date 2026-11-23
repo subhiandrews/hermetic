@@ -219,3 +219,10 @@ def test_known_secrets_are_masked_inside_json_despite_escaping() -> None:
     body = json.dumps({"note": 'pässword"\\x', "list": ['pässword"\\x'], "n": 1}).encode()
     text = redact_body(body, secrets) or ""
     assert "pässword" not in text and "p\\u00e4ssword" not in text and REDACTED in text
+
+
+def test_a_numeric_credential_echoed_as_a_number_is_masked() -> None:
+    secrets = {"123456"}
+    body = json.dumps({"echo": 123456, "list": [123456.0, 123456], "short": 12, "ok": True})
+    found = json.loads(redact_body(body.encode(), secrets) or "")
+    assert found == {"echo": REDACTED, "list": [123456.0, REDACTED], "short": 12, "ok": True}

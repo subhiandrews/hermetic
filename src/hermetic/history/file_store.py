@@ -43,6 +43,9 @@ def _write_atomic(path: Path, text: str) -> None:
 class FileRunStore:
     def __init__(self, root: Path) -> None:
         self._root = root
+        # run id -> mtime of a run file that failed to parse, so a long-lived store (the web UI)
+        # does not re-parse the same corrupt file on every read. A changed file is tried again.
+        self._unreadable: dict[str, int] = {}
 
     def save(self, record: RunRecord) -> None:
         _check_run_id(record.run_id)
@@ -87,8 +90,9 @@ class FileRunStore:
 
         A missing or unreadable index is rebuilt from every run file. A valid index that lacks
         a run (two processes saved at once and the last writer won, or a crash between the
-        two writes) gets that run added. Either way the result is written back, so the
-        parsing is a one-time cost.
+        two writes) gets that run added. Either way the result is written back, so each run
+        file is parsed once. A run file that cannot be parsed is remembered by modification
+        time, so it is not parsed again until it changes.
         """
         try:
             summaries = _INDEX.validate_json((self._root / INDEX_NAME).read_text(encoding="utf-8"))
@@ -113,9 +117,20 @@ class FileRunStore:
     def _summaries_of(self, run_ids: RunIds) -> Summaries:
         summaries: Summaries = []
         for run_id in run_ids:
-            with contextlib.suppress(RunStoreError):  # a corrupt run file is skipped, not fatal
+            mtime = self._mtime(run_id)
+            if self._unreadable.get(run_id, -1) == mtime:
+                continue
+            try:
                 summaries.append(summarize(self.get(run_id)))
+            except RunStoreError:  # a corrupt run file is skipped, not fatal
+                self._unreadable[run_id] = mtime
         return summaries
+
+    def _mtime(self, run_id: str) -> int:
+        try:
+            return (self._root / f"{run_id}.json").stat().st_mtime_ns
+        except OSError:  # vanished since the directory was listed
+            return 0
 
     def _rebuild_index(self) -> Summaries:
         return self._summaries_of(self._run_ids())

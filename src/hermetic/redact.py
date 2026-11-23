@@ -173,6 +173,9 @@ def _mask_json_strings(value: Any, secrets: set[str]) -> Any:
     """Mask known credentials inside decoded string values, so JSON escaping cannot hide them."""
     if isinstance(value, str):
         return mask_secrets(value, secrets)
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        # A numeric credential echoed as a JSON number (long enough to be a secret).
+        return REDACTED if len(str(value)) >= MIN_MASKED_LENGTH and str(value) in secrets else value
     if isinstance(value, dict):
         return {key: _mask_json_strings(item, secrets) for key, item in value.items()}
     if isinstance(value, list):

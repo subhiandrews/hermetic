@@ -20,12 +20,21 @@ def _fence(text: str) -> str:
     return f"{ticks}\n{text}\n{ticks}"
 
 
+_MARKDOWN_SPECIAL = re.compile(r"([\\`*_{}\[\]<>()#+!|~&])")
+
+
+def _escape(text: str) -> str:
+    """Escape Markdown syntax in recorded text, so an id or reason cannot render as a link or
+    an image. Text is kept on one line."""
+    return _MARKDOWN_SPECIAL.sub(r"\\\1", " ".join(text.split()))
+
+
 def render_markdown(record: RunRecord) -> str:
     summary = summarize(record)
     lines = [
-        f"# Hermetic run {record.run_id}",
+        f"# Hermetic run {_escape(record.run_id)}",
         "",
-        f"- Target: {record.target}",
+        f"- Target: {_escape(record.target)}",
         f"- Started: {record.started_at}",
         f"- Passed: {summary.passed}, failed: {summary.failed}, errors: {summary.errors}, "
         f"skipped: {summary.skipped}",
@@ -39,16 +48,16 @@ def render_markdown(record: RunRecord) -> str:
     if broken:
         lines += ["", "## Failures"]
         for result in broken:
-            lines += ["", f"### {result.test_id} ({result.status})"]
+            lines += ["", f"### {_escape(result.test_id)} ({result.status})"]
             if result.operation_id:
-                lines.append(f"Operation: `{result.operation_id}`")
+                lines.append(f"Operation: {_escape(result.operation_id)}")
             if result.message:
                 lines += ["", _fence(result.message)]
             if result.curl:
                 lines += ["", "Repro:", "", _fence(result.curl)]
     if record.changes:
         lines += ["", "## Suite changes"]
-        lines += [f"- {c.kind}: {c.test_id}: {c.reason}" for c in record.changes]
+        lines += [f"- {c.kind}: {_escape(c.test_id)}: {_escape(c.reason)}" for c in record.changes]
     return "\n".join(lines) + "\n"
 
 

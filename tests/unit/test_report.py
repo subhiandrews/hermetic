@@ -58,11 +58,11 @@ def failing_record() -> RunRecord:
 def test_markdown_lists_failures_with_repro_and_changes() -> None:
     text = render_markdown(failing_record())
     assert "Passed: 1, failed: 1, errors: 1" in text
-    assert "### test_api.py::test_<b> (failed)" in text
-    assert "Operation: `getPet`" in text
+    assert "### test\\_api.py::test\\_\\<b\\> (failed)" in text
+    assert "Operation: getPet" in text
     assert "curl -sS -i -X GET http://svc/x" in text
     assert "- Suite changes: 1 added, 0 modified, 0 dropped" in text
-    assert "- added: t::new: new <op>" in text
+    assert "- added: t::new: new \\<op\\>" in text
     # a backtick run inside the message must not close the fence early
     assert "````\nassert 500 == 200\n```injected```\n````" in text
 
@@ -194,3 +194,13 @@ def test_stdout_escapes_terminal_control_sequences(
     out = capsys.readouterr().out
     assert "\x1b" not in out and "\x07" not in out
     assert "\\x1b]0;pwned\\x07" in out and "\n" in out
+
+
+def test_markdown_does_not_render_recorded_text_as_markup() -> None:
+    record = failing_record()
+    evil = record.results[0].model_copy(
+        update={"test_id": "t[![x](http://evil/p.png)](http://evil)\n# injected"}
+    )
+    text = render_markdown(record.model_copy(update={"results": [evil]}))
+    assert "![x](" not in text and "\n# injected" not in text
+    assert "t\\[\\!\\[x\\]\\(http://evil/p.png\\)\\]\\(http://evil\\) \\# injected" in text
