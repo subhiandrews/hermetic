@@ -22,12 +22,12 @@ hermetic run --spec openapi.yaml --docs ./docs --target http://svc:8080
 `hermetic.ingest` turns an OpenAPI 3.x file (JSON or YAML) and an optional docs directory into a frozen `ServiceModel`. Decisions that later stages depend on:
 
 - Only OpenAPI 3.x is accepted; the document is validated first and a failure stops the run.
-- The spec is untrusted input. YAML is normalised to plain JSON types on load (integer keys such as `200:` become strings, dates become ISO strings, other non-JSON values are rejected), and the loaded document and each operation's inlined expansion have node caps, so an alias bomb or schemas that fan out into each other fail with a clear error instead of exhausting memory.
+- The spec is untrusted input. YAML is normalised to plain JSON types on load (integer keys such as `200:` become strings, dates become ISO strings, other non-JSON values are rejected), and node caps apply to the loaded document, to each path item's inlined expansion and to the total expansion across the document, so an alias bomb or schemas that fan out into each other fail with a clear error instead of exhausting memory.
 - Only local `$ref` pointers (`#/...`) are resolved. External references are rejected before the validator runs, because the validator's resolver would otherwise fetch URLs or read files. A reference to a schema that is already being expanded (a recursive schema) is left as `{"$ref": ...}` rather than expanded forever.
 - Each operation carries a `fragment_hash`: a hash of the fully resolved operation, including any component schema it references. The diff stage uses it to find added, modified and dropped operations, so a change to a shared schema correctly marks every operation that uses it.
 - `spec_hash` hashes the whole parsed document, independent of key order and formatting.
 - An operation without an `operationId` gets a synthesized one (`get_pets_id`); duplicate ids are an error.
-- The docs loader reads Markdown, plain text and diagrams-as-text (PlantUML, Mermaid), sorted by path. It skips hidden files and symlinks, and fails on a file that is too large or not UTF-8 instead of silently dropping it.
+- The docs loader reads Markdown, plain text and diagrams-as-text (PlantUML, Mermaid), sorted by path. It never enters hidden directories (so pointing it at a repository root does not walk `.git` or `.venv`) and skips hidden files, symlinks and special files, and fails on a file that is too large or not UTF-8 instead of silently dropping it.
 
 ## Run history
 
