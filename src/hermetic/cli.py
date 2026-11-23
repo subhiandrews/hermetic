@@ -9,7 +9,7 @@ import typer
 
 from hermetic import __version__
 from hermetic.execute import ExecuteError
-from hermetic.history import FileRunStore, RunStoreError
+from hermetic.history import RunStoreError, open_store
 from hermetic.ingest import IngestError, ServiceModel
 from hermetic.ingest import ingest as run_ingest
 from hermetic.report import SinkContext, SinkError, load_sinks
@@ -71,11 +71,13 @@ def run(
     timeout: Annotated[float, typer.Option(help="Per-request timeout in seconds.")] = 30.0,
 ) -> None:
     """Run a hand-written suite against a target, record the run and publish reports."""
+    if docs is not None and spec is None:
+        raise typer.BadParameter("--docs needs --spec: the docs are read together with the spec")
     try:
         model: ServiceModel | None = run_ingest(spec, docs) if spec is not None else None
         sinks = load_sinks(report or ["stdout"], SinkContext(output_dir=report_dir))
         record = run_suite(
-            suite, target, FileRunStore(history_dir), sinks, model=model, timeout=timeout
+            suite, target, open_store(history_dir), sinks, model=model, timeout=timeout
         )
     except (IngestError, ExecuteError, RunStoreError, SinkError) as exc:
         typer.echo(f"error: {exc}", err=True)

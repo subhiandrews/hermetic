@@ -10,8 +10,15 @@ from urllib.parse import urlsplit
 import httpx
 import pytest
 
-from hermetic.execute.redact import redact_body, redact_headers
 from hermetic.history.models import Exchange, TestResult, TestStatus
+from hermetic.redact import (
+    MAX_BODY_CHARS,
+    mask_secrets,
+    redact_body,
+    redact_headers,
+    redact_url,
+    secret_values,
+)
 from hermetic.report.curl import build_curl
 
 MAX_MESSAGE_CHARS = 4000
@@ -34,6 +41,7 @@ class _Recording:
     def __init__(self, allowed: set[tuple[str, str, int]]) -> None:
         self.allowed = allowed
         self.exchanges: list[Exchange] = []
+        self.secrets: set[str] = set()  # raw credential values seen, to mask failure text
 
     def on_request(self, request: httpx.Request) -> None:
         if origin_of(str(request.url)) not in self.allowed:
@@ -44,11 +52,12 @@ class _Recording:
             body: bytes | None = request.content
         except httpx.RequestNotRead:
             body = None
+        self.secrets |= secret_values(request.headers)
         request.extensions["hermetic_started"] = time.perf_counter()
         self.exchanges.append(
             Exchange(
                 method=request.method,
-                url=str(request.url),
+                url=redact_url(str(request.url)),
                 request_headers=redact_headers(request.headers),
                 request_body=redact_body(body or b""),
                 status_code=None,
@@ -59,14 +68,21 @@ class _Recording:
         )
 
     def on_response(self, response: httpx.Response) -> None:
-        response.read()
+        self.secrets |= secret_values(response.headers)
+        # Read only a body that is announced and small: reading here would otherwise make
+        # client.stream() block on an endless or huge response.
+        length = response.headers.get("content-length", "")
+        body = None
+        if length.isdigit() and int(length) <= MAX_BODY_CHARS:
+            response.read()
+            body = redact_body(response.content)
         started = response.request.extensions["hermetic_started"]
         pending = self.exchanges[-1]
         self.exchanges[-1] = pending.model_copy(
             update={
                 "status_code": response.status_code,
                 "response_headers": redact_headers(response.headers),
-                "response_body": redact_body(response.content),
+                "response_body": body,
                 "duration_ms": (time.perf_counter() - started) * 1000,
             }
         )
@@ -83,6 +99,7 @@ class HermeticPlugin:
         self._operations: dict[str, str] = {}
         self._durations: dict[str, float] = {}
         self.results: list[TestResult] = []
+        self.collection_failed = False
 
     def pytest_configure(self, config: pytest.Config) -> None:
         config.addinivalue_line(
@@ -116,12 +133,13 @@ class HermeticPlugin:
         if existing is not None:
             # Only a teardown failure can settle a test twice. Keep the first error's message.
             if existing.status != "error":
-                self._replace(existing, status="error", message=_message_of(report))
+                self._replace(existing, status="error", message=self._masked(nodeid, report))
             return
-        self.results.append(self._result(nodeid, status, _message_of(report)))
+        self.results.append(self._result(nodeid, status, self._masked(nodeid, report)))
 
     def pytest_collectreport(self, report: pytest.CollectReport) -> None:
         if report.failed:
+            self.collection_failed = True
             self.results.append(
                 TestResult(
                     test_id=report.nodeid,
@@ -134,8 +152,16 @@ class HermeticPlugin:
                 )
             )
 
+    def _masked(self, nodeid: str, report: pytest.TestReport) -> str | None:
+        """The report's message with any credential this test sent or received masked."""
+        message = _message_of(report)
+        recording = self._recordings.get(nodeid)
+        if message is None or recording is None:
+            return message
+        return mask_secrets(message, recording.secrets)
+
     def _result(self, nodeid: str, status: TestStatus, message: str | None) -> TestResult:
-        exchanges = list(self._recordings.pop(nodeid, _Recording(self._allowed)).exchanges)
+        exchanges = list(self._recordings.get(nodeid, _Recording(self._allowed)).exchanges)
         return TestResult(
             test_id=nodeid,
             operation_id=self._operations.get(nodeid),

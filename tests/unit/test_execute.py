@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 
 from hermetic.execute import ExecuteError, execute_suite
-from hermetic.execute.redact import REDACTED
 from hermetic.history import TestResult
+from hermetic.redact import REDACTED
 
 
 def write_suite(tmp_path: Path, source: str) -> Path:
@@ -243,3 +243,101 @@ def test_both(second):
     )
     (result,) = execute_suite(suite, server)
     assert result.status == "error" and "setup broke" in (result.message or "")
+
+
+def test_url_credentials_are_redacted_in_the_record_and_repro(server: str, tmp_path: Path) -> None:
+    suite = write_suite(
+        tmp_path,
+        """
+def test_q(hermetic_client):
+    assert hermetic_client.get("/ok", params={"api_key": "KEYVALUE"}).status_code == 500
+""",
+    )
+    (result,) = execute_suite(suite, server)
+    assert "KEYVALUE" not in result.exchanges[0].url
+    assert result.curl is not None and "KEYVALUE" not in result.curl
+
+
+def test_credentials_quoted_in_failure_text_are_masked(server: str, tmp_path: Path) -> None:
+    suite = write_suite(
+        tmp_path,
+        """
+def test_q(hermetic_client):
+    token = "tok-9f8e7d"
+    response = hermetic_client.get("/ok", headers={"Authorization": f"Bearer {token}"})
+    assert response.request.headers["authorization"] == "nope"
+""",
+    )
+    (result,) = execute_suite(suite, server)
+    assert result.status == "failed" and "tok-9f8e7d" not in (result.message or "")
+
+
+def test_a_response_without_content_length_is_not_read_by_the_hook(
+    server: str, tmp_path: Path
+) -> None:
+    suite = write_suite(
+        tmp_path,
+        """
+def test_chunked(hermetic_client):
+    assert hermetic_client.get("/chunked").text == "hello"
+    assert hermetic_client.get("/ok").text
+""",
+    )
+    (result,) = execute_suite(suite, server)
+    assert result.status == "passed"
+    chunked, ok = result.exchanges
+    assert chunked.response_body is None and ok.response_body is not None
+
+
+@pytest.mark.parametrize(
+    "target", ["localhost:8000", "http://host:abc", "ftp://host", "http://", "nonsense"]
+)
+def test_invalid_targets_are_rejected_before_running(target: str, tmp_path: Path) -> None:
+    with pytest.raises(ExecuteError, match="invalid --target"):
+        execute_suite(tmp_path, target)
+
+
+def test_an_interrupted_run_is_an_error_not_a_partial_pass(server: str, tmp_path: Path) -> None:
+    suite = write_suite(
+        tmp_path,
+        """
+import pytest
+
+def test_a():
+    pass
+
+def test_b():
+    pytest.exit("stop here")
+""",
+    )
+    with pytest.raises(ExecuteError, match="interrupted"):
+        execute_suite(suite, server)
+
+
+def test_only_new_suite_modules_are_evicted(tmp_path: Path) -> None:
+    import sys
+    import types
+
+    from hermetic.execute import _forget_new_modules_under
+
+    def module(name: str, file: Path) -> None:
+        mod = types.ModuleType(name)
+        mod.__file__ = str(file)
+        sys.modules[name] = mod
+
+    lib = tmp_path / ".venv" / "lib" / "site-packages" / "dep.py"
+    module("zz_old", tmp_path / "old.py")  # imported before the run
+    before = set(sys.modules)
+    module("zz_suite", tmp_path / "test_x.py")
+    module("zz_lib", lib)
+    module("zz_elsewhere", tmp_path.parent / "elsewhere.py")
+    sys.modules["zz_nofile"] = types.ModuleType("zz_nofile")
+    try:
+        _forget_new_modules_under(tmp_path, before)
+        assert "zz_suite" not in sys.modules
+        assert all(
+            name in sys.modules for name in ("zz_old", "zz_lib", "zz_elsewhere", "zz_nofile")
+        )
+    finally:
+        for name in ("zz_old", "zz_suite", "zz_lib", "zz_elsewhere", "zz_nofile"):
+            sys.modules.pop(name, None)

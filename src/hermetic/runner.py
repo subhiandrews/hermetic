@@ -10,7 +10,8 @@ from hermetic import __version__
 from hermetic.execute import execute_suite
 from hermetic.history import RunRecord, RunStore
 from hermetic.ingest import ServiceModel
-from hermetic.report import ReportSink
+from hermetic.redact import redact_url
+from hermetic.report import ReportSink, SinkError
 
 
 def new_run_id(now: datetime) -> str:
@@ -35,7 +36,7 @@ def run_suite(
         run_id=new_run_id(started),
         started_at=started.isoformat(),
         finished_at=finished.isoformat(),
-        target=target,
+        target=redact_url(target),
         spec_hash=model.spec_hash if model else None,
         doc_hashes={doc.path: doc.sha256 for doc in model.docs} if model else {},
         prompt_version=None,
@@ -43,6 +44,14 @@ def run_suite(
         results=results,
     )
     store.save(record)
-    for sink in sinks:
-        sink.publish(record)
+    failures: list[str] = []
+    for sink in sinks:  # one broken sink must not stop the others
+        try:
+            sink.publish(record)
+        except Exception as exc:  # a third-party sink can fail in any way
+            failures.append(f"{type(sink).__name__}: {exc}")
+    if failures:
+        raise SinkError(
+            f"run {record.run_id} was saved, but publishing failed: {'; '.join(failures)}"
+        )
     return record

@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 import shlex
 
-from hermetic.execute.redact import REDACTED
 from hermetic.history.models import Exchange
+from hermetic.redact import REDACTED
 
 # Headers curl or the server sets itself; replaying them only adds noise or breaks the repro.
 _SKIPPED_HEADERS = frozenset(

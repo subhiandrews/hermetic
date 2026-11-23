@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from hermetic.cli import app
 from hermetic.history import FileRunStore
+from hermetic.report import SinkError
 from hermetic.runner import new_run_id, run_suite
 
 runner = CliRunner()
@@ -119,3 +121,45 @@ def test_run_suite_publishes_after_saving(server: str, tmp_path: Path) -> None:
 
     run_suite(write_suite(tmp_path, "== 200"), server, Store(), [Sink()])  # type: ignore[arg-type]
     assert order == ["save", "publish"]
+
+
+def test_docs_without_spec_is_a_usage_error(server: str, tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        ["run", str(write_suite(tmp_path, "== 200")), "--target", server, "--docs", str(tmp_path)],
+    )
+    assert result.exit_code == 2 and "--docs needs --spec" in result.output
+
+
+def test_run_target_is_stored_without_credentials(server: str, tmp_path: Path) -> None:
+    userinfo_target = server.replace("http://", "http://user:pw@")
+    result = runner.invoke(
+        app,
+        [
+            "run", str(write_suite(tmp_path, "== 200")), "--target", userinfo_target,
+            "--history-dir", str(tmp_path / "h"),
+        ],
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    assert "pw" not in (tmp_path / "h" / "index.json").read_text()
+
+
+def test_every_sink_runs_even_if_one_fails(server: str, tmp_path: Path) -> None:
+    published: list[str] = []
+
+    class Boom:
+        def publish(self, record: object) -> None:
+            raise OSError("read-only")
+
+    class Fine:
+        def publish(self, record: object) -> None:
+            published.append("fine")
+
+    class Store:
+        def save(self, record: object) -> None:
+            published.append("saved")
+
+    suite = write_suite(tmp_path, "== 200")
+    with pytest.raises(SinkError, match=r"was saved, but publishing failed: Boom: read-only"):
+        run_suite(suite, server, Store(), [Boom(), Fine()])  # type: ignore[arg-type]
+    assert published == ["saved", "fine"]

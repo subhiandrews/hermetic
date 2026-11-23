@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import shlex
 
-from hermetic.execute.redact import REDACTED
 from hermetic.history.models import Exchange
+from hermetic.redact import REDACTED
 from hermetic.report.curl import build_curl
 
 

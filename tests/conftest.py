@@ -22,6 +22,11 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/boom":
             self._reply(500, {"error": "boom", "token": "server-secret"})
+        elif self.path == "/chunked":
+            self.send_response(200)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            self.wfile.write(b"5\r\nhello\r\n0\r\n\r\n")
         elif self.path == "/empty":
             self.send_response(204)
             self.send_header("Content-Length", "0")

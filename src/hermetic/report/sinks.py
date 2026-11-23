@@ -53,5 +53,8 @@ def load_sinks(names: list[str], context: SinkContext) -> list[ReportSink]:
         else:
             known = ", ".join(sorted({*BUILTIN_SINKS, *third_party}))
             raise SinkError(f"unknown sink {name!r} (available: {known})")
-        sinks.append(factory(context))
+        try:
+            sinks.append(factory(context))
+        except Exception as exc:  # a third-party factory can fail in any way
+            raise SinkError(f"sink {name!r} could not be created: {exc}") from exc
     return sinks

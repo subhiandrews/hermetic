@@ -158,3 +158,27 @@ def test_a_sink_that_fails_to_import_is_a_sink_error(
 def test_unknown_sink_lists_the_available_ones(tmp_path: Path) -> None:
     with pytest.raises(SinkError, match=r"unknown sink 'nope' \(available: html, json"):
         load_sinks(["nope"], SinkContext(output_dir=tmp_path))
+
+
+def test_a_factory_that_raises_is_a_sink_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken_factory(context: SinkContext) -> RecordingSink:
+        raise RuntimeError("bad config")
+
+    monkeypatch.setitem(BUILTIN_SINKS, "broken", broken_factory)
+    with pytest.raises(SinkError, match="could not be created: bad config"):
+        load_sinks(["broken"], SinkContext(output_dir=tmp_path))
+
+
+def test_report_can_be_imported_first() -> None:
+    import subprocess
+    import sys
+
+    done = subprocess.run(
+        [sys.executable, "-c", "from hermetic.report import SinkContext"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
