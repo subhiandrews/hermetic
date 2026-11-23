@@ -17,7 +17,7 @@ from hermetic.diffing.manifest import (
     save_manifest,
 )
 from hermetic.generate.author import AuthoredTest, AuthorRequest, SuiteAuthor
-from hermetic.generate.validate import SourceRejected, validate_source
+from hermetic.generate.validate import MAX_SOURCE_BYTES, SourceRejected, validate_source
 from hermetic.history.models import SuiteChange
 from hermetic.ingest import ServiceModel
 from hermetic.ingest.models import Operation
@@ -85,7 +85,9 @@ def generate_suite(
 
     # The model round trips are independent, so overlap them. Results are taken in spec order
     # and the first failure in that order is raised, after queued calls are cancelled so no
-    # more paid requests start; nothing is written until every test is in hand.
+    # more paid requests start; nothing is written until every test is in hand. Calls already
+    # running are not interrupted: leaving the block waits for them (each is bounded by the
+    # author's timeout), so a failure is reported once they finish, not at the moment it happens.
     authored: dict[str, tuple[AuthoredTest, str]] = {}
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_AUTHORS) as pool:
         futures = [pool.submit(author_one, item) for item in work]
@@ -167,6 +169,8 @@ def _read_previous(suite_dir: Path, entry: ManifestEntry) -> str | None:
     if path.is_symlink():
         return None  # the file is committed and untrusted: never send what a link points at
     try:
+        if path.stat().st_size > MAX_SOURCE_BYTES:
+            return None  # a test the validator would refuse is not sent to the model either
         return path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None  # the file was deleted or edited into something unreadable: start afresh

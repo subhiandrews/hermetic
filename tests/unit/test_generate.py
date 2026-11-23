@@ -149,6 +149,18 @@ def test_written_files_are_not_owner_only(tmp_path: Path) -> None:
     assert {path.stat().st_mode & 0o777 for path in written} == {0o644}
 
 
+def test_an_oversized_previous_test_is_not_sent_to_the_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = model_from(tmp_path)
+    suite = tmp_path / "suite"
+    generate_suite(model, FakeAuthor(), suite)
+    monkeypatch.setattr("hermetic.generate.suite.MAX_SOURCE_BYTES", 10)
+    author = FakeAuthor()
+    generate_suite(model, author, suite, force=True)
+    assert author.requests and all(r.previous_source is None for r in author.requests)
+
+
 def test_a_deleted_test_file_is_regenerated(tmp_path: Path) -> None:
     model = model_from(tmp_path)
     suite = tmp_path / "suite"
