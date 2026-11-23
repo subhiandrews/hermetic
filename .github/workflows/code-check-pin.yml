@@ -113,6 +113,13 @@ jobs:
               exit 0
             fi
           else
+            # The draft gate must hold for every new release, not only the first. A PR a maintainer
+            # already marked ready would run the review (and the new code-check) with the
+            # repository secret as soon as the push lands, so turn it back into a draft first.
+            open_pr="$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+            if [ -n "$open_pr" ] && [ "$(gh pr view "$open_pr" --repo "$REPO" --json isDraft --jq .isDraft)" = "false" ]; then
+              gh pr ready "$open_pr" --repo "$REPO" --undo
+            fi
             expect="$(git ls-remote "$url" "refs/heads/$BRANCH" | cut -f1)"
             git push --force-with-lease="refs/heads/$BRANCH:$expect" "$url" "HEAD:refs/heads/$BRANCH"
           fi
@@ -122,7 +129,7 @@ jobs:
           Release: https://github.com/${SOURCE}/releases/tag/${TO}
           Changes: https://github.com/${SOURCE}/compare/${FROM}...${TO}
 
-          This is a **draft** on purpose: the code-check review skips drafts, so the new release does not run with the repository's secrets until you have read the changes above. Mark it ready for review to run it, then merge. Opened by \`.github/workflows/code-check-pin.yml\`; not auto-merged."
+          This is a **draft** on purpose: drafts are not reviewed (code-check.yml skips them), so the new release does not run with the repository's secrets until you have read the changes above. Mark it ready for review to run it, then merge. If a newer release lands while this is open, the bot turns it back into a draft before updating it. Opened by \`.github/workflows/code-check-pin.yml\`; not auto-merged."
           existing="$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
           if [ -n "$existing" ]; then
             gh pr edit "$existing" --repo "$REPO" --title "ci: pin code-check to $TO" --body "$body"
