@@ -101,12 +101,16 @@ jobs:
           git commit -q -am "ci: pin code-check to $TO"
 
           # Scheduled runs repeat this work. Pushing an identical bump again would re-run CI on the
-          # open PR three times a day, so compare with what the branch already holds.
-          remote_tree=""
+          # open PR three times a day, so skip when the branch already holds this pin.
+          # Only the pin line is compared, not the whole tree: the tree also changes whenever
+          # anything unrelated merges to main, which would make an unchanged bump look new (and
+          # re-draft, force-push or reopen a PR for it). The PR merges just that line anyway.
+          remote_pin=""
           if git fetch --quiet --depth=1 "$url" "refs/heads/$BRANCH" 2>/dev/null; then
-            remote_tree="$(git rev-parse 'FETCH_HEAD^{tree}')"
+            remote_pin="$(git show FETCH_HEAD:.github/workflows/code-check.yml | grep -E '^[[:space:]]*code-check-ref:' | head -n1 || true)"
           fi
-          if [ "$remote_tree" = "$(git rev-parse 'HEAD^{tree}')" ]; then
+          local_pin="$(grep -E '^[[:space:]]*code-check-ref:' .github/workflows/code-check.yml | head -n1)"
+          if [ -n "$remote_pin" ] && [ "$remote_pin" = "$local_pin" ]; then
             proposed="$(gh pr list --repo "$REPO" --head "$BRANCH" --state all --json number --jq length)"
             if [ "$proposed" -gt 0 ]; then
               echo "$TO is already proposed (open, merged or closed); nothing to do."
