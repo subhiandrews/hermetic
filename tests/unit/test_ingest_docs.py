@@ -21,6 +21,19 @@ def test_unreadable_doc_is_a_clean_error(tmp_path: Path, monkeypatch: pytest.Mon
         load_docs(tmp_path)
 
 
+def test_unlistable_directory_is_a_clean_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def walk(top: Any, onerror: Any = None, **kwargs: Any) -> Iterator[Any]:
+        # what os.walk does when scandir fails: report it through onerror
+        onerror(PermissionError(13, "Permission denied", str(tmp_path / "locked")))
+        return iter(())
+
+    monkeypatch.setattr(os, "walk", walk)
+    with pytest.raises(IngestError, match=r"cannot read docs directory .*locked"):
+        load_docs(tmp_path)
+
+
 def test_doc_removed_during_the_walk_is_a_clean_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

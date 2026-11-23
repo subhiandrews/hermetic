@@ -30,8 +30,14 @@ def _candidates(root: Path) -> list[Path]:
     """Recognised document files under ``root``. Hidden directories are pruned before they
     are entered (so pointing at a repository root never walks ``.git`` or ``.venv``), and
     symlinks are not followed (a link could point outside the docs directory)."""
+
+    def fail(exc: OSError) -> None:
+        # os.walk skips a directory it cannot list unless told otherwise, which would drop
+        # its docs silently.
+        raise IngestError(f"cannot read docs directory {exc.filename}: {exc.strerror}") from exc
+
     found: list[Path] = []
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+    for dirpath, dirnames, filenames in os.walk(root, onerror=fail, followlinks=False):
         dirnames[:] = [name for name in dirnames if not name.startswith(".")]
         for name in filenames:
             path = Path(dirpath, name)
