@@ -635,3 +635,62 @@ def test_validation_never_opens_a_network_connection(
     with contextlib.suppress(IngestError):  # rejecting the document is fine
         validate_spec(openapi_31_with_keyword(name))
     assert attempts == []  # reaching for the network is not
+
+
+def test_duplicate_keys_in_json_are_an_error(tmp_path: Path) -> None:
+    path = tmp_path / "x.json"
+    path.write_text('{"paths": {"/pets": {"get": {}}, "/pets": {"post": {}}}}')
+    with pytest.raises(IngestError, match="duplicate key '/pets'"):
+        load_spec_file(path)
+
+
+def test_duplicate_keys_in_yaml_are_an_error(tmp_path: Path) -> None:
+    path = tmp_path / "x.yaml"
+    path.write_text("paths:\n  /pets:\n    get: {a: 1}\n    get: {b: 2}\n")
+    with pytest.raises(IngestError, match="duplicate key 'get'"):
+        load_spec_file(path)
+
+
+def test_yaml_merge_keys_are_not_duplicates(tmp_path: Path) -> None:
+    path = tmp_path / "x.yaml"
+    path.write_text("base: &b {a: 1}\nother: &o {z: 0}\nd:\n  <<: *b\n  <<: *o\n  c: 2\n")
+    # repeated `<<` is how some files combine anchors; only real key repeats are errors
+    assert load_spec_file(path)["d"] == {"a": 1, "c": 2, "z": 0}
+
+
+def test_unhashable_yaml_key_is_a_clean_error(tmp_path: Path) -> None:
+    path = tmp_path / "x.yaml"
+    path.write_text("? [1, 2]\n: value\n")
+    with pytest.raises(IngestError, match="cannot parse spec"):
+        load_spec_file(path)
+
+
+COMPONENTS = {"schemas": {"S": {"type": "string", "description": "base"}}}
+SIBLINGS = {"$ref": "#/components/schemas/S", "description": "override", "maxLength": 3}
+
+
+def test_ref_siblings_merge_over_the_target_in_openapi_31() -> None:
+    root = {"openapi": "3.1.0", "components": COMPONENTS}
+    assert deref(SIBLINGS, root) == {"type": "string", "description": "override", "maxLength": 3}
+
+
+def test_ref_siblings_are_ignored_in_openapi_30_as_specified() -> None:
+    root = {"openapi": "3.0.3", "components": COMPONENTS}
+    assert deref(SIBLINGS, root) == {"type": "string", "description": "base"}
+
+
+def test_ref_siblings_cannot_merge_into_a_non_object_target() -> None:
+    root = {"openapi": "3.1.0", "scalar": 5}
+    assert deref({"$ref": "#/scalar", "description": "x"}, root) == 5
+
+
+def test_sibling_only_edit_changes_the_hash_in_31_but_not_in_30() -> None:
+    def hash_for(version: str, description: str) -> str:
+        sibling = {"$ref": "#/components/schemas/S", "description": description}
+        content = {"application/json": {"schema": sibling}}
+        paths = {"/a": {"get": {"responses": {"200": {"description": "ok", "content": content}}}}}
+        spec = {**make_spec(paths, components=COMPONENTS), "openapi": version}
+        return fragment_hashes(spec)["get_a"]
+
+    assert hash_for("3.1.0", "one") != hash_for("3.1.0", "two")  # siblings are meaningful
+    assert hash_for("3.0.3", "one") == hash_for("3.0.3", "two")  # ignored by the spec

@@ -6,6 +6,7 @@ import datetime
 import hashlib
 import json
 import re
+from collections.abc import Hashable
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import unquote
@@ -15,6 +16,7 @@ from openapi_spec_validator import validate
 from openapi_spec_validator.exceptions import OpenAPISpecValidatorError
 from openapi_spec_validator.validation.exceptions import OpenAPIValidationError
 from referencing.exceptions import Unresolvable
+from yaml.nodes import MappingNode
 
 from hermetic.ingest.errors import IngestError
 from hermetic.ingest.models import Json, Operation, Parameter, RequestBody, Response
@@ -84,6 +86,34 @@ def _normalise(node: Any, budget: _Budget) -> Any:
     raise IngestError(f"unsupported value of type {type(node).__name__} in spec")
 
 
+def _no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """``object_pairs_hook`` that refuses a JSON object with the same key twice."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise IngestError(f"duplicate key {key!r} in spec")
+        result[key] = value
+    return result
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """SafeLoader that refuses a mapping with the same key twice. The default keeps the
+    last one silently, so two ``get:`` blocks under one path would lose the first."""
+
+    def construct_mapping(self, node: MappingNode, deep: bool = False) -> dict[Hashable, Any]:
+        seen: set[Hashable] = set()
+        for key_node, _ in node.value:
+            if key_node.tag == "tag:yaml.org,2002:merge":  # `<<: *anchor` may repeat
+                continue
+            key = self.construct_object(key_node, deep=deep)
+            if not isinstance(key, Hashable):
+                continue  # the parent class reports unhashable keys
+            if key in seen:
+                raise IngestError(f"duplicate key {key!r} in spec")
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
 def load_spec_file(path: Path) -> Json:
     """Read a JSON or YAML OpenAPI file into a dict of plain JSON types. Does not validate it."""
     try:
@@ -93,7 +123,10 @@ def load_spec_file(path: Path) -> Json:
     except (OSError, UnicodeDecodeError) as exc:
         raise IngestError(f"cannot read spec {path}: {exc}") from exc
     try:
-        data = json.loads(text) if path.suffix.lower() == ".json" else yaml.safe_load(text)
+        if path.suffix.lower() == ".json":
+            data = json.loads(text, object_pairs_hook=_no_duplicates)
+        else:
+            data = yaml.load(text, Loader=_UniqueKeyLoader)  # a SafeLoader subclass
         if not isinstance(data, dict):
             raise IngestError(f"spec {path} must be a JSON/YAML object at the top level")
         normalised: Json = _normalise(data, _Budget(MAX_SPEC_NODES, "spec"))
@@ -158,6 +191,13 @@ def _resolve_pointer(root: Json, ref: str) -> Any:
     return node
 
 
+def _keeps_ref_siblings(root: Json) -> bool:
+    """OpenAPI 3.0 ignores keys next to ``$ref``; 3.1 (JSON Schema 2020-12) gives them
+    meaning, for example a ``description`` or ``maxLength`` beside a referenced schema."""
+    version = root.get("openapi")
+    return isinstance(version, str) and not version.startswith("3.0")
+
+
 def deref(
     node: Any,
     root: Json,
@@ -178,7 +218,13 @@ def deref(
                 )
             if ref in _stack:
                 return {"$ref": ref}
-            return deref(_resolve_pointer(root, ref), root, (*_stack, ref), budget)
+            target = deref(_resolve_pointer(root, ref), root, (*_stack, ref), budget)
+            if _keeps_ref_siblings(root) and isinstance(target, dict):
+                siblings = {
+                    k: deref(v, root, _stack, budget) for k, v in node.items() if k != "$ref"
+                }
+                return {**target, **siblings}
+            return target
         return {key: deref(value, root, _stack, budget) for key, value in node.items()}
     if isinstance(node, list):
         return [deref(value, root, _stack, budget) for value in node]
