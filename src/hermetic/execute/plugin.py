@@ -13,6 +13,7 @@ import pytest
 from hermetic.history.models import Exchange, TestResult, TestStatus
 from hermetic.redact import (
     MAX_BODY_CHARS,
+    capture_body,
     mask_secrets,
     redact_body,
     redact_headers,
@@ -56,23 +57,20 @@ class _Recording:
             body = None
         self.secrets |= secret_values(request.headers) | url_secrets(str(request.url))
         request.extensions["hermetic_started"] = time.perf_counter()
+        captured = capture_body(body or b"", self.secrets)
         self.exchanges.append(
             Exchange(
                 method=request.method,
                 url=redact_url(str(request.url)),
                 request_headers=redact_headers(request.headers),
-                request_body=self._body(body or b""),
+                request_body=captured.text,
+                request_body_complete=captured.complete,
                 status_code=None,
                 response_headers={},
                 response_body=None,
                 duration_ms=0.0,
             )
         )
-
-    def _body(self, raw: bytes) -> str | None:
-        """A body for storage: secret JSON fields masked, then any credential already seen."""
-        text = redact_body(raw, self.secrets)
-        return None if text is None else mask_secrets(text, self.secrets)
 
     def on_response(self, response: httpx.Response) -> None:
         self.secrets |= secret_values(response.headers)
@@ -84,7 +82,7 @@ class _Recording:
         body = None
         if length.isdigit() and int(length) <= MAX_BODY_CHARS and encoding == "identity":
             response.read()
-            body = self._body(response.content)
+            body = redact_body(response.content, self.secrets)
         started = response.request.extensions["hermetic_started"]
         pending = self.exchanges[-1]
         self.exchanges[-1] = pending.model_copy(

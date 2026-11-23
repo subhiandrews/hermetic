@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from hermetic.redact import MAX_BODY_CHARS, REDACTED, redact_body, redact_headers
 
 
@@ -135,3 +137,40 @@ def test_cookie_values_are_collected_and_a_malformed_cookie_is_ignored() -> None
     assert {"abc123", "111111", "222222"} <= found and "T1" in found
     # SimpleCookie rejects this header; the whole value is still masked.
     assert secret_values({"Cookie": "=="}) == {"=="}
+
+
+def test_form_encoded_secrets_are_masked_and_collected() -> None:
+    found: set[str] = set()
+    text = redact_body(b"grant_type=password&username=a&password=hunter2xx&client_secret=cs", found)
+    assert (
+        text
+        == "grant_type=password&username=a&password=%5BREDACTED%5D&client_secret=%5BREDACTED%5D"
+    )
+    assert found == {"hunter2xx", "cs"}
+
+
+@pytest.mark.parametrize("text", ["plain words here", "no_equals", "a=1 b=2", "a=1&b"])
+def test_text_that_is_not_a_form_is_kept(text: str) -> None:
+    assert redact_body(text.encode()) == text
+
+
+def test_malformed_urls_do_not_raise() -> None:
+    from hermetic.redact import redact_url, url_secrets
+
+    assert url_secrets("http://[bad") == set()
+    assert redact_url("http://[bad") == "<unparseable URL>"
+    assert redact_headers({"Location": "http://[bad"}) == {"Location": "<unparseable URL>"}
+
+
+def test_a_credential_across_the_cut_is_masked() -> None:
+    secret = "CROSSING-SECRET-123"
+    text = redact_body(b"x" * (MAX_BODY_CHARS - 5) + secret.encode(), {secret}) or ""
+    assert "CROSSING" not in text
+
+
+def test_capture_reports_whether_the_body_is_complete() -> None:
+    from hermetic.redact import capture_body
+
+    assert capture_body(b"").complete and capture_body(b"{}").complete
+    assert not capture_body(b"\xff").complete
+    assert not capture_body(b"x" * (MAX_BODY_CHARS + 1)).complete

@@ -21,6 +21,9 @@ class Exchange(_Frozen):
     url: str
     request_headers: dict[str, str]
     request_body: str | None
+    # False when request_body only describes the body (binary) or is cut short, so it cannot
+    # be replayed.
+    request_body_complete: bool = True
     status_code: int | None  # None when no response arrived (connection error, timeout)
     response_headers: dict[str, str]
     response_body: str | None

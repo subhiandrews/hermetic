@@ -56,22 +56,16 @@ def execute_suite(suite: Path, target: str, *, timeout: float = 30.0) -> list[Te
     return plugin.results
 
 
-def _shown(target: str) -> str:
-    """The target as it may appear in a message: credentials removed."""
-    try:
-        return redact_url(target)
-    except ValueError:  # too malformed to parse, so it cannot be cleaned either
-        return "<unparseable>"
-
-
 def _check_target(target: str) -> None:
     try:
         parts = urlsplit(target)
         parts.port  # noqa: B018  (raises ValueError on a bad port)
     except ValueError as exc:
-        raise ExecuteError(f"invalid --target {_shown(target)!r}: {exc}") from exc
+        raise ExecuteError(f"invalid --target {redact_url(target)!r}: {exc}") from exc
     if parts.scheme not in ("http", "https") or not parts.hostname:
-        raise ExecuteError(f"invalid --target {_shown(target)!r}: expected http(s)://host[:port]")
+        raise ExecuteError(
+            f"invalid --target {redact_url(target)!r}: expected http(s)://host[:port]"
+        )
 
 
 def _forget_new_modules_under(root: Path, before: set[str]) -> None:

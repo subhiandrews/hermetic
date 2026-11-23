@@ -49,3 +49,11 @@ def test_placeholder_name_cannot_break_out_of_the_quotes() -> None:
 def test_unnameable_header_falls_back_to_secret() -> None:
     command = build_curl(_exchange(request_headers={"$$$": REDACTED}, request_body=None))
     assert '-H "---: $SECRET"' in command
+
+
+def test_an_incomplete_body_is_not_replayed() -> None:
+    command = build_curl(
+        _exchange(request_body="<9 bytes of binary data>", request_body_complete=False)
+    )
+    assert "--data-raw" not in command
+    assert command.endswith("not reproduced here")

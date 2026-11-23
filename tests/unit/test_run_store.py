@@ -162,3 +162,40 @@ def test_a_failed_index_write_does_not_hide_the_run(
         with pytest.raises(RunStoreError):
             store.save(make_record("r2"))
     assert sorted(s.run_id for s in store.list()) == ["r1", "r2"]
+
+
+def test_an_interrupt_between_the_two_writes_does_not_hide_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = FileRunStore(tmp_path / "runs")
+    store.save(make_record("r1"))
+
+    def interrupted(self: FileRunStore, summaries: object) -> None:
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patch:
+        patch.setattr(FileRunStore, "_write_index", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            store.save(make_record("r2"))
+    assert sorted(s.run_id for s in store.list()) == ["r1", "r2"]
+
+
+def test_a_rebuilt_index_is_written_back(tmp_path: Path) -> None:
+    root = tmp_path / "runs"
+    store = FileRunStore(root)
+    store.save(make_record("r1"))
+    (root / "index.json").unlink()
+    assert [s.run_id for s in store.list()] == ["r1"]
+    assert json.loads((root / "index.json").read_text())[0]["run_id"] == "r1"
+
+
+def test_a_rebuild_that_cannot_be_saved_still_lists(tmp_path: Path) -> None:
+    root = tmp_path / "runs"
+    store = FileRunStore(root)
+    store.save(make_record("r1"))
+    (root / "index.json").write_text("not json")
+    root.chmod(0o500)  # readable, not writable
+    try:
+        assert [s.run_id for s in store.list()] == ["r1"]
+    finally:
+        root.chmod(0o700)

@@ -500,3 +500,30 @@ def test_target_credentials_are_not_echoed_in_errors(tmp_path: Path) -> None:
         with pytest.raises(ExecuteError) as raised:
             execute_suite(tmp_path, target)
         assert "TARGETPW99" not in str(raised.value) and "TARGETTOK99" not in str(raised.value)
+
+
+def test_a_malformed_location_header_does_not_break_the_test(server: str, tmp_path: Path) -> None:
+    suite = write_suite(
+        tmp_path,
+        """
+def test_bad_location(hermetic_client):
+    assert hermetic_client.get("/bad-location").status_code == 302
+""",
+    )
+    (result,) = execute_suite(suite, server)
+    assert result.status == "passed"
+    assert result.exchanges[0].response_headers["location"] == "<unparseable URL>"
+
+
+def test_binary_request_bodies_are_marked_incomplete(server: str, tmp_path: Path) -> None:
+    suite = write_suite(
+        tmp_path,
+        """
+def test_bin(hermetic_client):
+    hermetic_client.post("/pets", content=b"\\xff\\xfe")
+    assert False
+""",
+    )
+    (result,) = execute_suite(suite, server)
+    assert not result.exchanges[0].request_body_complete
+    assert result.curl is not None and "not reproduced here" in result.curl

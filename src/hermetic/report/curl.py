@@ -33,7 +33,10 @@ def build_curl(exchange: Exchange) -> str:
             parts += ["-H", f'"{safe_name}: ${_placeholder(name)}"']
         else:
             parts += ["-H", shlex.quote(f"{name}: {value}")]
-    if exchange.request_body is not None:
+    if exchange.request_body is not None and exchange.request_body_complete:
         parts += ["--data-raw", shlex.quote(exchange.request_body)]
     parts.append(shlex.quote(exchange.url))
-    return " ".join(parts)
+    command = " ".join(parts)
+    if exchange.request_body is not None and not exchange.request_body_complete:
+        command += "  # the request had a binary or oversized body that is not reproduced here"
+    return command

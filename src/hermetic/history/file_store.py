@@ -52,11 +52,17 @@ class FileRunStore:
             summaries.append(summarize(record))
             self._write_index(summaries)
         except OSError as exc:
-            # The run file may exist while the index lacks it; drop the index so the next
-            # read rebuilds it from the run files instead of permanently omitting the run.
-            with contextlib.suppress(OSError):
-                (self._root / INDEX_NAME).unlink(missing_ok=True)
+            self._drop_index()
             raise RunStoreError(f"cannot write run {record.run_id}: {exc}") from exc
+        except BaseException:  # an interrupt between the two writes
+            self._drop_index()
+            raise
+
+    def _drop_index(self) -> None:
+        """The run file may exist while the index lacks it; remove the index so the next read
+        rebuilds it from the run files instead of permanently omitting the run."""
+        with contextlib.suppress(OSError):
+            (self._root / INDEX_NAME).unlink(missing_ok=True)
 
     def get(self, run_id: str) -> RunRecord:
         _check_run_id(run_id)
@@ -80,7 +86,10 @@ class FileRunStore:
         try:
             return _INDEX.validate_json((self._root / INDEX_NAME).read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, ValidationError):
-            return self._rebuild_index()
+            summaries = self._rebuild_index()
+            with contextlib.suppress(OSError):  # make the rebuild a one-time cost
+                self._write_index(summaries)
+            return summaries
 
     def _rebuild_index(self) -> Summaries:
         summaries: Summaries = []

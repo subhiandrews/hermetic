@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import re
 from collections.abc import Mapping
 from http.cookies import CookieError, SimpleCookie
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 REDACTED = "[REDACTED]"
@@ -117,7 +116,10 @@ def mask_secrets(text: str, secrets: set[str]) -> str:
 
 def url_secrets(url: str) -> set[str]:
     """The userinfo password and the secret-looking query values of a URL."""
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+    except ValueError:  # a buggy service can send a malformed URL; there is nothing to mask
+        return set()
     found = {value for key, value in parse_qsl(parts.query) if _is_sensitive_key(key) and value}
     if parts.password:
         found.add(parts.password)
@@ -126,7 +128,10 @@ def url_secrets(url: str) -> set[str]:
 
 def redact_url(url: str) -> str:
     """Drop userinfo and mask the values of secret-looking query parameters."""
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+    except ValueError:  # too malformed to clean, so it is not shown
+        return "<unparseable URL>"
     netloc = parts.netloc.rpartition("@")[2]
     query = urlencode(
         [
@@ -154,25 +159,53 @@ def _redact_json(value: Any, found: set[str]) -> Any:
     return value
 
 
-def redact_body(raw: bytes, secrets: set[str] | None = None) -> str | None:
-    """Decode a body for storage: secret-looking JSON fields masked, length bounded.
+class Captured(NamedTuple):
+    text: str | None
+    complete: bool  # False when the text only describes the body (binary) or cuts it short
 
-    String values it masks are added to `secrets`, if given. Returns None for an empty body.
-    A body that is not UTF-8 is described, not stored.
+
+def _redact_form(text: str, found: set[str]) -> str | None:
+    """Mask secret fields of a form-urlencoded body, or return None if it is not one."""
+    if "=" not in text or any(char.isspace() for char in text):
+        return None
+    try:
+        pairs = parse_qsl(text, keep_blank_values=True, strict_parsing=True)
+    except ValueError:
+        return None
+    for key, value in pairs:
+        if _is_sensitive_key(key) and value:
+            found.add(value)
+    return urlencode([(k, REDACTED if _is_sensitive_key(k) else v) for k, v in pairs])
+
+
+def capture_body(raw: bytes, secrets: set[str] | None = None) -> Captured:
+    """Decode a body for storage.
+
+    Secret-looking JSON and form fields are masked, then every credential in `secrets` is
+    masked, then the text is cut to a bound. String values masked here are added to `secrets`
+    (when given), so later text that quotes them is masked too. An empty body has no text; a
+    body that is not UTF-8 is described, not stored.
     """
     if not raw:
-        return None
+        return Captured(None, True)
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        return f"<{len(raw)} bytes of binary data>"
-    # Not JSON: stored as text. Only JSON field names can be recognised as secrets.
+        return Captured(f"<{len(raw)} bytes of binary data>", False)
     found: set[str] = set()
-    # RecursionError: a few KB of `[` is enough to overflow the parser.
-    with contextlib.suppress(ValueError, RecursionError):
+    try:
+        # RecursionError: a few KB of `[` is enough to overflow the parser.
         text = json.dumps(_redact_json(json.loads(text), found))
-        if secrets is not None:
-            secrets |= found
+    except (ValueError, RecursionError):
+        text = _redact_form(text, found) or text  # not JSON: a form, or plain text kept as is
+    if secrets is not None:
+        secrets |= found
+        text = mask_secrets(text, secrets)  # before the cut: a credential across it would escape
     if len(text) > MAX_BODY_CHARS:
-        return text[:MAX_BODY_CHARS] + f"... [truncated, {len(text)} characters]"
-    return text
+        return Captured(text[:MAX_BODY_CHARS] + f"... [truncated, {len(text)} characters]", False)
+    return Captured(text, True)
+
+
+def redact_body(raw: bytes, secrets: set[str] | None = None) -> str | None:
+    """The text of `capture_body`."""
+    return capture_body(raw, secrets).text

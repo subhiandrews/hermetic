@@ -38,6 +38,11 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Refresh", "0; url=http://elsewhere.invalid/r?token=REFTOK99")
             self.send_header("Content-Length", "0")
             self.end_headers()
+        elif self.path == "/bad-location":
+            self.send_response(302)
+            self.send_header("Location", "http://[bad")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
         elif self.path == "/cookie":
             self.send_response(200)
             self.send_header("Set-Cookie", "session=COOKIEVAL99; Path=/; HttpOnly")
