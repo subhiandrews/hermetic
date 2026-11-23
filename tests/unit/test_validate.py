@@ -27,12 +27,14 @@ def test_attribute_names_that_match_forbidden_builtins_are_accepted() -> None:
 
 def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
     validate_source(
-        "import pytest\nfrom pytest import approx\n\n"
+        "import json\nimport pytest\nimport re\nimport uuid\n"
+        "from pytest import approx\nfrom typing import Any\n\n"
         '@pytest.mark.operation("op")\n'
         "@pytest.mark.skipif(False, reason='not on this server')\n"
         "def test_a(hermetic_client):\n"
         "    system, main, operator, types = 1, 2, 3, 4  # ordinary variables are fine\n"
         "    assert 1.0 == approx(1.0) and '{:.2f} {name!r} {{x}}'.format(1.5, name=1)\n"
+        "    assert json.loads('1') == 1 and re.compile('x') and uuid.uuid4() and Any\n"
         "    body = '{\"__proto__\": 1}'  # plain JSON-looking text is not a format string\n"
         "    with pytest.raises(ValueError):\n"
         "        '{'.format()  # not a valid format string: fails at run time, not here\n"
@@ -97,7 +99,8 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
             "import pytest\nc = '1'\n@pytest.mark.skipif(c)\ndef test_a(): ...\n",
             "constant condition",
         ),
-        ("from pytest.mark import skipif\n", "importing `skipif`"),
+        ("from pytest.mark import skipif\n", "importing `pytest.mark`"),
+        ("from pytest import mark\nmark.skipif('1')\n", "skipif"),
         (
             "import pytest\n@pytest.mark.skipif(False)(\"os.system('id')\")\ndef test_a(): ...\n",
             "called a second time",
@@ -139,6 +142,18 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
         ("from pytest import PytestPluginManager\n", "importing `PytestPluginManager`"),
         ("import pytest as p\n", "may not be imported under another name"),
         ("import pytest\np = pytest\n", "`pytest` is not allowed"),
+        ("import json.tool\n", "importing `json.tool`"),
+        ("from json import tool\n", "importing `tool`"),
+        ("import json\njson.tool\n", "submodule `tool`"),
+        ("import json as j\nj.tool.argparse\n", "submodule `tool`"),
+        (
+            "def test_a():\n    match 1:\n        case object(sys=s): ...\n",
+            "class patterns may not bind forbidden or private attributes",
+        ),
+        (
+            "def test_a():\n    match 1:\n        case object(format=f): ...\n",
+            "class patterns may not bind forbidden or private attributes",
+        ),
         ("import json\njson.dumps(1, _ispytest=True)\n", "keyword argument `_ispytest`"),
         (
             "x = '{0.sys.modules[os].environ}'.format(1)\n",

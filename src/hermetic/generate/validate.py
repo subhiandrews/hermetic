@@ -2,12 +2,13 @@
 
 The suite runs in-process with the user's privileges, so these checks are a guardrail against
 a confused or manipulated agent, not a sandbox: only a small set of imports is allowed, and
-a few dangerous builtins may not be called or referenced.
+names, attributes and fixtures that reach the system are refused.
 """
 
 from __future__ import annotations
 
 import ast
+import importlib.util
 import string
 
 ALLOWED_IMPORTS = frozenset(
@@ -84,6 +85,12 @@ def validate_source(source: str, operation_id: str) -> None:
         raise SourceRejected(f"the test is not valid Python: {exc}") from exc
     safe_marks: set[int] = set()  # skipif/xfail nodes used as the callee of a harmless call
     safe_formats: set[int] = set()  # `.format` nodes called directly on a string literal
+    modules = {  # local name -> module, for `import json` and `import json as j`
+        (alias.asname or alias.name): alias.name
+        for found in ast.walk(tree)
+        if isinstance(found, ast.Import)
+        for alias in found.names
+    }
     attributed: set[int] = set()  # `pytest` names that are the base of an attribute access
     for node in ast.walk(tree):  # parents come before their children, so `attributed` fills first
         if (
@@ -112,6 +119,7 @@ def validate_source(source: str, operation_id: str) -> None:
                     or alias.name.startswith("_")  # private helpers: `uuid._get_command_stdout`
                     or alias.name in FORBIDDEN_NAMES | FORBIDDEN_ATTRIBUTES | EVALUATING_MARKS
                     or (node.module == "pytest" and alias.name not in PYTEST_API)
+                    or _is_submodule(node.module, alias.name)  # `from json import tool`
                 ):
                     raise SourceRejected(f"importing `{alias.name}` is not allowed in a test")
         elif isinstance(node, ast.Name) and (
@@ -122,6 +130,13 @@ def validate_source(source: str, operation_id: str) -> None:
             or (node.id == "pytest" and id(node) not in attributed)  # `p = pytest` hides the API
         ):
             raise SourceRejected(f"`{node.id}` is not allowed in a test")
+        elif (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in modules
+            and _is_submodule(modules[node.value.id], node.attr)
+        ):  # `json.tool` reaches argparse, and so any file
+            raise SourceRejected(f"submodule `{node.attr}` is not allowed in a test")
         elif isinstance(node, ast.Attribute) and (
             node.attr in FORBIDDEN_ATTRIBUTES
             or node.attr.startswith("_")  # private and dunder attributes alike
@@ -160,8 +175,11 @@ def validate_source(source: str, operation_id: str) -> None:
             if _has_field_access(receiver.value):
                 raise SourceRejected("a format field may not use attribute or index access")
             safe_formats.add(id(node.func))
-        elif isinstance(node, ast.MatchClass) and any(a.startswith("_") for a in node.kwd_attrs):
-            raise SourceRejected("class patterns may not bind private attributes")
+        elif isinstance(node, ast.MatchClass) and any(
+            a.startswith("_") or a in FORBIDDEN_ATTRIBUTES | FORMAT_METHODS | EVALUATING_MARKS
+            for a in node.kwd_attrs
+        ):  # `case object(sys=s)` reads `.sys` without an ast.Attribute node
+            raise SourceRejected("class patterns may not bind forbidden or private attributes")
         elif isinstance(node, ast.arg) and node.arg in FORBIDDEN_FIXTURES:
             raise SourceRejected(f"fixture `{node.arg}` is not allowed in a test")
         elif isinstance(node, ast.keyword) and (node.arg or "").startswith("_"):
@@ -213,8 +231,16 @@ def _is_plain_constant(node: ast.expr) -> bool:
 
 
 def _check_module(name: str) -> None:
-    if name.split(".")[0] not in ALLOWED_IMPORTS:
+    if name not in ALLOWED_IMPORTS:  # exact names: `json.tool` is not `json`
         raise SourceRejected(f"importing `{name}` is not allowed in a test")
+
+
+def _is_submodule(module: str, name: str) -> bool:
+    """True if `module.name` is a module itself, not an attribute: `json.tool`, not `json.loads`."""
+    try:
+        return importlib.util.find_spec(f"{module}.{name}") is not None
+    except (ImportError, ValueError, AttributeError):  # `uuid` is not a package, for one
+        return False
 
 
 def _marks_operation(decorator: ast.expr, operation_id: str) -> bool:
