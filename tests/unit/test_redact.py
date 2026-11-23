@@ -105,3 +105,33 @@ def test_redact_body_reports_the_values_it_masked() -> None:
 def test_deeply_nested_json_is_kept_as_text() -> None:
     nested = b"[" * 100_000 + b"]" * 100_000
     assert (redact_body(nested) or "").startswith("[[[")
+
+
+def test_url_headers_are_redacted() -> None:
+    headers = redact_headers(
+        {
+            "Location": "http://u:pw@h/cb?access_token=T&x=1",
+            "Content-Location": "/p?api_key=K",
+            "Refresh": "5; URL=http://h/r?token=T",
+            "Retry-After": "5",
+        }
+    )
+    assert "pw" not in headers["Location"] and "x=1" in headers["Location"]
+    assert "K" not in headers["Content-Location"].replace("Content", "")
+    assert "token=%5BREDACTED%5D" in headers["Refresh"] and headers["Refresh"].startswith("5; URL=")
+    assert headers["Retry-After"] == "5"
+
+
+def test_cookie_values_are_collected_and_a_malformed_cookie_is_ignored() -> None:
+    from hermetic.redact import secret_values
+
+    found = secret_values(
+        {
+            "Set-Cookie": "session=abc123; Path=/",
+            "Cookie": "a=111111; b=222222",
+            "Location": "/x?token=T1",
+        }
+    )
+    assert {"abc123", "111111", "222222"} <= found and "T1" in found
+    # SimpleCookie rejects this header; the whole value is still masked.
+    assert secret_values({"Cookie": "=="}) == {"=="}

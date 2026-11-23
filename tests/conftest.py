@@ -28,6 +28,21 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Transfer-Encoding", "chunked")
             self.end_headers()
             self.wfile.write(b"5\r\nhello\r\n0\r\n\r\n")
+        elif self.path == "/echo-auth":
+            self._reply(401, {"detail": f"bad credential {self.headers.get('Authorization')}"})
+        elif self.path == "/redirect":
+            self.send_response(302)
+            self.send_header(
+                "Location", "http://u:LOCPASS99@elsewhere.invalid/cb?access_token=LOCTOK99"
+            )
+            self.send_header("Refresh", "0; url=http://elsewhere.invalid/r?token=REFTOK99")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        elif self.path == "/cookie":
+            self.send_response(200)
+            self.send_header("Set-Cookie", "session=COOKIEVAL99; Path=/; HttpOnly")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
         elif self.path == "/gzip":
             body = gzip.compress(b'{"big": "' + b"a" * 5000 + b'"}')
             self.send_response(200)

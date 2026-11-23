@@ -61,13 +61,18 @@ class _Recording:
                 method=request.method,
                 url=redact_url(str(request.url)),
                 request_headers=redact_headers(request.headers),
-                request_body=redact_body(body or b"", self.secrets),
+                request_body=self._body(body or b""),
                 status_code=None,
                 response_headers={},
                 response_body=None,
                 duration_ms=0.0,
             )
         )
+
+    def _body(self, raw: bytes) -> str | None:
+        """A body for storage: secret JSON fields masked, then any credential already seen."""
+        text = redact_body(raw, self.secrets)
+        return None if text is None else mask_secrets(text, self.secrets)
 
     def on_response(self, response: httpx.Response) -> None:
         self.secrets |= secret_values(response.headers)
@@ -79,7 +84,7 @@ class _Recording:
         body = None
         if length.isdigit() and int(length) <= MAX_BODY_CHARS and encoding == "identity":
             response.read()
-            body = redact_body(response.content, self.secrets)
+            body = self._body(response.content)
         started = response.request.extensions["hermetic_started"]
         pending = self.exchanges[-1]
         self.exchanges[-1] = pending.model_copy(

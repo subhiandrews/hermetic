@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 from collections.abc import Mapping
+from http.cookies import CookieError, SimpleCookie
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -53,10 +55,23 @@ def is_sensitive_header(name: str) -> bool:
     return name.lower() in _SENSITIVE_HEADERS or _is_sensitive_key(name)
 
 
+_URL_HEADERS = frozenset({"location", "content-location"})
+_REFRESH_URL = re.compile(r"(url\s*=\s*)(\S+)", re.IGNORECASE)
+
+
+def _redact_header(name: str, value: str) -> str:
+    lowered = name.lower()
+    if is_sensitive_header(name):
+        return REDACTED
+    if lowered in _URL_HEADERS:
+        return redact_url(value)
+    if lowered == "refresh":  # "0; url=https://..."
+        return _REFRESH_URL.sub(lambda m: m.group(1) + redact_url(m.group(2)), value)
+    return value
+
+
 def redact_headers(headers: Mapping[str, str]) -> dict[str, str]:
-    return {
-        name: REDACTED if is_sensitive_header(name) else value for name, value in headers.items()
-    }
+    return {name: _redact_header(name, value) for name, value in headers.items()}
 
 
 def secret_values(headers: Mapping[str, str]) -> set[str]:
@@ -67,12 +82,27 @@ def secret_values(headers: Mapping[str, str]) -> set[str]:
     """
     found: set[str] = set()
     for name, value in headers.items():
-        if is_sensitive_header(name) and value:
+        lowered = name.lower()
+        if lowered in _URL_HEADERS:
+            found |= url_secrets(value)
+        elif is_sensitive_header(name) and value:
             found.add(value)
             _, _, credential = value.partition(" ")
             if credential:
                 found.add(credential)
+            if lowered in ("cookie", "set-cookie"):
+                found |= _cookie_values(value)
     return found
+
+
+def _cookie_values(header: str) -> set[str]:
+    """The value of each cookie in a Cookie or Set-Cookie header."""
+    jar: SimpleCookie = SimpleCookie()
+    try:
+        jar.load(header)
+    except CookieError:
+        return set()
+    return {morsel.value for morsel in jar.values() if morsel.value}
 
 
 MIN_MASKED_LENGTH = 4  # shorter values would mangle the text they are replaced in

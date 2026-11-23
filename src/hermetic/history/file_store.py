@@ -52,6 +52,10 @@ class FileRunStore:
             summaries.append(summarize(record))
             self._write_index(summaries)
         except OSError as exc:
+            # The run file may exist while the index lacks it; drop the index so the next
+            # read rebuilds it from the run files instead of permanently omitting the run.
+            with contextlib.suppress(OSError):
+                (self._root / INDEX_NAME).unlink(missing_ok=True)
             raise RunStoreError(f"cannot write run {record.run_id}: {exc}") from exc
 
     def get(self, run_id: str) -> RunRecord:

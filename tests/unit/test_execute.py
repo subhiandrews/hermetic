@@ -438,3 +438,65 @@ def test_odd_bodies(hermetic_client):
     gz, deep = result.exchanges
     assert gz.response_body is None  # compressed: not read in the hook
     assert deep.response_body is not None and deep.response_body.startswith("[[[")
+
+
+def test_recorded_bodies_mask_credentials_echoed_under_innocent_keys(
+    server: str, tmp_path: Path
+) -> None:
+    suite = write_suite(
+        tmp_path,
+        """
+def test_echo(hermetic_client):
+    response = hermetic_client.get("/echo-auth", headers={"Authorization": "Bearer ECHOTOKEN99"})
+    assert response.status_code == 200
+""",
+    )
+    (result,) = execute_suite(suite, server)
+    assert result.exchanges[0].response_body is not None
+    assert "ECHOTOKEN99" not in result.exchanges[0].response_body
+
+
+def test_request_bodies_mask_a_credential_seen_earlier_in_the_request(
+    server: str, tmp_path: Path
+) -> None:
+    suite = write_suite(
+        tmp_path,
+        """
+def test_body(hermetic_client):
+    hermetic_client.post(
+        "/pets",
+        json={"note": "uses KEYINBODY99"},
+        headers={"X-Api-Key": "KEYINBODY99"},
+    )
+    assert False
+""",
+    )
+    (result,) = execute_suite(suite, server)
+    assert "KEYINBODY99" not in (result.exchanges[0].request_body or "")
+
+
+def test_redirect_and_cookie_headers_are_redacted(server: str, tmp_path: Path) -> None:
+    suite = write_suite(
+        tmp_path,
+        """
+def test_headers(hermetic_client):
+    redirect = hermetic_client.get("/redirect")
+    cookie = hermetic_client.get("/cookie")
+    assert cookie.cookies["session"] == "different", redirect.headers["location"]
+""",
+    )
+    (result,) = execute_suite(suite, server)
+    redirect, cookie = result.exchanges
+    shown = str(redirect.response_headers) + str(cookie.response_headers) + (result.message or "")
+    for leaked in ("LOCPASS99", "LOCTOK99", "REFTOK99", "COOKIEVAL99"):
+        assert leaked not in shown
+    assert "elsewhere.invalid" in redirect.response_headers["location"]
+    assert "elsewhere.invalid/r" in redirect.response_headers["refresh"]
+    assert cookie.response_headers["set-cookie"] == "[REDACTED]"
+
+
+def test_target_credentials_are_not_echoed_in_errors(tmp_path: Path) -> None:
+    for target in ("ftp://u:TARGETPW99@host/?token=TARGETTOK99", "http://u:TARGETPW99@[bad"):
+        with pytest.raises(ExecuteError) as raised:
+            execute_suite(tmp_path, target)
+        assert "TARGETPW99" not in str(raised.value) and "TARGETTOK99" not in str(raised.value)

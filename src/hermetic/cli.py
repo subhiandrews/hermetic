@@ -87,7 +87,10 @@ def run(
         record = exc.record if isinstance(exc, SinkError) else None
         if record is None:
             raise typer.Exit(code=2) from exc
-        failed = any(result.status in ("failed", "error") for result in record.results)
-        raise typer.Exit(code=1 if failed else 2) from exc
-    if any(result.status in ("failed", "error") for result in record.results):
+        raise typer.Exit(code=1 if _any_failed(record) else 2) from exc
+    if _any_failed(record):
         raise typer.Exit(code=1)
+
+
+def _any_failed(record: RunRecord) -> bool:
+    return any(result.status in ("failed", "error") for result in record.results)

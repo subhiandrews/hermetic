@@ -146,3 +146,19 @@ def test_failed_write_leaves_no_temp_files(tmp_path: Path, monkeypatch: pytest.M
     with pytest.raises(RunStoreError):
         store.save(make_record("r1"))
     assert list(root.iterdir()) == []
+
+
+def test_a_failed_index_write_does_not_hide_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = FileRunStore(tmp_path / "runs")
+    store.save(make_record("r1"))
+
+    def boom(self: FileRunStore, summaries: object) -> None:
+        raise OSError("index write failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(FileRunStore, "_write_index", boom)
+        with pytest.raises(RunStoreError):
+            store.save(make_record("r2"))
+    assert sorted(s.run_id for s in store.list()) == ["r1", "r2"]
