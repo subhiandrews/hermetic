@@ -1,0 +1,33 @@
+version: 2
+# Every entry waits 7 days after a release is published before proposing it, so hijacked
+# action tags and malicious package uploads are usually caught before they reach a PR.
+updates:
+  # Keeps the SHA-pinned actions in .github/workflows current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Keeps the digest-pinned base images in docker/Dockerfile current.
+  - package-ecosystem: docker
+    directory: /docker
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
+  # Keeps uv.lock (the image's runtime dependencies and the dev tools) current.
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      python:
+        patterns: ["*"]

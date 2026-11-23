@@ -21,7 +21,7 @@ Requires [uv](https://docs.astral.sh/uv/) and Python 3.12+.
 ```bash
 uv sync --group dev
 uv run pytest --cov
-uv run ruff check . && uv run mypy
+uv run ruff check . && uv run ruff format --check . && uv run mypy
 uv run hermetic version
 ```
 
