@@ -1,0 +1,18 @@
+# Laptop usage. Build context is the repo root.
+# The Docker socket is mounted so Hermetic can start mock dependencies as sibling
+# containers. This grants root-equivalent access to the host Docker daemon; see
+# docs/architecture.md (Safety) for the risk and the compose allowlist check.
+services:
+  hermetic:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    # The image runs as a non-root user. On Linux the socket is usually root:docker (mode 660),
+    # so add the host's docker group: export DOCKER_GID=$(stat -c %g /var/run/docker.sock)
+    group_add:
+      - "${DOCKER_GID:-999}"
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ..:/work
+      - /var/run/docker.sock:/var/run/docker.sock

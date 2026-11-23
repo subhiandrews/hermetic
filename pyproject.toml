@@ -1,0 +1,75 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hermetic"
+dynamic = ["version"]
+description = "Agentic tester for REST microservices: infers dependencies, provisions mocks, generates and runs tests."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+authors = [{ name = "Hermetic contributors" }]
+keywords = ["testing", "rest", "openapi", "microservices", "mocks"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Testing",
+  "Typing :: Typed",
+]
+dependencies = [
+  "typer>=0.12",
+]
+
+[project.scripts]
+hermetic = "hermetic.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/subhiandrews/hermetic"
+Issues = "https://github.com/subhiandrews/hermetic/issues"
+
+[dependency-groups]
+dev = [
+  "mypy>=1.10",
+  "pytest>=8",
+  "pytest-cov>=5",
+  "ruff>=0.5",
+]
+
+[tool.hatch.version]
+path = "src/hermetic/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hermetic"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "RUF"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers -m 'not live'"
+markers = [
+  "live: tests that call the real Claude API (opt-in, run with -m live)",
+  "integration: tests that need Docker and example services",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["hermetic"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true

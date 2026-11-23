@@ -221,3 +221,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Hermetic run history (local, not committed)
+.hermetic/runs/
