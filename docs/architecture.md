@@ -28,7 +28,7 @@ hermetic run --spec openapi.yaml --docs ./docs --target http://svc:8080
 - A parameter described with `content` instead of `schema` keeps its schema, and its media type is recorded in `media_type`.
 - `spec_hash` hashes the whole parsed document, independent of key order and formatting.
 - An operation without an `operationId` gets a synthesized one (`get_pets_id`); duplicate ids are an error.
-- The docs loader reads Markdown, plain text and diagrams-as-text (PlantUML, Mermaid), sorted by path. It never enters hidden directories (so pointing it at a repository root does not walk `.git` or `.venv`) and skips hidden files, symlinks and special files, and fails on a file or directory it cannot read, a file that is too large, or one that is not UTF-8, instead of silently dropping it.
+- The docs loader reads Markdown, plain text and diagrams-as-text (PlantUML, Mermaid), sorted by path, up to 500 files and 8 MB in total (a docs path at a repository root fails with a hint to narrow it). It never enters hidden directories (so pointing it at a repository root does not walk `.git` or `.venv`) and skips hidden files, symlinks and special files, and fails on a file or directory it cannot read, a file that is too large, or one that is not UTF-8, instead of silently dropping it.
 
 ## Run history
 

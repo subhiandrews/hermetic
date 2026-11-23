@@ -23,7 +23,9 @@ KINDS: dict[str, Kind] = {
     ".mmd": "diagram",
     ".mermaid": "diagram",
 }
-MAX_DOC_BYTES = 256_000
+MAX_DOC_BYTES = 256_000  # per file
+MAX_DOC_FILES = 500
+MAX_TOTAL_DOC_BYTES = 8_000_000
 
 
 def _candidates(root: Path) -> list[Path]:
@@ -49,6 +51,11 @@ def _candidates(root: Path) -> list[Path]:
             ):
                 continue
             found.append(path)
+            if len(found) > MAX_DOC_FILES:  # stop walking, e.g. a docs path at a repo root
+                raise IngestError(
+                    f"more than {MAX_DOC_FILES} documents under {root}; "
+                    "point --docs at a narrower directory"
+                )
     return found
 
 
@@ -60,11 +67,19 @@ def load_docs(root: Path) -> list[DocFile]:
     if not root.is_dir():
         raise IngestError(f"docs path {root} is not a directory")
     docs: list[DocFile] = []
+    total_bytes = 0
     for path in sorted(_candidates(root), key=lambda p: p.relative_to(root).parts):
         relative = path.relative_to(root)
         try:
-            if path.stat().st_size > MAX_DOC_BYTES:
+            size = path.stat().st_size
+            if size > MAX_DOC_BYTES:
                 raise IngestError(f"doc {relative.as_posix()} is larger than {MAX_DOC_BYTES} bytes")
+            total_bytes += size
+            if total_bytes > MAX_TOTAL_DOC_BYTES:
+                raise IngestError(
+                    f"docs under {root} are larger than {MAX_TOTAL_DOC_BYTES} bytes in total; "
+                    "point --docs at a narrower directory"
+                )
             text = path.read_text(encoding="utf-8")
         except OSError as exc:  # unreadable, or removed while we were walking
             raise IngestError(f"cannot read doc {relative.as_posix()}: {exc}") from exc

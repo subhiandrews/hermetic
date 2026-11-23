@@ -34,6 +34,22 @@ def test_unlistable_directory_is_a_clean_error(
         load_docs(tmp_path)
 
 
+def test_too_many_documents_stops_the_walk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(docs_module, "MAX_DOC_FILES", 3)
+    for i in range(5):
+        (tmp_path / f"{i}.md").write_text("x")
+    with pytest.raises(IngestError, match="more than 3 documents"):
+        load_docs(tmp_path)
+
+
+def test_total_size_is_capped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(docs_module, "MAX_TOTAL_DOC_BYTES", 10)
+    for i in range(3):
+        (tmp_path / f"{i}.md").write_text("123456")  # each is under the per-file cap
+    with pytest.raises(IngestError, match="in total"):
+        load_docs(tmp_path)
+
+
 def test_doc_removed_during_the_walk_is_a_clean_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
