@@ -1,0 +1,14 @@
+# Laptop usage. Build context is the repo root.
+# The Docker socket is mounted so Hermetic can start mock dependencies as sibling
+# containers. This grants root-equivalent access to the host Docker daemon; see
+# docs/architecture.md (Safety) for the risk and the compose allowlist check.
+services:
+  hermetic:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ..:/work
+      - /var/run/docker.sock:/var/run/docker.sock
