@@ -18,6 +18,7 @@ from hermetic.redact import (
     redact_headers,
     redact_url,
     secret_values,
+    url_secrets,
 )
 from hermetic.report.curl import build_curl
 
@@ -46,20 +47,21 @@ class _Recording:
     def on_request(self, request: httpx.Request) -> None:
         if origin_of(str(request.url)) not in self.allowed:
             raise OriginError(
-                f"refusing {request.method} {request.url}: tests may only call the target"
+                f"refusing {request.method} {redact_url(str(request.url))}: "
+                "tests may only call the target"
             )
         try:
             body: bytes | None = request.content
         except httpx.RequestNotRead:
             body = None
-        self.secrets |= secret_values(request.headers)
+        self.secrets |= secret_values(request.headers) | url_secrets(str(request.url))
         request.extensions["hermetic_started"] = time.perf_counter()
         self.exchanges.append(
             Exchange(
                 method=request.method,
                 url=redact_url(str(request.url)),
                 request_headers=redact_headers(request.headers),
-                request_body=redact_body(body or b""),
+                request_body=redact_body(body or b"", self.secrets),
                 status_code=None,
                 response_headers={},
                 response_body=None,
@@ -71,11 +73,13 @@ class _Recording:
         self.secrets |= secret_values(response.headers)
         # Read only a body that is announced and small: reading here would otherwise make
         # client.stream() block on an endless or huge response.
+        # A compressed body is skipped: reading decodes it, so its size is not bounded.
         length = response.headers.get("content-length", "")
+        encoding = response.headers.get("content-encoding", "identity").lower()
         body = None
-        if length.isdigit() and int(length) <= MAX_BODY_CHARS:
+        if length.isdigit() and int(length) <= MAX_BODY_CHARS and encoding == "identity":
             response.read()
-            body = redact_body(response.content)
+            body = redact_body(response.content, self.secrets)
         started = response.request.extensions["hermetic_started"]
         pending = self.exchanges[-1]
         self.exchanges[-1] = pending.model_copy(
@@ -131,9 +135,12 @@ class HermeticPlugin:
             return
         existing = next((r for r in self.results if r.test_id == nodeid), None)
         if existing is not None:
-            # Only a teardown failure can settle a test twice. Keep the first error's message.
-            if existing.status != "error":
-                self._replace(existing, status="error", message=self._masked(nodeid, report))
+            # Only a teardown failure can settle a test twice.
+            teardown = self._masked(nodeid, report)
+            if existing.status == "failed":  # keep the assertion text, add the teardown error
+                teardown = f"{existing.message}\n\nteardown error: {teardown}"
+            if existing.status != "error":  # an earlier setup error keeps its own message
+                self._replace(existing, status="error", message=teardown)
             return
         self.results.append(self._result(nodeid, status, self._masked(nodeid, report)))
 
@@ -154,11 +161,8 @@ class HermeticPlugin:
 
     def _masked(self, nodeid: str, report: pytest.TestReport) -> str | None:
         """The report's message with any credential this test sent or received masked."""
-        message = _message_of(report)
         recording = self._recordings.get(nodeid)
-        if message is None or recording is None:
-            return message
-        return mask_secrets(message, recording.secrets)
+        return _message_of(report, recording.secrets if recording else set())
 
     def _result(self, nodeid: str, status: TestStatus, message: str | None) -> TestResult:
         exchanges = list(self._recordings.get(nodeid, _Recording(self._allowed)).exchanges)
@@ -197,7 +201,9 @@ def _status_of(report: pytest.TestReport) -> TestStatus | None:
     return "error" if report.failed else None  # teardown
 
 
-def _message_of(report: pytest.TestReport | pytest.CollectReport) -> str | None:
+def _message_of(
+    report: pytest.TestReport | pytest.CollectReport, secrets: set[str] | None = None
+) -> str | None:
     """Failure text for a failed report, the reason for a skipped one, else None."""
     longrepr: Any = report.longrepr
     if report.skipped:
@@ -206,7 +212,8 @@ def _message_of(report: pytest.TestReport | pytest.CollectReport) -> str | None:
         return None
     crash = getattr(longrepr, "reprcrash", None)
     text = str(crash.message) if crash is not None else str(longrepr)
-    return text[:MAX_MESSAGE_CHARS]
+    # Mask before cutting: a credential that straddles the cut would no longer match.
+    return mask_secrets(text, secrets or set())[:MAX_MESSAGE_CHARS]
 
 
 def _repro(status: TestStatus, exchanges: list[Exchange]) -> str | None:

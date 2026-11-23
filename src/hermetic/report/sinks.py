@@ -14,7 +14,15 @@ ENTRY_POINT_GROUP = "hermetic.sinks"
 
 
 class SinkError(Exception):
-    """A sink is unknown, failed to load, or failed to publish."""
+    """A sink is unknown, failed to load, or failed to publish.
+
+    When publishing failed after the run happened, `record` holds the saved run so the
+    caller can still decide the exit code from its results.
+    """
+
+    def __init__(self, message: str, record: RunRecord | None = None) -> None:
+        super().__init__(message)
+        self.record = record
 
 
 class ReportSink(Protocol):

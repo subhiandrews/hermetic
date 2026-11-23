@@ -341,3 +341,100 @@ def test_only_new_suite_modules_are_evicted(tmp_path: Path) -> None:
     finally:
         for name in ("zz_old", "zz_suite", "zz_lib", "zz_elsewhere", "zz_nofile"):
             sys.modules.pop(name, None)
+
+
+def test_teardown_error_after_a_failed_call_keeps_both_messages(
+    server: str, tmp_path: Path
+) -> None:
+    suite = write_suite(
+        tmp_path,
+        """
+import pytest
+
+@pytest.fixture
+def cleanup():
+    yield
+    raise RuntimeError("teardown broke")
+
+def test_both(hermetic_client, cleanup):
+    assert hermetic_client.get("/boom").status_code == 200
+""",
+    )
+    (result,) = execute_suite(suite, server)
+    assert result.status == "error"
+    assert "500 == 200" in (result.message or "") and "teardown broke" in (result.message or "")
+    assert result.curl is not None
+
+
+def test_url_secrets_are_masked_in_failure_text(server: str, tmp_path: Path) -> None:
+    suite = write_suite(
+        tmp_path,
+        """
+def test_status(hermetic_client):
+    response = hermetic_client.get("/ok", params={"api_key": "QUERYSECRET"})
+    response.raise_for_status()
+    assert response.url.params["api_key"] == "other"
+""",
+    )
+    (result,) = execute_suite(suite, server)
+    assert result.status == "failed" and "QUERYSECRET" not in (result.message or "")
+
+
+def test_json_body_secrets_are_masked_in_failure_text(server: str, tmp_path: Path) -> None:
+    suite = write_suite(
+        tmp_path,
+        """
+def test_body(hermetic_client):
+    body = hermetic_client.post("/pets", json={"password": "hunter2hunter2"}).json()
+    assert body == {}
+""",
+    )
+    (result,) = execute_suite(suite, server)
+    assert result.status == "failed" and "hunter2hunter2" not in (result.message or "")
+
+
+def test_origin_error_does_not_quote_url_credentials(server: str, tmp_path: Path) -> None:
+    suite = write_suite(
+        tmp_path,
+        """
+def test_escape(hermetic_client):
+    hermetic_client.get("http://user:PASSWORD1@elsewhere.invalid/x?token=TOKEN123")
+""",
+    )
+    (result,) = execute_suite(suite, server)
+    message = result.message or ""
+    assert "tests may only call the target" in message
+    assert "PASSWORD1" not in message and "TOKEN123" not in message
+
+
+def test_credential_is_masked_before_the_message_is_cut(server: str, tmp_path: Path) -> None:
+    suite = write_suite(
+        tmp_path,
+        """
+def test_long(hermetic_client):
+    secret = "S3CRET-VALUE-XYZ"
+    hermetic_client.get("/ok", headers={"X-Api-Key": secret})
+    assert False, "x" * 3990 + secret
+""",
+    )
+    (result,) = execute_suite(suite, server)
+    message = result.message or ""
+    assert "S3CRET" not in message and len(message) <= 4000
+
+
+def test_compressed_and_deeply_nested_bodies_do_not_break_the_hook(
+    server: str, tmp_path: Path
+) -> None:
+    suite = write_suite(
+        tmp_path,
+        """
+def test_odd_bodies(hermetic_client):
+    assert hermetic_client.get("/gzip").json()["big"]
+    assert hermetic_client.get("/deep").status_code == 200
+""",
+    )
+    (result,) = execute_suite(suite, server)
+    assert result.status == "passed"
+    gz, deep = result.exchanges
+    assert gz.response_body is None  # compressed: not read in the hook
+    assert deep.response_body is not None and deep.response_body.startswith("[[[")

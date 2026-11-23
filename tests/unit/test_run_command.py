@@ -163,3 +163,25 @@ def test_every_sink_runs_even_if_one_fails(server: str, tmp_path: Path) -> None:
     with pytest.raises(SinkError, match=r"was saved, but publishing failed: Boom: read-only"):
         run_suite(suite, server, Store(), [Boom(), Fine()])  # type: ignore[arg-type]
     assert published == ["saved", "fine"]
+
+
+def test_sink_failure_still_exits_1_when_tests_failed(server: str, tmp_path: Path) -> None:
+    unwritable = tmp_path / "reports"
+    unwritable.write_text("a file where the directory should be")
+    args = [
+        "--target",
+        server,
+        "--history-dir",
+        str(tmp_path / "h"),
+        "--report-dir",
+        str(unwritable),
+    ]
+    failing = runner.invoke(
+        app, ["run", str(write_suite(tmp_path, "== 500")), *args, "--report", "json"]
+    )
+    assert failing.exit_code == 1 and "was saved, but publishing failed" in failing.output
+    passing_suite = tmp_path / "ok"
+    passing_suite.mkdir()
+    (passing_suite / "test_ok.py").write_text("def test_ok():\n    pass\n")
+    passing = runner.invoke(app, ["run", str(passing_suite), *args, "--report", "json"])
+    assert passing.exit_code == 2

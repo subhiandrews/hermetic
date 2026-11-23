@@ -9,7 +9,7 @@ import typer
 
 from hermetic import __version__
 from hermetic.execute import ExecuteError
-from hermetic.history import RunStoreError, open_store
+from hermetic.history import RunRecord, RunStoreError, open_store
 from hermetic.ingest import IngestError, ServiceModel
 from hermetic.ingest import ingest as run_ingest
 from hermetic.report import SinkContext, SinkError, load_sinks
@@ -74,6 +74,7 @@ def run(
     if docs is not None and spec is None:
         typer.echo("error: --docs needs --spec: the docs are read together with it", err=True)
         raise typer.Exit(code=2)
+    record: RunRecord | None = None
     try:
         model: ServiceModel | None = run_ingest(spec, docs) if spec is not None else None
         sinks = load_sinks(report or ["stdout"], SinkContext(output_dir=report_dir))
@@ -82,6 +83,11 @@ def run(
         )
     except (IngestError, ExecuteError, RunStoreError, SinkError) as exc:
         typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=2) from exc
+        # A sink failure comes after the run happened: tests that failed still exit 1.
+        record = exc.record if isinstance(exc, SinkError) else None
+        if record is None:
+            raise typer.Exit(code=2) from exc
+        failed = any(result.status in ("failed", "error") for result in record.results)
+        raise typer.Exit(code=1 if failed else 2) from exc
     if any(result.status in ("failed", "error") for result in record.results):
         raise typer.Exit(code=1)

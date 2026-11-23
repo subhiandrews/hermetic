@@ -81,3 +81,27 @@ def test_secret_values_and_masking() -> None:
     )
     assert secrets == {"Bearer abc123", "abc123", "k123"}
     assert mask_secrets("got Bearer abc123 and abc123", secrets) == f"got {REDACTED} and {REDACTED}"
+
+
+def test_short_secrets_are_not_masked() -> None:
+    from hermetic.redact import mask_secrets
+
+    assert mask_secrets("a=1 and token", {"a=1", "x"}) == "a=1 and token"
+
+
+def test_url_secrets() -> None:
+    from hermetic.redact import url_secrets
+
+    assert url_secrets("http://u:pw123@h/p?api_key=K1&q=v&token=") == {"pw123", "K1"}
+    assert url_secrets("http://h/p") == set()
+
+
+def test_redact_body_reports_the_values_it_masked() -> None:
+    found: set[str] = set()
+    redact_body(b'{"password": "pw", "n": 1, "token": 5, "x": {"secret": "deep"}}', found)
+    assert found == {"pw", "deep"}
+
+
+def test_deeply_nested_json_is_kept_as_text() -> None:
+    nested = b"[" * 100_000 + b"]" * 100_000
+    assert (redact_body(nested) or "").startswith("[[[")

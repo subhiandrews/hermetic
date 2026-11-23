@@ -52,6 +52,7 @@ def run_suite(
             failures.append(f"{type(sink).__name__}: {exc}")
     if failures:
         raise SinkError(
-            f"run {record.run_id} was saved, but publishing failed: {'; '.join(failures)}"
+            f"run {record.run_id} was saved, but publishing failed: {'; '.join(failures)}",
+            record,
         )
     return record

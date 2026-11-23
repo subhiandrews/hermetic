@@ -75,10 +75,23 @@ def secret_values(headers: Mapping[str, str]) -> set[str]:
     return found
 
 
+MIN_MASKED_LENGTH = 4  # shorter values would mangle the text they are replaced in
+
+
 def mask_secrets(text: str, secrets: set[str]) -> str:
     for secret in sorted(secrets, key=len, reverse=True):
-        text = text.replace(secret, REDACTED)
+        if len(secret) >= MIN_MASKED_LENGTH:
+            text = text.replace(secret, REDACTED)
     return text
+
+
+def url_secrets(url: str) -> set[str]:
+    """The userinfo password and the secret-looking query values of a URL."""
+    parts = urlsplit(url)
+    found = {value for key, value in parse_qsl(parts.query) if _is_sensitive_key(key) and value}
+    if parts.password:
+        found.add(parts.password)
+    return found
 
 
 def redact_url(url: str) -> str:
@@ -94,21 +107,28 @@ def redact_url(url: str) -> str:
     return urlunsplit(parts._replace(netloc=netloc, query=query if parts.query else ""))
 
 
-def _redact_json(value: Any) -> Any:
+def _redact_json(value: Any, found: set[str]) -> Any:
+    """Mask secret-looking fields; the string values masked are added to `found`."""
     if isinstance(value, dict):
-        return {
-            key: REDACTED if _is_sensitive_key(key) else _redact_json(item)
-            for key, item in value.items()
-        }
+        masked: dict[str, Any] = {}
+        for key, item in value.items():
+            if _is_sensitive_key(key):
+                if isinstance(item, str):
+                    found.add(item)
+                masked[key] = REDACTED
+            else:
+                masked[key] = _redact_json(item, found)
+        return masked
     if isinstance(value, list):
-        return [_redact_json(item) for item in value]
+        return [_redact_json(item, found) for item in value]
     return value
 
 
-def redact_body(raw: bytes) -> str | None:
+def redact_body(raw: bytes, secrets: set[str] | None = None) -> str | None:
     """Decode a body for storage: secret-looking JSON fields masked, length bounded.
 
-    Returns None for an empty body. A body that is not UTF-8 is described, not stored.
+    String values it masks are added to `secrets`, if given. Returns None for an empty body.
+    A body that is not UTF-8 is described, not stored.
     """
     if not raw:
         return None
@@ -117,8 +137,12 @@ def redact_body(raw: bytes) -> str | None:
     except UnicodeDecodeError:
         return f"<{len(raw)} bytes of binary data>"
     # Not JSON: stored as text. Only JSON field names can be recognised as secrets.
-    with contextlib.suppress(ValueError):
-        text = json.dumps(_redact_json(json.loads(text)))
+    found: set[str] = set()
+    # RecursionError: a few KB of `[` is enough to overflow the parser.
+    with contextlib.suppress(ValueError, RecursionError):
+        text = json.dumps(_redact_json(json.loads(text), found))
+        if secrets is not None:
+            secrets |= found
     if len(text) > MAX_BODY_CHARS:
         return text[:MAX_BODY_CHARS] + f"... [truncated, {len(text)} characters]"
     return text

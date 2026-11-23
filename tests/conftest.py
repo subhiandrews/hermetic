@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import threading
 from collections.abc import Iterator
@@ -27,6 +28,19 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Transfer-Encoding", "chunked")
             self.end_headers()
             self.wfile.write(b"5\r\nhello\r\n0\r\n\r\n")
+        elif self.path == "/gzip":
+            body = gzip.compress(b'{"big": "' + b"a" * 5000 + b'"}')
+            self.send_response(200)
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.path == "/deep":
+            body = b"[" * 3000 + b"]" * 3000
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         elif self.path == "/empty":
             self.send_response(204)
             self.send_header("Content-Length", "0")
