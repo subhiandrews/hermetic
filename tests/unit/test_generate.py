@@ -141,6 +141,14 @@ def test_a_symlinked_test_file_is_never_read_into_the_prompt(tmp_path: Path) -> 
     assert secret.read_text() == "PRIVATE KEY"
 
 
+def test_written_files_are_not_owner_only(tmp_path: Path) -> None:
+    suite = tmp_path / "suite"
+    generate_suite(model_from(tmp_path), FakeAuthor(), suite)
+    written = [suite / MANIFEST_NAME, *suite.glob("test_*.py")]
+    assert len(written) > 1
+    assert {path.stat().st_mode & 0o777 for path in written} == {0o644}
+
+
 def test_a_deleted_test_file_is_regenerated(tmp_path: Path) -> None:
     model = model_from(tmp_path)
     suite = tmp_path / "suite"
