@@ -6,9 +6,9 @@ from typing import Any
 
 import pytest
 
-from hermetic.diffing.manifest import ManifestEntry, load_manifest, save_manifest
+from hermetic.diffing.manifest import ManifestEntry, file_name_for, load_manifest, save_manifest
 from hermetic.generate import GenerateError, Manifest, ManifestError, generate_suite
-from hermetic.generate.suite import MANIFEST_NAME, file_name_for, fragment_text
+from hermetic.generate.suite import MANIFEST_NAME, fragment_text
 from hermetic.ingest import ServiceModel, ingest
 from tests.fakes import FakeAuthor, good_source
 
@@ -197,13 +197,13 @@ def test_fragment_text_omits_the_hash(tmp_path: Path) -> None:
 def entry(**over: str) -> ManifestEntry:
     fields = {
         "operation_id": "op",
-        "test_file": "test_op_12345678.py",
         "fragment_hash": "h",
         "fragment": "{}",
         "prompt_version": "1",
         "reason": "r",
     }
     fields.update(over)
+    fields.setdefault("test_file", file_name_for(fields["operation_id"]))
     return ManifestEntry.model_validate(fields)
 
 
@@ -227,6 +227,10 @@ def test_missing_manifest_is_empty(tmp_path: Path) -> None:
         (json.dumps({"entries": {"x": entry().model_dump()}}), "invalid entry for 'x'"),
         (
             json.dumps({"entries": {"op": entry(test_file="../evil.py").model_dump()}}),
+            "invalid entry for 'op'",
+        ),
+        (  # a well-formed name that is not the one computed for this operation
+            json.dumps({"entries": {"op": entry(test_file="test_other_12345678.py").model_dump()}}),
             "invalid entry for 'op'",
         ),
     ],

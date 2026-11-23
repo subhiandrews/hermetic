@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -12,9 +13,17 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 MANIFEST_VERSION = 1
 MAX_MANIFEST_BYTES = 8 * 1024 * 1024
-# The only shape of file name the generator writes. The manifest is a committed file, so a
-# name read back from it is checked before it is used to write or delete anything.
-TEST_FILE_PATTERN = re.compile(r"test_[A-Za-z0-9_]{1,120}\.py")
+
+
+def file_name_for(operation_id: str) -> str:
+    """A safe, collision-free file name: the slug alone could clash (`a-b` and `a_b`).
+
+    The manifest is a committed file, so a name read back from it must equal this one before
+    it is used to write or delete anything.
+    """
+    slug = re.sub(r"[^A-Za-z0-9_]", "_", operation_id)[:80]
+    digest = hashlib.sha256(operation_id.encode("utf-8")).hexdigest()[:8]
+    return f"test_{slug}_{digest}.py"
 
 
 class ManifestError(Exception):
@@ -58,7 +67,7 @@ def load_manifest(path: Path) -> Manifest:
             f"manifest {path} has version {manifest.version}; expected {MANIFEST_VERSION}"
         )
     for key, entry in manifest.entries.items():
-        if key != entry.operation_id or not TEST_FILE_PATTERN.fullmatch(entry.test_file):
+        if key != entry.operation_id or entry.test_file != file_name_for(key):
             raise ManifestError(f"manifest {path} has an invalid entry for {key!r}")
     return manifest
 

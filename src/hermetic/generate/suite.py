@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
-import re
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from hermetic.diffing import plan_changes
-from hermetic.diffing.manifest import Manifest, ManifestEntry, load_manifest, save_manifest
+from hermetic.diffing.manifest import (
+    Manifest,
+    ManifestEntry,
+    file_name_for,
+    load_manifest,
+    save_manifest,
+)
 from hermetic.generate.author import AuthoredTest, AuthorRequest, SuiteAuthor
 from hermetic.generate.validate import SourceRejected, validate_source
 from hermetic.history.models import SuiteChange
@@ -24,13 +28,6 @@ MAX_CONCURRENT_AUTHORS = 4
 
 class GenerateError(Exception):
     """The suite could not be generated. Nothing on disk was changed."""
-
-
-def file_name_for(operation_id: str) -> str:
-    """A safe, collision-free file name: the slug alone could clash (`a-b` and `a_b`)."""
-    slug = re.sub(r"[^A-Za-z0-9_]", "_", operation_id)[:80]
-    digest = hashlib.sha256(operation_id.encode("utf-8")).hexdigest()[:8]
-    return f"test_{slug}_{digest}.py"
 
 
 def fragment_text(operation: Operation) -> str:
