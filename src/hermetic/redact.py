@@ -42,12 +42,20 @@ _SENSITIVE_KEY_PARTS = (
     "accesskey",
     "cookie",
     "session",
+    "subscription-key",
+    "subscription_key",
+    "functions-key",
+    "authentication",
+    "signature",
+    "assertion",
 )
+# Too short to match as a fragment ("key" is inside "monkey" and "keyword").
+_SENSITIVE_EXACT_KEYS = frozenset({"key", "sig", "jwt"})
 
 
 def _is_sensitive_key(key: str) -> bool:
     lowered = key.lower()
-    return any(part in lowered for part in _SENSITIVE_KEY_PARTS)
+    return lowered in _SENSITIVE_EXACT_KEYS or any(part in lowered for part in _SENSITIVE_KEY_PARTS)
 
 
 def is_sensitive_header(name: str) -> bool:
@@ -114,32 +122,50 @@ def mask_secrets(text: str, secrets: set[str]) -> str:
     return text
 
 
+def _mask_params(encoded: str) -> str:
+    """Mask the secret-looking parameters of a query string or an OAuth-style fragment."""
+    return urlencode(
+        [
+            (key, REDACTED if _is_sensitive_key(key) else value)
+            for key, value in parse_qsl(encoded, keep_blank_values=True)
+        ]
+    )
+
+
 def url_secrets(url: str) -> set[str]:
-    """The userinfo password and the secret-looking query values of a URL."""
+    """The userinfo password and the secret-looking query and fragment values of a URL."""
     try:
         parts = urlsplit(url)
     except ValueError:  # a buggy service can send a malformed URL; there is nothing to mask
         return set()
-    found = {value for key, value in parse_qsl(parts.query) if _is_sensitive_key(key) and value}
+    found = {
+        value
+        for encoded in (parts.query, parts.fragment)
+        for key, value in parse_qsl(encoded)
+        if _is_sensitive_key(key) and value
+    }
     if parts.password:
         found.add(parts.password)
     return found
 
 
 def redact_url(url: str) -> str:
-    """Drop userinfo and mask the values of secret-looking query parameters."""
+    """Drop userinfo and mask the values of secret-looking query and fragment parameters.
+
+    The fragment is read as parameters when it has any (`#access_token=...`, as OAuth
+    implicit flows return it); other fragments are kept.
+    """
     try:
         parts = urlsplit(url)
     except ValueError:  # too malformed to clean, so it is not shown
         return "<unparseable URL>"
-    netloc = parts.netloc.rpartition("@")[2]
-    query = urlencode(
-        [
-            (key, REDACTED if _is_sensitive_key(key) else value)
-            for key, value in parse_qsl(parts.query, keep_blank_values=True)
-        ]
+    return urlunsplit(
+        parts._replace(
+            netloc=parts.netloc.rpartition("@")[2],
+            query=_mask_params(parts.query) if parts.query else "",
+            fragment=_mask_params(parts.fragment) if "=" in parts.fragment else parts.fragment,
+        )
     )
-    return urlunsplit(parts._replace(netloc=netloc, query=query if parts.query else ""))
 
 
 def _redact_json(value: Any, found: set[str]) -> Any:
@@ -150,6 +176,8 @@ def _redact_json(value: Any, found: set[str]) -> Any:
             if _is_sensitive_key(key):
                 if isinstance(item, str):
                     found.add(item)
+                elif isinstance(item, int | float) and not isinstance(item, bool):
+                    found.add(str(item))
                 masked[key] = REDACTED
             else:
                 masked[key] = _redact_json(item, found)

@@ -100,8 +100,11 @@ def test_url_secrets() -> None:
 
 def test_redact_body_reports_the_values_it_masked() -> None:
     found: set[str] = set()
-    redact_body(b'{"password": "pw", "n": 1, "token": 5, "x": {"secret": "deep"}}', found)
-    assert found == {"pw", "deep"}
+    redact_body(
+        b'{"password": "pw", "token": 123456, "secret_flag": true, "x": {"secret": "deep"}}',
+        found,
+    )
+    assert found == {"pw", "deep", "123456"}  # numbers count, booleans do not
 
 
 def test_deeply_nested_json_is_kept_as_text() -> None:
@@ -174,3 +177,30 @@ def test_capture_reports_whether_the_body_is_complete() -> None:
     assert capture_body(b"").complete and capture_body(b"{}").complete
     assert not capture_body(b"\xff").complete
     assert not capture_body(b"x" * (MAX_BODY_CHARS + 1)).complete
+
+
+@pytest.mark.parametrize(
+    "name", ["Ocp-Apim-Subscription-Key", "X-Functions-Key", "Authentication", "key", "SIG", "jwt"]
+)
+def test_more_credential_names_are_sensitive(name: str) -> None:
+    from hermetic.redact import is_sensitive_header
+
+    assert is_sensitive_header(name)
+
+
+@pytest.mark.parametrize("name", ["monkey", "keyword", "sortKey", "Content-Type"])
+def test_short_fragments_do_not_overmatch(name: str) -> None:
+    from hermetic.redact import is_sensitive_header
+
+    assert not is_sensitive_header(name)
+
+
+def test_url_fragment_parameters_are_masked_and_collected() -> None:
+    from hermetic.redact import redact_url, url_secrets
+
+    url = "http://h/cb?sig=SIGV&x=1#access_token=FRAGTOK&state=ok"
+    assert (
+        redact_url(url) == "http://h/cb?sig=%5BREDACTED%5D&x=1#access_token=%5BREDACTED%5D&state=ok"
+    )
+    assert url_secrets(url) == {"SIGV", "FRAGTOK"}
+    assert redact_url("http://h/p#section-2") == "http://h/p#section-2"

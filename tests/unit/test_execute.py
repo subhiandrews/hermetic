@@ -527,3 +527,21 @@ def test_bin(hermetic_client):
     (result,) = execute_suite(suite, server)
     assert not result.exchanges[0].request_body_complete
     assert result.curl is not None and "not reproduced here" in result.curl
+
+
+def test_the_client_asks_for_uncompressed_bodies(server: str, tmp_path: Path) -> None:
+    suite = write_suite(
+        tmp_path,
+        """
+def test_header(hermetic_client):
+    hermetic_client.get("/ok")
+""",
+    )
+    (result,) = execute_suite(suite, server)
+    assert result.exchanges[0].request_headers["accept-encoding"] == "identity"
+
+
+def test_many_tests_keep_their_own_results(server: str, tmp_path: Path) -> None:
+    source = "\n".join(f"def test_{n}(hermetic_client):\n    assert {n} != 7\n" for n in range(12))
+    results = execute_suite(write_suite(tmp_path, source), server)
+    assert [r.status for r in results].count("failed") == 1 and len(results) == 12

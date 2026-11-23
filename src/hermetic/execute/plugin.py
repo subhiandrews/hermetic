@@ -106,6 +106,7 @@ class HermeticPlugin:
         self._operations: dict[str, str] = {}
         self._durations: dict[str, float] = {}
         self.results: list[TestResult] = []
+        self._position: dict[str, int] = {}  # nodeid -> index in results
         self.collection_failed = False
 
     def pytest_configure(self, config: pytest.Config) -> None:
@@ -120,6 +121,9 @@ class HermeticPlugin:
             base_url=self._target,
             timeout=self._timeout,
             follow_redirects=False,
+            # Identity keeps bodies readable and bounded, so credentials in them can be
+            # collected and masked; a compressed body is never decoded by the hook.
+            headers={"Accept-Encoding": "identity"},
             event_hooks={"request": [recording.on_request], "response": [recording.on_response]},
         ) as client:
             yield client
@@ -136,15 +140,17 @@ class HermeticPlugin:
         status = _status_of(report)
         if status is None:
             return
-        existing = next((r for r in self.results if r.test_id == nodeid), None)
-        if existing is not None:
+        position = self._position.get(nodeid)
+        if position is not None:
+            existing = self.results[position]
             # Only a teardown failure can settle a test twice.
             teardown = self._masked(nodeid, report)
             if existing.status == "failed":  # keep the assertion text, add the teardown error
                 teardown = f"{existing.message}\n\nteardown error: {teardown}"
             if existing.status != "error":  # an earlier setup error keeps its own message
-                self._replace(existing, status="error", message=teardown)
+                self._replace(position, status="error", message=teardown)
             return
+        self._position[nodeid] = len(self.results)
         self.results.append(self._result(nodeid, status, self._masked(nodeid, report)))
 
     def pytest_collectreport(self, report: pytest.CollectReport) -> None:
@@ -179,8 +185,8 @@ class HermeticPlugin:
             curl=_repro(status, exchanges),
         )
 
-    def _replace(self, old: TestResult, *, status: TestStatus, message: str | None) -> None:
-        index = self.results.index(old)
+    def _replace(self, index: int, *, status: TestStatus, message: str | None) -> None:
+        old = self.results[index]
         self.results[index] = old.model_copy(
             update={
                 "status": status,
