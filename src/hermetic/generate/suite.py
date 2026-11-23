@@ -7,6 +7,7 @@ import json
 import os
 import re
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from hermetic.diffing import plan_changes
@@ -18,6 +19,7 @@ from hermetic.ingest import ServiceModel
 from hermetic.ingest.models import Operation
 
 MANIFEST_NAME = Path(".hermetic") / "manifest.json"
+MAX_CONCURRENT_AUTHORS = 4
 
 
 class GenerateError(Exception):
@@ -49,7 +51,13 @@ def generate_suite(
     """
     manifest_path = suite_dir / MANIFEST_NAME
     manifest = load_manifest(manifest_path)
-    plan = plan_changes(model, manifest, author.prompt_version, force=force)
+    plan = plan_changes(
+        model,
+        manifest,
+        author.prompt_version,
+        force=force,
+        existing_files=_existing_files(suite_dir),
+    )
 
     work: list[tuple[Operation, str, str | None]] = []  # operation, reason, previous source
     work.extend((operation, "a new operation in the spec", None) for operation in plan.added)
@@ -57,8 +65,8 @@ def generate_suite(
         previous = _read_previous(suite_dir, modification.previous)
         work.append((modification.operation, modification.reason, previous))
 
-    authored: dict[str, tuple[AuthoredTest, str]] = {}
-    for operation, reason, previous in work:
+    def author_one(item: tuple[Operation, str, str | None]) -> tuple[AuthoredTest, str]:
+        operation, reason, previous = item
         request = AuthorRequest(
             operation=operation,
             service_title=model.title,
@@ -76,7 +84,14 @@ def generate_suite(
             raise GenerateError(
                 f"could not write a test for {operation.operation_id!r}: {exc}"
             ) from exc
-        authored[operation.operation_id] = (result, reason)
+        return result, reason
+
+    # The model round trips are independent, so overlap them. `map` yields in spec order and
+    # raises the first failure in that order; nothing is written until every test is in hand.
+    authored: dict[str, tuple[AuthoredTest, str]] = {}
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_AUTHORS) as pool:
+        for (operation, _, _), outcome in zip(work, pool.map(author_one, work), strict=True):
+            authored[operation.operation_id] = outcome
 
     changes: list[SuiteChange] = []
     for operation in plan.added:
@@ -135,9 +150,21 @@ def _reason(reason: str, note: str) -> str:
     return f"{reason}: {note}" if note else reason
 
 
+def _existing_files(suite_dir: Path) -> frozenset[str]:
+    """Names of the regular files in `suite_dir`; a symlink does not count as a test file."""
+    if not suite_dir.is_dir():
+        return frozenset()
+    return frozenset(
+        path.name for path in suite_dir.iterdir() if path.is_file() and not path.is_symlink()
+    )
+
+
 def _read_previous(suite_dir: Path, entry: ManifestEntry) -> str | None:
+    path = suite_dir / entry.test_file
+    if path.is_symlink():
+        return None  # the file is committed and untrusted: never send what a link points at
     try:
-        return (suite_dir / entry.test_file).read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None  # the file was deleted or edited into something unreadable: start afresh
 

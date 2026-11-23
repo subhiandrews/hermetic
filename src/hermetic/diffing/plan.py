@@ -25,13 +25,19 @@ class SuitePlan:
 
 
 def plan_changes(
-    model: ServiceModel, manifest: Manifest, prompt_version: str, *, force: bool = False
+    model: ServiceModel,
+    manifest: Manifest,
+    prompt_version: str,
+    *,
+    force: bool = False,
+    existing_files: frozenset[str] | None = None,
 ) -> SuitePlan:
     """Classify every operation against the manifest, in spec order.
 
     A test is rewritten when the operation's fragment hash changed (which includes any shared
-    schema it uses), when the prompt version changed, or when `force` is set. A change to the
-    docs alone does not rewrite tests: docs are not tied to one operation, so use `force`.
+    schema it uses), when the prompt version changed, when its test file is not among
+    `existing_files` (None skips that check), or when `force` is set. A change to the docs
+    alone does not rewrite tests: docs are not tied to one operation, so use `force`.
     """
     added: list[Operation] = []
     modified: list[Modification] = []
@@ -47,6 +53,8 @@ def plan_changes(
         elif entry.prompt_version != prompt_version:
             reason = f"the generation prompt changed ({entry.prompt_version} -> {prompt_version})"
             modified.append(Modification(operation, entry, reason))
+        elif existing_files is not None and entry.test_file not in existing_files:
+            modified.append(Modification(operation, entry, "its test file was missing"))
         elif force:
             modified.append(Modification(operation, entry, "regeneration was requested"))
         else:

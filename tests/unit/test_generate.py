@@ -124,6 +124,48 @@ def test_missing_previous_file_means_no_previous_source(tmp_path: Path) -> None:
     assert previous["deletePet"] == good_source("deletePet")
 
 
+def test_a_symlinked_test_file_is_never_read_into_the_prompt(tmp_path: Path) -> None:
+    model = model_from(tmp_path)
+    suite = tmp_path / "suite"
+    generate_suite(model, FakeAuthor(), suite)
+    secret = tmp_path / "secret.txt"
+    secret.write_text("PRIVATE KEY")
+    target = suite / file_name_for("addPet")
+    target.unlink()
+    target.symlink_to(secret)
+    author = FakeAuthor()
+    generate_suite(model, author, suite)  # the symlink counts as a missing test file
+    (request,) = author.requests
+    assert request.operation.operation_id == "addPet" and request.previous_source is None
+    assert not target.is_symlink() and "PRIVATE" not in target.read_text()
+    assert secret.read_text() == "PRIVATE KEY"
+
+
+def test_a_deleted_test_file_is_regenerated(tmp_path: Path) -> None:
+    model = model_from(tmp_path)
+    suite = tmp_path / "suite"
+    generate_suite(model, FakeAuthor(), suite)
+    (suite / file_name_for("addPet")).unlink()
+    author = FakeAuthor()
+    (change,) = generate_suite(model, author, suite)
+    assert change.kind == "modified"
+    assert change.reason.startswith("its test file was missing")
+    assert (suite / file_name_for("addPet")).exists()
+
+
+def test_authoring_runs_concurrently_and_reports_the_first_failure_in_spec_order(
+    tmp_path: Path,
+) -> None:
+    model = model_from(tmp_path)
+    first, second, *_ = (o.operation_id for o in model.operations)
+    author = FakeAuthor()
+    author.source_for[first] = "import os\n"
+    author.source_for[second] = "import sys\n"
+    with pytest.raises(GenerateError, match=f"'{first}' rejected: importing `os`"):
+        generate_suite(model, author, tmp_path / "suite")
+    assert not (tmp_path / "suite").exists()
+
+
 def test_unwritable_target_cleans_up_its_temp_file(tmp_path: Path) -> None:
     suite = tmp_path / "suite"
     suite.mkdir()

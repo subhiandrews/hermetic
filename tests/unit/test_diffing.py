@@ -45,6 +45,30 @@ def test_classifies_every_operation() -> None:
     assert [e.operation_id for e in plan.dropped] == ["also_gone", "gone"]
 
 
+def test_a_missing_test_file_is_regenerated_only_when_files_are_given() -> None:
+    model = ingest(SPEC)
+    first, second, *_ = model.operations
+    entries = {
+        op.operation_id: ManifestEntry(
+            operation_id=op.operation_id,
+            test_file=f"test_{op.operation_id}.py",
+            fragment_hash=op.fragment_hash,
+            fragment="{}",
+            prompt_version="1",
+            reason="r",
+        )
+        for op in (first, second)
+    }
+    manifest = Manifest(entries=entries)
+    assert first.operation_id in plan_changes(model, manifest, "1").unchanged
+    present = frozenset({f"test_{first.operation_id}.py"})
+    plan = plan_changes(model, manifest, "1", existing_files=present)
+    assert plan.unchanged == [first.operation_id]
+    (modified,) = plan.modified
+    assert modified.operation.operation_id == second.operation_id
+    assert modified.reason == "its test file was missing"
+
+
 def test_diffing_imports_first_without_a_cycle() -> None:
     done = subprocess.run(
         [sys.executable, "-c", "import hermetic.diffing, hermetic.generate"],
