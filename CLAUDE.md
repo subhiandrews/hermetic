@@ -25,10 +25,9 @@ CI (`.github/workflows/ci.yml`) runs the lint, mypy and pytest-with-coverage ste
 ## Architecture decisions that span files
 
 - **Deterministic code vs agent.** Parsing, diffing, execution, run recording and reporting are plain code. The Claude Agent SDK is used only for dependency inference and test authoring, and must sit behind an interface so unit tests use a fake agent. That is how the 100% coverage gate stays reachable without API calls.
-- **Run history is flat files behind a `RunStore` protocol** (`save`, `get`, `list`), stored in `.hermetic/runs/<run_id>.json` plus `index.json`. `FileRunStore` is the only v1 implementation; a database store is a future drop-in, so the CLI and the web UI (`hermetic serve`) must depend only on the protocol. `.hermetic/runs/` is gitignored.
-- **Two `.hermetic` directories mean different things.** `.hermetic/runs/` is local run history (ignored). `tests/.hermetic/manifest.json` is the test manifest (spec-fragment hashes, per-test reasons) and is committed.
-- **Suite changes carry reasons.** Each run records tests added, modified and dropped since the previous run, with a reason for each; the manifest stores the reason so it is not lost.
-- **Compose allowlist.** Provisioning mounts the host Docker socket, which is root-equivalent. Every agent-generated compose file must pass a deterministic validation (no privileged, host network/PID/IPC, added capabilities, device mounts, bind mounts outside the workdir, the socket itself, or unapproved images) before it runs.
+- **Run history** (layout and fields in `docs/architecture.md`): the CLI and the web UI must depend only on the `RunStore` protocol, never on `FileRunStore`, so a database store can replace it.
+- **Two `.hermetic` directories mean different things.** `.hermetic/runs/` is local history (gitignored); `tests/.hermetic/manifest.json` is the test manifest and is committed.
+- **Compose allowlist.** Provisioning mounts the host Docker socket (root-equivalent), so every agent-generated compose file must pass deterministic validation before it runs. The rejected constructs are listed in `docs/architecture.md` (Safety).
 
 ## Repo conventions
 
