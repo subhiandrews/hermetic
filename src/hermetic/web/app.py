@@ -88,16 +88,10 @@ def create_app(store: RunStore, allowed_hosts: Sequence[str] = LOOPBACK_HOSTS) -
     ) -> list[RunSummary]:
         return store.list()[:limit]  # newest first; history only grows, so the payload is capped
 
-    @app.get("/api/runs/{run_id}")
-    def get_run(run_id: str) -> RunRecord:
-        # Until the API is service-scoped, look in each service for the run. Run ids carry a
-        # timestamp and a random tail, so they do not repeat across services in practice.
-        for entry in store.services():
-            try:
-                return store.get(entry.service, run_id)
-            except RunNotFoundError:
-                continue
-        raise RunNotFoundError(f"no run {run_id!r}")
+    @app.get("/api/services/{service}/runs/{run_id}")
+    def get_run(service: str, run_id: str) -> RunRecord:
+        # A run id is only unique within its service, so the service is part of the address.
+        return store.get(service, run_id)
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:

@@ -175,6 +175,40 @@ def test_migration_keeps_a_run_the_default_service_already_has(tmp_path: Path) -
     assert (root / "same.json").exists()  # left where it was, not overwritten or deleted
 
 
+def test_migration_happens_once_per_store_and_a_failure_is_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "runs"
+    write_flat(root, "old1")
+    store = FileRunStore(root)
+    real_link = os.link
+
+    def refuse(src: object, dst: object) -> None:
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr("hermetic.history.file_store.os.link", refuse)
+    with pytest.raises(RunStoreError, match="cannot move the earlier run history"):
+        store.list()
+    monkeypatch.setattr("hermetic.history.file_store.os.link", real_link)
+    assert [s.run_id for s in store.list()] == ["old1"]  # the failure was not remembered
+    write_flat(root, "late")
+    assert [s.run_id for s in store.list()] == ["old1"]  # a finished migration is not repeated
+
+
+def test_a_file_another_process_already_moved_is_skipped_quietly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "runs"
+    write_flat(root, "old1")
+    write_flat(root, "old2")
+
+    def vanished(src: object, dst: object) -> None:
+        raise FileNotFoundError
+
+    monkeypatch.setattr("hermetic.history.file_store.os.link", vanished)
+    assert FileRunStore(root).list() == []  # nothing was readable, and nothing raised
+
+
 def test_migration_ignores_files_that_are_not_runs(tmp_path: Path) -> None:
     root = tmp_path / "runs"
     root.mkdir()

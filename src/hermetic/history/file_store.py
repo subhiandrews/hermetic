@@ -1,8 +1,4 @@
-"""Flat-file RunStore: `<root>/<service>/<run_id>.json` per run plus `<root>/<service>/index.json`.
-
-History written before services existed (`<root>/<run_id>.json`) is moved under the default
-service the first time the store is used.
-"""
+"""Flat-file RunStore: `<root>/<service>/<run_id>.json` per run, plus an `index.json` each."""
 
 from __future__ import annotations
 
@@ -159,6 +155,7 @@ class FileRunStore:
     def __init__(self, root: Path) -> None:
         self._root = root
         self._dirs: dict[str, _ServiceDir] = {}  # keeps each directory's unreadable-file memory
+        self._migrated = False
 
     def save(self, record: RunRecord) -> None:
         self._migrate_flat_history()
@@ -198,19 +195,35 @@ class FileRunStore:
         return sorted(p.name for p in entries if p.is_dir() and is_valid_service(p.name))
 
     def _migrate_flat_history(self) -> None:
-        """Move `<root>/<run_id>.json` files, and drop the old `<root>/index.json`, into the
-        default service. A file the default service already has is left where it is."""
-        with contextlib.suppress(OSError):
+        """Once per store, move `<root>/<run_id>.json` files from before services existed under
+        the default service and drop the old `<root>/index.json`. A run the default service
+        already has is left where it is, never overwritten. A failure is raised, not hidden, and
+        is retried on the next call."""
+        if self._migrated:
+            return
+        try:
             flat = sorted(self._root.glob("*.json"))
-            if not flat:
-                return
-            target = self._root / DEFAULT_SERVICE
-            target.mkdir(exist_ok=True)
-            for path in flat:
-                if path.name == INDEX_NAME:
-                    path.unlink(missing_ok=True)
-                elif _valid_run_id(path.stem) and not (target / path.name).exists():
-                    os.replace(path, target / path.name)
+            if flat:
+                target = self._root / DEFAULT_SERVICE
+                target.mkdir(exist_ok=True)
+                for path in flat:
+                    _move_flat_run(path, target)
+        except OSError as exc:
+            raise RunStoreError(
+                f"cannot move the earlier run history under 'default': {exc}"
+            ) from exc
+        self._migrated = True
+
+
+def _move_flat_run(path: Path, target: Path) -> None:
+    if path.name == INDEX_NAME:  # rebuilt per service from the run files
+        path.unlink(missing_ok=True)
+    elif _valid_run_id(path.stem):
+        try:
+            os.link(path, target / path.name)  # fails, rather than overwrites, if it exists
+        except (FileExistsError, FileNotFoundError):  # already there, or moved by another process
+            return
+        path.unlink(missing_ok=True)
 
 
 def _newest_first(summaries: Summaries) -> Summaries:

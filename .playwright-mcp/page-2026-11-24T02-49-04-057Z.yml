@@ -1,0 +1,102 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - link "Hermetic" [ref=e3] [cursor=pointer]:
+      - /url: "#/"
+    - generic [ref=e4]: run history
+  - main [ref=e5]:
+    - generic [ref=e6]:
+      - heading "Runs" [level=1] [ref=e7]
+      - generic "Pass rate of the most recent runs" [ref=e8]:
+        - 'link "2026-01-01T000000Z-aaaa00: 100% passed" [ref=e9] [cursor=pointer]':
+          - /url: "#/runs/default/2026-01-01T000000Z-aaaa00"
+        - 'link "2026-01-02T000000Z-aaaa01: 100% passed" [ref=e10] [cursor=pointer]':
+          - /url: "#/runs/default/2026-01-02T000000Z-aaaa01"
+        - 'link "2026-01-03T000000Z-aaaa02: 83% passed" [ref=e11] [cursor=pointer]':
+          - /url: "#/runs/default/2026-01-03T000000Z-aaaa02"
+        - 'link "2026-01-04T000000Z-aaaa03: 100% passed" [ref=e12] [cursor=pointer]':
+          - /url: "#/runs/default/2026-01-04T000000Z-aaaa03"
+        - 'link "2026-01-05T000000Z-aaaa04: 100% passed" [ref=e13] [cursor=pointer]':
+          - /url: "#/runs/default/2026-01-05T000000Z-aaaa04"
+        - 'link "2026-01-06T000000Z-aaaa05: 83% passed" [ref=e14] [cursor=pointer]':
+          - /url: "#/runs/default/2026-01-06T000000Z-aaaa05"
+      - table [ref=e15]:
+        - rowgroup [ref=e16]:
+          - row [ref=e17]:
+            - columnheader "Run" [ref=e18]
+            - columnheader "Started" [ref=e19]
+            - columnheader "Target" [ref=e20]
+            - columnheader "Passed" [ref=e21]
+            - columnheader "Failed" [ref=e22]
+            - columnheader "Errors" [ref=e23]
+            - columnheader "Skipped" [ref=e24]
+            - columnheader "Changes" [ref=e25]
+        - rowgroup [ref=e26]:
+          - row [ref=e27]:
+            - cell [ref=e28]:
+              - link "2026-01-06T000000Z-aaaa05" [ref=e29] [cursor=pointer]:
+                - /url: "#/runs/default/2026-01-06T000000Z-aaaa05"
+            - cell "1/5/2026, 4:00:00 PM" [ref=e30]
+            - cell "http://localhost:8080" [ref=e31]
+            - cell "5" [ref=e32]
+            - cell "1" [ref=e33]
+            - cell "0" [ref=e34]
+            - cell "0" [ref=e35]
+            - cell "+1 added ~1 modified −1 dropped" [ref=e36]:
+              - generic [ref=e37]: +1 added
+              - generic [ref=e38]: ~1 modified
+              - generic [ref=e39]: −1 dropped
+          - row [ref=e40]:
+            - cell [ref=e41]:
+              - link "2026-01-05T000000Z-aaaa04" [ref=e42] [cursor=pointer]:
+                - /url: "#/runs/default/2026-01-05T000000Z-aaaa04"
+            - cell "1/4/2026, 4:00:00 PM" [ref=e43]
+            - cell "http://localhost:8080" [ref=e44]
+            - cell "5" [ref=e45]
+            - cell "0" [ref=e46]
+            - cell "0" [ref=e47]
+            - cell "0" [ref=e48]
+            - cell [ref=e49]
+          - row [ref=e50]:
+            - cell [ref=e51]:
+              - link "2026-01-04T000000Z-aaaa03" [ref=e52] [cursor=pointer]:
+                - /url: "#/runs/default/2026-01-04T000000Z-aaaa03"
+            - cell "1/3/2026, 4:00:00 PM" [ref=e53]
+            - cell "http://localhost:8080" [ref=e54]
+            - cell "5" [ref=e55]
+            - cell "0" [ref=e56]
+            - cell "0" [ref=e57]
+            - cell "0" [ref=e58]
+            - cell [ref=e59]
+          - row [ref=e60]:
+            - cell [ref=e61]:
+              - link "2026-01-03T000000Z-aaaa02" [ref=e62] [cursor=pointer]:
+                - /url: "#/runs/default/2026-01-03T000000Z-aaaa02"
+            - cell "1/2/2026, 4:00:00 PM" [ref=e63]
+            - cell "http://localhost:8080" [ref=e64]
+            - cell "5" [ref=e65]
+            - cell "1" [ref=e66]
+            - cell "0" [ref=e67]
+            - cell "0" [ref=e68]
+            - cell [ref=e69]
+          - row [ref=e70]:
+            - cell [ref=e71]:
+              - link "2026-01-02T000000Z-aaaa01" [ref=e72] [cursor=pointer]:
+                - /url: "#/runs/default/2026-01-02T000000Z-aaaa01"
+            - cell "1/1/2026, 4:00:00 PM" [ref=e73]
+            - cell "http://localhost:8080" [ref=e74]
+            - cell "5" [ref=e75]
+            - cell "0" [ref=e76]
+            - cell "0" [ref=e77]
+            - cell "0" [ref=e78]
+            - cell [ref=e79]
+          - row [ref=e80]:
+            - cell [ref=e81]:
+              - link "2026-01-01T000000Z-aaaa00" [ref=e82] [cursor=pointer]:
+                - /url: "#/runs/default/2026-01-01T000000Z-aaaa00"
+            - cell "12/31/2025, 4:00:00 PM" [ref=e83]
+            - cell "http://localhost:8080" [ref=e84]
+            - cell "5" [ref=e85]
+            - cell "0" [ref=e86]
+            - cell "0" [ref=e87]
+            - cell "0" [ref=e88]
+            - cell [ref=e89]

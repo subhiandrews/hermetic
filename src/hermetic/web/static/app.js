@@ -35,7 +35,8 @@ async function getJson(path) {
   return response.json();
 }
 
-const runLink = (id) => `#/runs/${encodeURIComponent(id)}`;
+const runLink = (run) =>
+  `#/runs/${encodeURIComponent(run.service)}/${encodeURIComponent(run.run_id)}`;
 const ms = (value) => `${Math.round(value)} ms`;
 const badge = (label, kind) => el("span", { class: `badge ${kind}` }, label);
 
@@ -77,7 +78,7 @@ function trend(runs) {
     const label = rate === null ? "no results" : `${percent}% passed`;
     const bar = el("a", {
       class: `bar ${kind}`,
-      href: runLink(run.run_id),
+      href: runLink(run),
       title: `${run.run_id}: ${label}`,
       "aria-label": `${run.run_id}: ${label}`,
     });
@@ -91,7 +92,7 @@ function historyRow(run) {
   return el(
     "tr",
     {},
-    el("td", {}, el("a", { href: runLink(run.run_id) }, run.run_id)),
+    el("td", {}, el("a", { href: runLink(run) }, run.run_id)),
     el("td", {}, formatTime(run.started_at)),
     el("td", {}, run.target),
     el("td", { class: "num" }, String(run.passed)),
@@ -285,9 +286,11 @@ async function route() {
   app.replaceChildren("Loading…");
   let page;
   try {
-    const match = /^#\/runs\/(.+)$/.exec(location.hash);
+    const match = /^#\/runs\/([^/]+)\/([^/]+)$/.exec(location.hash);
     page = match
-      ? renderRun(await getJson(`/api/runs/${encodeURIComponent(decodeURIComponent(match[1]))}`))
+      ? renderRun(await getJson(
+          `/api/services/${encodeURIComponent(decodeURIComponent(match[1]))}/runs/${encodeURIComponent(decodeURIComponent(match[2]))}`,
+        ))
       : renderHistory(await getJson(`/api/runs?limit=${RUN_LIMIT}`));
   } catch (error) {
     page = {
