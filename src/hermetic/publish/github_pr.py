@@ -151,15 +151,17 @@ class GitHubPRPublisher:
         open_prs = self._json(
             token, "GET", f"{repo}/pulls", params={"state": "open", "head": f"{owner}:{branch}"}
         )
-        if isinstance(open_prs, list) and open_prs:
-            found = _address(open_prs[0])
-            if _text(open_prs[0], "base", "ref") != base:
-                raise PublisherError(f"{found} is open for this suite but targets another branch")
-            return found
         base_ref = quote(base, safe="/")
         base_sha = _text(
             self._json(token, "GET", f"{repo}/git/ref/heads/{base_ref}"), "object", "sha"
         )
+        if isinstance(open_prs, list) and open_prs:
+            found = _address(open_prs[0])
+            if _text(open_prs[0], "base", "ref") != base:
+                raise PublisherError(f"{found} is open for this suite but targets another branch")
+            # Anyone with push access may have added to the branch since: check it as for a reuse.
+            self._holds_only_the_suite(token, service, branch, base_sha, files, is_open=True)
+            return found
         existing = self._call(token, "GET", f"{repo}/git/ref/heads/{head}", accept=(404,))
         if existing.status_code == 404:
             self._create_branch(token, service, branch, base_sha, files)
@@ -187,17 +189,24 @@ class GitHubPRPublisher:
         return _address(pull)
 
     def _holds_only_the_suite(
-        self, token: str, service: str, branch: str, base_sha: str, files: list[tuple[str, bytes]]
+        self,
+        token: str,
+        service: str,
+        branch: str,
+        base_sha: str,
+        files: list[tuple[str, bytes]],
+        is_open: bool = False,
     ) -> bool:
         """Whether the base already has the branch's commits; refuses a branch with anything else.
 
         A reused branch should be one Hermetic made earlier, but anyone who can push may have added
-        to it, so it must be exactly one commit on `base_sha` that adds this suite's files.
+        to it, so it must be exactly one commit that adds this suite's files, on `base_sha` unless
+        `is_open` (a pull request already open may sit on an older base, and is never "merged").
         """
         repo = f"repos/{self._repo}"
         head = quote(branch, safe="/")
         diff = self._json(token, "GET", f"{repo}/compare/{base_sha}...{head}")
-        if diff.get("ahead_by") == 0 if isinstance(diff, dict) else False:
+        if not is_open and (diff.get("ahead_by") == 0 if isinstance(diff, dict) else False):
             return True  # the branch is part of the base's history: it was merged
         found = {}
         listed = diff.get("files") if isinstance(diff, dict) else None
@@ -213,12 +222,18 @@ class GitHubPRPublisher:
         one_commit = (
             isinstance(diff, dict)
             and diff.get("ahead_by") == 1
-            and diff.get("behind_by") == 0
-            and _text(diff, "merge_base_commit", "sha") == base_sha
+            and (
+                is_open
+                or (
+                    diff.get("behind_by") == 0
+                    and _text(diff, "merge_base_commit", "sha") == base_sha
+                )
+            )
         )
         if not one_commit or found != expected:
             raise PublisherError(
                 f"branch {branch} holds more or other than this suite on {base_sha[:12]}; "
+                "it may be a squash-merged or stale branch; "
                 "delete it or publish from a changed suite"
             )
         return False

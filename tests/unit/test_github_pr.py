@@ -517,3 +517,33 @@ def test_the_cli_prints_the_pull_request_address(
     args = ["publish", "--service", "svc", "--suite", str(suite), "--publisher", "github-pr"]
     result = runner.invoke(app, args)
     assert result.exit_code == 0 and f"published svc to {PR_URL}" in result.output
+
+
+@pytest.mark.parametrize(
+    "compare",
+    [
+        _tampered()[0],
+        _tampered()[1],
+        {**FakeGitHub.clean_compare(), "ahead_by": 2},
+        {"ahead_by": 0, "behind_by": 3},
+    ],
+)
+def test_an_open_pull_request_whose_branch_was_added_to_is_refused(
+    tmp_path: Path, compare: dict[str, Any]
+) -> None:
+    github = FakeGitHub()
+    github.open_prs = [{"html_url": PR_URL, "base": {"ref": "main"}}]
+    github.compare = compare
+    with pytest.raises(PublisherError, match="holds more or other than this suite"):
+        github.publisher().publish("petstore", make_suite(tmp_path / "s"))
+
+
+def test_an_open_pull_request_on_an_older_base_is_still_returned(tmp_path: Path) -> None:
+    github = FakeGitHub()
+    github.open_prs = [{"html_url": PR_URL, "base": {"ref": "main"}}]
+    github.compare = {
+        **FakeGitHub.clean_compare(),
+        "behind_by": 4,
+        "merge_base_commit": {"sha": "older"},
+    }
+    assert github.publisher().publish("petstore", make_suite(tmp_path / "s")) == PR_URL
