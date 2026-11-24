@@ -142,6 +142,26 @@ def test_serve_warns_about_a_wildcard_however_it_is_written(
     assert status_with_host(calls[0][0], "anything.example") == 200
 
 
+@pytest.mark.parametrize("entry", ["", " ", ":8000"])
+def test_serve_rejects_an_empty_allowed_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, entry: str
+) -> None:
+    calls = fake_uvicorn(monkeypatch)
+    result = runner.invoke(app, ["serve", "--history-dir", str(tmp_path), "--allowed-host", entry])
+    assert result.exit_code == 2 and "needs a host name" in result.output and calls == []
+
+
+def test_serve_accepts_an_unbracketed_ipv6_allowed_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls = fake_uvicorn(monkeypatch)
+    result = runner.invoke(
+        app, ["serve", "--history-dir", str(tmp_path), "--allowed-host", "fd00::7"]
+    )
+    assert result.exit_code == 0
+    assert status_with_host(calls[0][0], "[fd00::7]:8000") == 200
+
+
 def test_serve_only_accepts_any_host_when_asked_to_and_says_what_that_risks(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
