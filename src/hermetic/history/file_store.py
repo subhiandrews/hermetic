@@ -18,7 +18,6 @@ from hermetic.service import DEFAULT_SERVICE, is_valid_service
 
 _logger = logging.getLogger("hermetic.history")
 INDEX_NAME = "index.json"
-LEGACY_DIR = "_legacy"  # earlier files that fit no service; not a valid service id, so never listed
 # run_id becomes a file name, so it must not be able to name a path.
 _RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 RunIds = list[str]  # aliases: `list` is shadowed by the method inside the class
@@ -198,78 +197,56 @@ class FileRunStore:
         return sorted(p.name for p in entries if p.is_dir() and is_valid_service(p.name))
 
     def _migrate_flat_history(self) -> None:
-        """Once per store, move `<root>/<run_id>.json` files from before services existed under
-        the default service and drop the old `<root>/index.json`. A file that cannot go there (a
-        run the default service already has, or a `.json` that is not a run) is moved to
-        `<root>/_legacy/` instead. Nothing is overwritten, so a name already in `_legacy/` stays
-        in the root (and is logged).
-        Where that is not possible (a read-only directory) it logs once and carries on: the
-        store still serves what it can read, and the next process tries again."""
+        """Once per store, move run files from before services existed (`<root>/<run_id>.json`)
+        under the default service. Only a file that parses as a run record is moved, and only an
+        `index.json` that parses as the old index is dropped; anything else in the directory is
+        not ours and stays. Nothing is overwritten. Where the move is not possible (a read-only
+        directory) it logs once and carries on, and the next process tries again."""
         if self._migrated:
             return
         self._migrated = True
         try:
-            flat = sorted(self._root.glob("*.json"))
-            if flat:
+            earlier = [p for p in sorted(self._root.glob("*.json")) if _is_earlier_history(p)]
+            if earlier:
                 default_dir = self._root / DEFAULT_SERVICE
                 default_dir.mkdir(exist_ok=True)
-                for path in flat:
-                    _move_flat_run(path, default_dir, self._root / LEGACY_DIR)
+                for path in earlier:
+                    _move_earlier_history(path, default_dir)
         except OSError as exc:
             _logger.warning("earlier run history could not be moved under 'default': %s", exc)
 
 
-def _same_file(first: Path, second: Path) -> bool:
+def _is_earlier_history(path: Path) -> bool:
     try:
-        return os.path.samefile(first, second)
-    except OSError:  # one of them has gone
+        text = path.read_text(encoding="utf-8")
+        if path.name == INDEX_NAME:
+            _INDEX.validate_json(text)
+        else:
+            RunRecord.model_validate_json(text)
+            return _valid_run_id(path.stem)
+    except (OSError, UnicodeDecodeError, ValidationError):
         return False
-
-
-def _relocate(source: Path, destination: Path) -> bool:
-    """Move `source` to `destination` without overwriting. False if `destination` exists."""
-    try:
-        os.link(source, destination)  # fails, rather than overwrites, if it exists
-    except FileExistsError:
-        if _same_file(source, destination):  # another process linked it first and is mid-move
-            source.unlink(missing_ok=True)
-            return True
-        return False
-    except FileNotFoundError:  # moved by another process
-        return True
-    except OSError:
-        # A filesystem without hard links: rename, unless the destination is already there.
-        # Unlike the link, this check and the rename are two steps, so it is best effort against
-        # a process writing the same name at that instant.
-        if destination.exists():
-            return False
-        with contextlib.suppress(FileNotFoundError):  # moved by another process
-            os.replace(source, destination)
-        return True
-    source.unlink(missing_ok=True)
     return True
 
 
-def _move_flat_run(path: Path, default_dir: Path, legacy_dir: Path) -> None:
-    if path.name == INDEX_NAME:  # rebuilt per service from the run files
+def _move_earlier_history(path: Path, default_dir: Path) -> None:
+    if path.name == INDEX_NAME:  # each service's index is rebuilt from its run files
         path.unlink(missing_ok=True)
         return
-    if _valid_run_id(path.stem) and _relocate(path, default_dir / path.name):
+    destination = default_dir / path.name
+    try:
+        os.link(path, destination)  # fails, rather than overwrites, if it exists
+    except (FileExistsError, FileNotFoundError):  # the default service has it, or it already moved
         return
-    legacy_dir.mkdir(exist_ok=True)
-    if _relocate(path, legacy_dir / path.name):
-        _logger.warning(
-            "earlier run history: moved %s to %s (not a run the default service can take)",
-            path.name,
-            legacy_dir,
-        )
-    else:
-        _logger.warning(
-            "earlier run history: %s stays in %s, because %s already has a file by that name",
-            path.name,
-            path.parent,
-            legacy_dir,
-        )
+    except OSError:
+        # A filesystem without hard links: rename, unless the run is already there. Unlike the
+        # link, this check and the rename are two steps, so it is best effort against a process
+        # writing the same name at that instant.
+        if not destination.exists():
+            with contextlib.suppress(FileNotFoundError):  # moved by another process
+                os.replace(path, destination)
+        return
+    path.unlink(missing_ok=True)
 
 
 def _newest_first(summaries: Summaries) -> Summaries:

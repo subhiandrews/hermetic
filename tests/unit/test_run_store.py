@@ -19,7 +19,7 @@ from hermetic.history import (
     SuiteChange,
     summarize,
 )
-from hermetic.history.file_store import _same_file, _ServiceDir
+from hermetic.history.file_store import _ServiceDir
 from tests.factories import make_record, make_result
 
 StoreFactory = Callable[[Path], RunStore]
@@ -167,20 +167,41 @@ def test_flat_history_moves_under_the_default_service_on_first_use(tmp_path: Pat
     assert [s.service for s in store.services()] == ["default"]
 
 
-def test_a_run_the_default_service_already_has_is_set_aside_once_not_overwritten(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+def test_a_run_the_default_service_already_has_stays_put_and_is_not_overwritten(
+    tmp_path: Path,
 ) -> None:
     root = tmp_path / "runs"
     FileRunStore(root).save(make_record("same", target="http://kept"))
     write_flat(root, "same")
-    with caplog.at_level(logging.WARNING, logger="hermetic.history"):
-        assert FileRunStore(root).get("default", "same").target == "http://kept"
-    assert not (root / "same.json").exists() and (root / "_legacy" / "same.json").exists()
-    assert "moved same.json to" in caplog.text
-    caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="hermetic.history"):
-        FileRunStore(root).list()  # nothing is left in the root, so nothing is said again
-    assert caplog.text == ""
+    assert FileRunStore(root).get("default", "same").target == "http://kept"
+    assert (root / "same.json").exists()
+
+
+def test_only_run_records_and_the_old_index_are_touched(tmp_path: Path) -> None:
+    root = tmp_path / "runs"
+    root.mkdir()
+    others = {
+        "package.json": '{"name": "not-a-run"}',
+        "config.json": "[]",
+        ".hidden.json": "{}",
+        "bad.json": "{",
+        "index.json": '{"not": "an index"}',
+    }
+    for name, text in others.items():
+        (root / name).write_text(text)
+    (root / "binary.json").write_bytes(b"\xff\xfe")
+    assert FileRunStore(root).list() == []
+    assert not (root / "default").exists()  # nothing to move, so nothing was created
+    for name, text in others.items():
+        assert (root / name).read_text() == text
+
+
+def test_a_run_record_with_a_name_that_is_not_a_run_id_is_left_alone(tmp_path: Path) -> None:
+    root = tmp_path / "runs"
+    root.mkdir()
+    record = make_record("r1").model_dump_json()
+    (root / ".r1.json").write_text(record)
+    assert FileRunStore(root).list() == [] and (root / ".r1.json").exists()
 
 
 def test_migration_happens_once_per_store_and_a_failure_is_logged_not_raised(
@@ -195,7 +216,10 @@ def test_migration_happens_once_per_store_and_a_failure_is_logged_not_raised(
         store.list()
     assert caplog.text.count("could not be moved under 'default'") == 1  # once, not per call
     (root / "default").unlink()
-    assert FileRunStore(root).list()[0].run_id == "old1"  # the next process tries again
+    later = FileRunStore(root)  # the next process tries again
+    assert [s.run_id for s in later.list()] == ["old1"]
+    write_flat(root, "late")
+    assert [s.run_id for s in later.list()] == ["old1"]  # a finished migration is not repeated
 
 
 def test_migration_falls_back_to_a_rename_where_hard_links_are_not_allowed(
@@ -212,23 +236,6 @@ def test_migration_falls_back_to_a_rename_where_hard_links_are_not_allowed(
     assert not (root / "old1.json").exists()
 
 
-def test_the_rename_fallback_tolerates_a_file_another_process_moved_first(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = tmp_path / "runs"
-    write_flat(root, "old1")
-
-    def no_links(src: object, dst: object) -> None:
-        raise PermissionError("hard links are not supported here")
-
-    def gone(src: object, dst: object) -> None:
-        raise FileNotFoundError
-
-    monkeypatch.setattr("hermetic.history.file_store.os.link", no_links)
-    monkeypatch.setattr("hermetic.history.file_store.os.replace", gone)
-    assert FileRunStore(root).list() == []  # no error: the other process has the run
-
-
 def test_the_rename_fallback_does_not_overwrite_a_run_the_default_service_has(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -240,81 +247,29 @@ def test_the_rename_fallback_does_not_overwrite_a_run_the_default_service_has(
         raise PermissionError("hard links are not supported here")
 
     monkeypatch.setattr("hermetic.history.file_store.os.link", no_links)
-    store = FileRunStore(root)
-    assert store.get("default", "same").target == "http://kept"
-    assert (root / "_legacy" / "same.json").exists()  # set aside by rename, not overwritten
+    assert FileRunStore(root).get("default", "same").target == "http://kept"
+    assert (root / "same.json").exists()
 
 
-def test_a_set_aside_file_is_never_overwritten_in_legacy(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    root = tmp_path / "runs"
-    (root / "_legacy").mkdir(parents=True)
-    (root / "_legacy" / ".odd.json").write_text("first")
-    (root / ".odd.json").write_text("second")
-    with caplog.at_level(logging.WARNING, logger="hermetic.history"):
-        FileRunStore(root).list()
-    assert ".odd.json stays in" in caplog.text
-    assert (root / "_legacy" / ".odd.json").read_text() == "first"
-    assert (root / ".odd.json").read_text() == "second"  # nowhere to go, so it stays
-
-
+@pytest.mark.parametrize("step", ["link", "replace"])
 def test_a_file_another_process_already_moved_is_skipped_quietly(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str
 ) -> None:
     root = tmp_path / "runs"
     write_flat(root, "old1")
-    write_flat(root, "old2")
 
     def vanished(src: object, dst: object) -> None:
         raise FileNotFoundError
 
-    monkeypatch.setattr("hermetic.history.file_store.os.link", vanished)
-    assert FileRunStore(root).list() == []  # nothing was readable, and nothing raised
+    def no_links(src: object, dst: object) -> None:
+        raise PermissionError("hard links are not supported here")
 
-
-def test_the_set_aside_directory_is_not_a_service_and_a_service_may_be_named_legacy(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "runs"
-    (root / ".hidden.json").parent.mkdir(parents=True)
-    (root / ".hidden.json").write_text("{}")
-    store = FileRunStore(root)
-    store.save(make_record("r1", service="legacy"))
-    assert (root / "_legacy" / ".hidden.json").exists()
-    assert [s.service for s in store.services()] == ["legacy"]  # only the real one
-    assert [s.run_id for s in store.list("legacy")] == ["r1"]
-
-
-def test_two_paths_are_the_same_file_only_while_both_exist(tmp_path: Path) -> None:
-    first = tmp_path / "a.json"
-    first.write_text("{}")
-    linked = tmp_path / "b.json"
-    os.link(first, linked)
-    assert _same_file(first, linked)
-    assert not _same_file(first, tmp_path / "missing.json")
-
-
-def test_a_run_another_process_already_linked_is_not_also_set_aside(tmp_path: Path) -> None:
-    # Process A linked r1 into default/ and has not yet removed the root file when B starts.
-    root = tmp_path / "runs"
-    write_flat(root, "r1")
-    (root / "default").mkdir()
-    os.link(root / "r1.json", root / "default" / "r1.json")
-    store = FileRunStore(root)
-    assert [s.run_id for s in store.list("default")] == ["r1"]
-    assert not (root / "r1.json").exists() and not (root / "_legacy").exists()
-
-
-def test_a_json_file_that_is_not_a_run_is_set_aside(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    root = tmp_path / "runs"
-    root.mkdir()
-    (root / ".hidden.json").write_text("{}")
-    with caplog.at_level(logging.WARNING, logger="hermetic.history"):
-        assert FileRunStore(root).list() == []
-    assert (root / "_legacy" / ".hidden.json").exists() and "moved .hidden.json" in caplog.text
+    if step == "link":
+        monkeypatch.setattr("hermetic.history.file_store.os.link", vanished)
+    else:
+        monkeypatch.setattr("hermetic.history.file_store.os.link", no_links)
+        monkeypatch.setattr("hermetic.history.file_store.os.replace", vanished)
+    assert FileRunStore(root).list() == []  # no error: the other process has the run
 
 
 def test_the_history_directory_may_not_exist_yet(tmp_path: Path) -> None:
@@ -376,8 +331,8 @@ def test_get_corrupt_run_raises_store_error(tmp_path: Path) -> None:
 
 def test_get_undecodable_run_raises_store_error(tmp_path: Path) -> None:
     root = tmp_path / "runs"
-    root.mkdir()
-    (root / "bin.json").write_bytes(b"\xff\xfe")
+    (root / "default").mkdir(parents=True)
+    (root / "default" / "bin.json").write_bytes(b"\xff\xfe")
     with pytest.raises(RunStoreError, match="cannot read"):
         FileRunStore(root).get("default", "bin")
 
