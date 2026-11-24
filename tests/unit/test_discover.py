@@ -225,7 +225,6 @@ def test_a_good_reply_becomes_agent_dependencies() -> None:
         ("```json\nnot json\n```", "not a list"),
         ('```json\n{"name": "x"}\n```', "not a list"),
         ('```json\n[{"name": "x", "kind": "oracle", "evidence": []}]\n```', "not a list"),
-        ('```json\n[{"name": "X!", "kind": "redis", "evidence": []}]\n```', "not valid"),
     ],
 )
 def test_a_reply_of_the_wrong_shape_is_refused(reply: str, message: str) -> None:
@@ -302,9 +301,9 @@ def test_a_proposal_no_document_bears_out_is_dropped() -> None:
 
 
 def test_only_the_evidence_that_checks_out_is_kept() -> None:
-    inferrer = FakeInferrer(dep("db", evidence=[("a.md", "real"), ("a.md", "invented")]))
-    result, _, _ = run_discover(inferrer, doc("a.md", "a real passage"))
-    assert [e.quote for e in result.dependencies[0].evidence] == ["real"]
+    inferrer = FakeInferrer(dep("db", evidence=[("a.md", "real passage"), ("a.md", "invented")]))
+    result, _, _ = run_discover(inferrer, doc("a.md", "a real passage here"))
+    assert [e.quote for e in result.dependencies[0].evidence] == ["real passage"]
 
 
 def test_a_proposal_for_a_known_name_adds_its_evidence_without_repeating() -> None:
@@ -576,3 +575,33 @@ def test_discover_reports_a_corrupt_saved_file_as_exit_2(
     args = ["discover", str(SPEC), "--docs", str(docs_dir), "--suite", str(suite)]
     result = runner.invoke(app, args)
     assert result.exit_code == 2 and "not valid" in result.output
+
+
+def test_one_invalid_proposal_is_set_aside_not_the_whole_reply() -> None:
+    reply = (
+        '```json\n[{"name": "X!", "kind": "redis", "evidence": []},'
+        ' {"name": "cache", "kind": "redis", "evidence": ['
+        + ", ".join(f'{{"source": "a.md", "quote": "quote {i}"}}' for i in range(7))
+        + "]}]\n```"
+    )
+    (found,) = parse_response(reply)
+    assert found.name == "cache" and len(found.evidence) == MAX_EVIDENCE
+
+
+@pytest.mark.parametrize("quote", [" \n ", "a", "five!"])
+def test_a_blank_or_tiny_quote_proves_nothing(quote: str) -> None:
+    inferrer = FakeInferrer(dep("db", evidence=[("a.md", quote), ("nowhere.md", quote)]))
+    result, _, notes = run_discover(inferrer, doc("a.md", "a five! passage"))
+    assert result.dependencies == [] and notes == ["db: dropped, no document says it"]
+
+
+def test_credentials_are_masked_in_kept_quotes_from_hints_and_the_agent() -> None:
+    text = "DATABASE_URL=postgres://user:hunter2@db/app\nthe cache uses password=s3cret here"
+    inferrer = FakeInferrer(
+        dep("cache", "redis", evidence=[("a.md", "the cache uses password=s3cret here")])
+    )
+    result, _, _ = run_discover(inferrer, doc("a.md", text))
+    quotes = [e.quote for d in result.dependencies for e in d.evidence]
+    assert len(quotes) == 2
+    assert not any("hunter2" in q or "s3cret" in q for q in quotes)
+    assert any("[REDACTED]" in q for q in quotes)

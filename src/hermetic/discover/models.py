@@ -16,6 +16,7 @@ NAME_PATTERN = r"^[a-z][a-z0-9-]{0,31}$"
 MAX_DEPENDENCIES = 32
 MAX_EVIDENCE = 5
 MAX_QUOTE_CHARS = 300
+MIN_QUOTE_CHARS = 6  # shorter than a pinned image like `redis:7` is not a passage
 
 
 class _Frozen(BaseModel):

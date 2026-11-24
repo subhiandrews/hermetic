@@ -1,8 +1,8 @@
 """Dependency inference with the Claude Agent SDK.
 
 Like the test author, the agent gets no tools: it reads the prompt and returns text. Discovery
-then checks every proposal against the documents, so a document that tries to instruct the
-agent can at worst add a name that has no evidence and is dropped.
+then checks every proposal against the documents, so a name with no quote from a document is
+dropped. A quote shows only that a document says it, not that the document is trustworthy.
 """
 
 from __future__ import annotations
@@ -14,10 +14,12 @@ from typing import get_args
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
-from hermetic.agent.claude import AUTHOR_TIMEOUT_SECONDS, MAX_DOC_CHARS, _data, _quoted
+from hermetic.agent.claude import AUTHOR_TIMEOUT_SECONDS, MAX_DOC_CHARS
+from hermetic.agent.prompt import data, quoted
 from hermetic.discover.infer import InferRequest
 from hermetic.discover.models import (
     MAX_DEPENDENCIES,
+    MAX_EVIDENCE,
     NAME_PATTERN,
     Dependency,
     DependencyKind,
@@ -76,19 +78,19 @@ def build_prompt(request: InferRequest) -> str:
     operations = request.operations[:MAX_OPERATIONS]
     parts = [
         "<service>",
-        f"title: {_quoted(request.service_title)}",
-        f"servers: {', '.join(_quoted(s) for s in request.servers) or '(none listed)'}",
-        *(f"operation: {_quoted(operation)}" for operation in operations),
+        f"title: {quoted(request.service_title)}",
+        f"servers: {', '.join(quoted(s) for s in request.servers) or '(none listed)'}",
+        *(f"operation: {quoted(operation)}" for operation in operations),
         "</service>",
         "<known>",
-        *(f"{_quoted(hint.name)} ({hint.kind})" for hint in request.hints),
+        *(f"{quoted(hint.name)} ({hint.kind})" for hint in request.hints),
         "</known>",
     ]
     budget = MAX_DOC_CHARS
     for doc in request.docs:
         if budget <= 0:
             break
-        parts.extend([f"<docs path={_quoted(doc.path)}>", _data(doc.text[:budget]), "</docs>"])
+        parts.extend([f"<docs path={quoted(doc.path)}>", data(doc.text[:budget]), "</docs>"])
         budget -= len(doc.text)
     return "\n".join(parts)
 
@@ -102,13 +104,20 @@ def parse_response(text: str) -> list[Dependency]:
         proposals = _PROPOSALS.validate_python(json.loads(blocks[0]))
     except (ValueError, ValidationError) as exc:
         raise InferResponseError("the json block is not a list of dependencies") from exc
-    try:
-        return [
-            Dependency(name=p.name, kind=p.kind, origin="agent", evidence=p.evidence)
-            for p in proposals
-        ]
-    except ValidationError as exc:
-        raise InferResponseError("a proposed dependency is not valid") from exc
+    found: list[Dependency] = []
+    for proposal in proposals:
+        try:
+            found.append(
+                Dependency(
+                    name=proposal.name,
+                    kind=proposal.kind,
+                    origin="agent",
+                    evidence=proposal.evidence[:MAX_EVIDENCE],
+                )
+            )
+        except ValidationError:  # one bad proposal (say a name that is not a slug) is set aside
+            continue
+    return found
 
 
 class ClaudeInferrer:
