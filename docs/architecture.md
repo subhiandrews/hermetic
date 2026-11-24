@@ -38,6 +38,15 @@ hermetic run --spec openapi.yaml --docs ./docs --target http://svc:8080
 - **The file is for people.** It is stable JSON, meant to be committed and reviewed. Change an entry's `origin` to `"manual"` and it is kept as it is, and wins over any found entry of the same name, whenever discovery runs again. Others are replaced by what the documents say that time. Discovery runs only when asked: a test run never re-infers. The file also records the inferrer's prompt version and a hash of the documents it read, so a later step can say the documents have moved on.
 - **Limits.** A service has a bounded number of dependencies and each keeps a bounded number of places (more dependencies is an error, not a truncation). A symlinked `.hermetic` directory or `dependencies.json` is refused, reads are capped, and a failed write leaves the old file. An agent that guesses a second name for a kind a hint already found (say `orders-db` beside `postgres`) leaves both; remove the one you do not want.
 
+## Provision
+
+`hermetic compose --service S` writes `.hermetic/provision/<service>/docker-compose.hermetic.yml`, the stack that would serve what `dependencies.json` lists, and `hermetic check-compose FILE` runs any compose file through the same allowlist. Neither starts a container: running the file is a later step, and this part decides only what may run.
+
+- **Code writes the file, not the agent.** The agent only names dependencies (see Discover). Each kind has one template (Postgres, MySQL, Redis, Mongo, and WireMock for another HTTP service), with fixed, pinned images kept in `provision/images.py`. The same set always gives the same text, and a golden file in the tests pins it. Engines are in-memory (`tmpfs`, no volumes), unprivileged, capped in memory and process count, and published on `127.0.0.1` only, on a port Docker picks. The passwords are throwaway constants for engines that hold no real data.
+- **The allowlist is the gate for every file, ours or a user's.** It names what is allowed and refuses the rest, so a construct nobody thought of is refused too. A service may set only an approved image, ports bound to `127.0.0.1`, read-only mounts of a `./path` inside the working directory (a link out, a socket or `..` is refused), `tmpfs`, plain environment values, a healthcheck, `depends_on` between its own services, `restart: no`, and a memory, process and `no-new-privileges` setting. Privileged mode, host network, PID or IPC, added capabilities, devices, `build`, `extends`, `env_file`, `user`, `entrypoint` and anything not named are refused, as is everything at the top level but `name` and `services`. Every problem is listed, not only the first.
+- **The file is read the way Compose reads it, or not at all.** Anchors, merge keys, repeated keys and several documents are refused, since two parsers could read them differently and a check is only as good as its agreement with the tool that runs the file. A `$` anywhere is refused, because Compose would substitute it from the environment after the check ran (`image: ${X}` would walk past an image allowlist). Files are size-capped and never read through a symlink.
+- **Not covered here.** Images are pinned by tag, not by digest, so a tag moved upstream is trusted; the Docker daemon is still root-equivalent and a rootless daemon remains the hardened setup. WireMock mounts `./mocks/<name>`, which a later step fills with stubs; until then the folder is empty.
+
 ## Execute and report
 
 `hermetic run SUITE --target URL` runs a pytest suite, records the run and publishes reports. Later milestones put generation in front of it; this part does not change.
@@ -104,7 +113,7 @@ A run record holds metadata (target, spec/doc hashes, prompt and tool versions),
 ## Safety
 
 - Tests only reach `--target` and the generated mocks, never real downstream hosts. API keys are never logged.
-- Provisioning mounts the host Docker socket, which is root-equivalent on the host. Every agent-generated compose file is validated in deterministic code before it runs. Rejected: privileged containers, host network/PID/IPC, added capabilities, device mounts, bind mounts outside the workdir, the Docker socket itself, and images outside the approved list. A rootless Docker or Podman socket is the recommended hardened setup.
+- Provisioning mounts the host Docker socket, which is root-equivalent on the host. Every compose file, generated or user-supplied, is validated in deterministic code before it runs (see Provision). Rejected: privileged containers, host network/PID/IPC, added capabilities, device mounts, bind mounts outside the workdir, the Docker socket itself, and images outside the approved list. A rootless Docker or Podman socket is the recommended hardened setup.
 
 ## Distribution
 

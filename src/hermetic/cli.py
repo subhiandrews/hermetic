@@ -33,6 +33,15 @@ from hermetic.history import (
 from hermetic.ingest import IngestError, ServiceModel
 from hermetic.ingest import ingest as run_ingest
 from hermetic.net import LOOPBACK_NAMES, is_header_token
+from hermetic.provision import (
+    COMPOSE_NAME,
+    ComposeError,
+    ProvisionError,
+    check_compose,
+    generate_compose,
+    read_compose_file,
+    write_compose,
+)
 from hermetic.publish import (
     ExportError,
     PublisherError,
@@ -128,6 +137,68 @@ def discover(
         typer.echo(f"note: {note}")
     count = len(found.dependencies.dependencies)
     typer.echo(f"wrote {path} ({count} dependencies)")
+
+
+@app.command()
+def compose(
+    service: Annotated[str, typer.Option(help="The microservice to write the mock stack for.")],
+    suite: Annotated[
+        Path | None,
+        typer.Option(help="Where dependencies.json is kept; default tests/<service>."),
+    ] = None,
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            help=f"Where to write the file; default .hermetic/provision/<service>/{COMPOSE_NAME}."
+        ),
+    ] = None,
+) -> None:
+    """Write the compose file that serves a service's dependencies, from dependencies.json.
+
+    The file is made by code from templates, then checked against the allowlist. Nothing is
+    started: this only writes the file.
+    """
+    try:
+        service_id = resolve_service(None, service)
+        suite_dir = suite or _default_suite(service_id)
+        found = load_dependencies(suite_dir)
+        if found is None:
+            raise ProvisionError(f"no dependencies in {suite_dir}; run `hermetic discover` first")
+        destination = output or Path(".hermetic") / "provision" / service_id / COMPOSE_NAME
+        text = generate_compose(found, destination.parent)
+        write_compose(destination, text)
+    except (
+        InvalidServiceError,
+        DependenciesError,
+        ProvisionError,
+        ComposeError,
+        OSError,
+    ) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(f"wrote {destination} ({len(found.dependencies)} services)")
+
+
+@app.command("check-compose")
+def check_compose_command(
+    file: Annotated[Path, typer.Argument(help="The compose file to check.")],
+    workdir: Annotated[
+        Path | None,
+        typer.Option(help="The directory a mount may reach into; default: the file's directory."),
+    ] = None,
+) -> None:
+    """Check a compose file against the allowlist Hermetic applies before it runs one."""
+    try:
+        text = read_compose_file(file)
+        document = check_compose(text, workdir or file.parent)
+    except ComposeError as exc:
+        for problem in exc.problems:
+            typer.echo(f"refused: {problem}", err=True)
+        raise typer.Exit(code=1) from exc
+    except OSError as exc:
+        typer.echo(f"error: cannot read {file}: {exc.strerror}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(f"ok: {file} ({len(document['services'])} services)")
 
 
 @app.command()
