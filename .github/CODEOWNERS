@@ -1,0 +1,12 @@
+# Code owners are asked to review pull requests that touch their paths.
+# It only blocks a merge if branch protection enables "Require review from Code Owners".
+
+*                       @subhiandrews
+
+# Paths that run with elevated trust: the CI and release workflows, the commit gates, and the
+# Docker image that mounts the host Docker socket.
+/.github/               @subhiandrews
+/.githooks/             @subhiandrews
+/.claude/settings.json  @subhiandrews
+/scripts/               @subhiandrews
+/docker/                @subhiandrews

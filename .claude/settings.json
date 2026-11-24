@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git commit*)",
+            "command": "D=\"${CLAUDE_PROJECT_DIR:-.}\"; C=\"$D/scripts/check.sh\"; if [ ! -x \"$C\" ]; then echo \"$C not found; skipping checks\" >&2; exit 0; fi; \"$C\" >&2 || { echo 'lint, format or type check failed: fix the findings above before committing' >&2; exit 2; }",
+            "timeout": 300,
+            "statusMessage": "Running ruff and mypy..."
+          }
+        ]
+      }
+    ]
+  }
+}
