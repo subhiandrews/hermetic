@@ -11,7 +11,13 @@ from pathlib import Path
 
 from pydantic import TypeAdapter, ValidationError
 
-from hermetic.history.models import RunRecord, RunSummary, ServiceSummary, summarize
+from hermetic.history.models import (
+    RECENT_RUNS,
+    RunRecord,
+    RunSummary,
+    ServiceSummary,
+    summarize,
+)
 from hermetic.history.store import RunNotFoundError, RunStoreError, is_valid_run_id
 from hermetic.service import DEFAULT_SERVICE, is_valid_service
 
@@ -172,7 +178,14 @@ class FileRunStore:
         for name in self._service_names():
             summaries = self._dir(name).list()
             if summaries:
-                found.append(ServiceSummary(service=name, runs=len(summaries), latest=summaries[0]))
+                found.append(
+                    ServiceSummary(
+                        service=name,
+                        runs=len(summaries),
+                        latest=summaries[0],
+                        recent=summaries[:RECENT_RUNS],
+                    )
+                )
         return found
 
     def _dir(self, service: str) -> _ServiceDir:

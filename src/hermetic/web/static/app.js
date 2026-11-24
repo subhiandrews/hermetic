@@ -1,4 +1,6 @@
-// Hermetic run history: a history table and a run detail view over /api/runs.
+// Hermetic run history: a services list, a history table per service and a run detail view, all
+// over /api/services. The page only calls those routes, so it works unchanged against a server
+// that keeps the history for many services.
 //
 // Everything the API returns is data about a service under test, so it only ever reaches the
 // page as text (text nodes), never as markup. Styles are set through the DOM because the
@@ -35,8 +37,9 @@ async function getJson(path) {
   return response.json();
 }
 
+const serviceLink = (service) => `#/services/${encodeURIComponent(service)}`;
 const runLink = (run) =>
-  `#/runs/${encodeURIComponent(run.service)}/${encodeURIComponent(run.run_id)}`;
+  `${serviceLink(run.service)}/runs/${encodeURIComponent(run.run_id)}`;
 const ms = (value) => `${Math.round(value)} ms`;
 const badge = (label, kind) => el("span", { class: `badge ${kind}` }, label);
 
@@ -65,17 +68,64 @@ function changeBadges(run) {
     .map(([count, sign, kind]) => badge(`${sign}${count} ${kind}`, kind));
 }
 
+// Round down: a run with any failure must not read "100% passed" beside its red bar.
+// Integer arithmetic: 29 of 100 is 0.29 * 100 = 28.999..., which would read 28%.
+function passedLabel(run) {
+  const rate = passRate(run);
+  if (rate === null) return "no results";
+  const percent = rate === 1 ? 100 : Math.floor((run.passed * 100) / countResults(run));
+  return `${percent}% passed`;
+}
+
+// ---- services view --------------------------------------------------------------------------
+
+function resultBadge(run) {
+  const rate = passRate(run);
+  const kind = rate === null ? "skipped" : rate === 1 ? "passed" : "failed";
+  return badge(passedLabel(run), kind);
+}
+
+function serviceRow(summary) {
+  const latest = summary.latest;
+  const runs = summary.recent; // the newest runs, newest first
+  return el(
+    "tr",
+    {},
+    el("td", {}, el("a", { href: serviceLink(summary.service) }, summary.service)),
+    el("td", { class: "num" }, String(summary.runs)),
+    el("td", {}, el("a", { href: runLink(latest) }, latest.run_id)),
+    el("td", {}, formatTime(latest.started_at)),
+    el("td", {}, resultBadge(latest)),
+    el("td", {}, runs.length > 0 ? trend(runs, true) : null),
+  );
+}
+
+function renderServices(services) {
+  const title = "Hermetic services";
+  const view = el("section", {}, el("h1", {}, "Services"));
+  if (services.length === 0) {
+    view.append(el("p", { class: "empty" }, "No services yet. `hermetic run` records a run for one."));
+    return { title, view };
+  }
+  const heads = ["Service", "Runs", "Latest run", "Started", "Latest result", "Recent runs"];
+  const header = el(
+    "tr",
+    {},
+    heads.map((name, index) => el("th", { class: index === 1 ? "num" : "" }, name)),
+  );
+  const rows = services.map(serviceRow);
+  view.append(el("table", {}, el("thead", {}, header), el("tbody", {}, rows)));
+  return { title, view };
+}
+
 // ---- history view ---------------------------------------------------------------------------
 
-function trend(runs) {
+function trend(runs, compact = false) {
   const recent = runs.slice(0, TREND_RUNS).reverse(); // the API is newest first
   const bars = recent.map((run) => {
     const rate = passRate(run);
     const kind = rate === null ? "none" : rate === 1 ? "ok" : "bad";
-    // Round down: a run with any failure must not read "100% passed" beside its red bar.
-    // Integer arithmetic: 29 of 100 is 0.29 * 100 = 28.999..., which would read 28%.
-    const percent = rate === 1 ? 100 : Math.floor((run.passed * 100) / countResults(run) || 0);
-    const label = rate === null ? "no results" : `${percent}% passed`;
+    const label = passedLabel(run);
     const bar = el("a", {
       class: `bar ${kind}`,
       href: runLink(run),
@@ -85,7 +135,11 @@ function trend(runs) {
     bar.style.height = `${rate === null ? 4 : Math.max(4, rate * 100)}%`;
     return bar;
   });
-  return el("div", { class: "trend", "aria-label": "Pass rate of the most recent runs" }, bars);
+  return el(
+    "div",
+    { class: compact ? "trend compact" : "trend", "aria-label": "Pass rate of the most recent runs" },
+    bars,
+  );
 }
 
 function historyRow(run) {
@@ -105,11 +159,16 @@ function historyRow(run) {
 
 // The render functions return the page's title with its view, so the caller sets both together,
 // and only if the response is still the one being waited for.
-function renderHistory(runs) {
-  const title = "Hermetic runs";
-  const view = el("section", {}, el("h1", {}, "Runs"));
+function renderHistory(service, runs) {
+  const title = `${service} runs · Hermetic`;
+  const view = el(
+    "section",
+    {},
+    el("p", {}, el("a", { href: "#/" }, "← All services")),
+    el("h1", {}, service),
+  );
   if (runs.length === 0) {
-    view.append(el("p", { class: "empty" }, "No runs yet. `hermetic run` records one."));
+    view.append(el("p", { class: "empty" }, "No runs for this service yet. `hermetic run` records one."));
     return { title, view };
   }
   const heads = ["Run", "Started", "Target", "Passed", "Failed", "Errors", "Skipped", "Changes"];
@@ -268,7 +327,7 @@ function renderRun(run) {
   const view = el(
     "section",
     {},
-    el("p", {}, el("a", { href: "#/" }, "← All runs")),
+    el("p", {}, el("a", { href: serviceLink(run.service) }, `← ${run.service} runs`)),
     el("h1", {}, run.run_id),
     meta,
     tablist,
@@ -281,17 +340,29 @@ function renderRun(run) {
 
 let navigation = 0;
 
+// Hash segments arrive percent-encoded; decode one, and encode it again for the API path.
+const decoded = (segment) => decodeURIComponent(segment);
+const apiSegment = (segment) => encodeURIComponent(decoded(segment));
+
+async function load(hash) {
+  const run = /^#\/services\/([^/]+)\/runs\/([^/]+)$/.exec(hash);
+  if (run) {
+    return renderRun(await getJson(`/api/services/${apiSegment(run[1])}/runs/${apiSegment(run[2])}`));
+  }
+  const service = /^#\/services\/([^/]+)$/.exec(hash);
+  if (service) {
+    const runs = await getJson(`/api/services/${apiSegment(service[1])}/runs?limit=${RUN_LIMIT}`);
+    return renderHistory(decoded(service[1]), runs);
+  }
+  return renderServices(await getJson("/api/services")); // each service carries its recent runs
+}
+
 async function route() {
   const current = ++navigation;
   app.replaceChildren("Loading…");
   let page;
   try {
-    const match = /^#\/runs\/([^/]+)\/([^/]+)$/.exec(location.hash);
-    page = match
-      ? renderRun(await getJson(
-          `/api/services/${encodeURIComponent(decodeURIComponent(match[1]))}/runs/${encodeURIComponent(decodeURIComponent(match[2]))}`,
-        ))
-      : renderHistory(await getJson(`/api/runs?limit=${RUN_LIMIT}`));
+    page = await load(location.hash);
   } catch (error) {
     page = {
       title: "Not available · Hermetic",

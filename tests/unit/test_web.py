@@ -22,6 +22,7 @@ from hermetic.history import (
     SuiteChange,
     summarize,
 )
+from hermetic.history.models import RECENT_RUNS
 from hermetic.web import LOOPBACK_HOSTS, create_app
 from hermetic.web.app import (
     DEFAULT_RUN_LIMIT,
@@ -67,7 +68,8 @@ class MemoryStore:
         for summary in self.list():
             found.setdefault(summary.service, []).append(summary)
         return [
-            ServiceSummary(service=n, runs=len(r), latest=r[0]) for n, r in sorted(found.items())
+            ServiceSummary(service=n, runs=len(r), latest=r[0], recent=r[:RECENT_RUNS])
+            for n, r in sorted(found.items())
         ]
 
 
@@ -179,6 +181,34 @@ def test_the_hosts_answered_to_by_default_are_loopback_as_a_host_header_writes_t
 def test_the_page_links_runs_by_service_and_id() -> None:
     script = (STATIC_DIR / "app.js").read_text()
     assert "/api/services/" in script and "run.service" in script
+
+
+def test_the_page_reads_only_the_service_routes() -> None:
+    # A server that keeps the history of many services is addressed through /api/services, so the
+    # page must not depend on /api/runs, which lists the runs of every service.
+    script = (STATIC_DIR / "app.js").read_text()
+    assert "/api/runs" not in script
+    assert "/api/services" in script
+
+
+def test_the_service_listing_the_page_draws_carries_what_each_row_shows() -> None:
+    first = make_record("a-1", service="alpha", started_at="2026-01-01T00:00:00+00:00")
+    second = make_record("a-2", service="alpha", started_at="2026-01-02T00:00:00+00:00")
+    other = make_record("b-1", service="beta", started_at="2026-01-03T00:00:00+00:00")
+    client = TestClient(create_app(MemoryStore(first, second, other)), base_url="http://localhost")
+    rows = {row["service"]: row for row in client.get("/api/services").json()}
+    assert rows["alpha"]["runs"] == 2
+    assert rows["alpha"]["latest"]["run_id"] == "a-2"
+    assert rows["beta"]["latest"]["service"] == "beta"
+    # the trend column is drawn from the listing itself: newest first, one request for all
+    assert [r["run_id"] for r in rows["alpha"]["recent"]] == ["a-2", "a-1"]
+    assert [r["run_id"] for r in rows["beta"]["recent"]] == ["b-1"]
+
+
+def test_the_page_draws_as_many_runs_in_a_trend_as_the_server_sends() -> None:
+    script = (STATIC_DIR / "app.js").read_text()
+    match = re.search(r"const TREND_RUNS = (\d+);", script)
+    assert match is not None and int(match.group(1)) == RECENT_RUNS
 
 
 def test_the_file_store_serves_the_same_api(tmp_path: Path) -> None:
