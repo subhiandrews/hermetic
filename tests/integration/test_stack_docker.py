@@ -53,3 +53,16 @@ def test_every_kind_comes_up_healthy_answers_and_goes_away(tmp_path: Path) -> No
             assert response.status == 200
     finally:
         down("hermetic-it")
+    for kind in ("ps -aq", "network ls -q"):  # the stub file must still remove everything
+        listed = subprocess.run(
+            [
+                "docker",
+                *kind.split(),
+                "--filter",
+                "label=com.docker.compose.project=hermetic-hermetic-it",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert listed.stdout.strip() == "", kind

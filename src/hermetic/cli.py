@@ -41,10 +41,12 @@ from hermetic.provision import (
     check_compose,
     generate_compose,
     read_compose_file,
+    refuse_links,
     write_compose,
 )
 from hermetic.provision import down as stop_stack
 from hermetic.provision import up as start_stack
+from hermetic.provision.validate import printable
 from hermetic.publish import (
     ExportError,
     PublisherError,
@@ -226,9 +228,10 @@ def up(
     try:
         service_id = resolve_service(None, service)
         path = file or Path(".hermetic") / "provision" / service_id / COMPOSE_NAME
+        refuse_links(path)  # before reading anything through it
         endpoints = start_stack(service_id, path, read_compose_file(path))
-    except (InvalidServiceError, StackError, ComposeError, OSError) as exc:
-        typer.echo(f"error: {exc}", err=True)
+    except (InvalidServiceError, StackError, ProvisionError, ComposeError, OSError) as exc:
+        typer.echo(f"error: {printable(str(exc))}", err=True)
         raise typer.Exit(code=2) from exc
     for endpoint in endpoints:
         typer.echo(f"{endpoint.variable}={endpoint.url}")
@@ -242,7 +245,7 @@ def down(
     try:
         stop_stack(resolve_service(None, service))
     except (InvalidServiceError, StackError) as exc:
-        typer.echo(f"error: {exc}", err=True)
+        typer.echo(f"error: {printable(str(exc))}", err=True)
         raise typer.Exit(code=2) from exc
     typer.echo(f"stopped hermetic-{service}")
 

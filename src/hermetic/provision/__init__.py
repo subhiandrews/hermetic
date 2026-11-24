@@ -8,6 +8,7 @@ from hermetic.provision.compose import (
     ProvisionError,
     generate_compose,
     read_compose_file,
+    refuse_links,
     write_compose,
 )
 from hermetic.provision.images import APPROVED_IMAGES, ENGINES, Engine
@@ -28,6 +29,7 @@ __all__ = [
     "down",
     "generate_compose",
     "read_compose_file",
+    "refuse_links",
     "up",
     "write_compose",
 ]

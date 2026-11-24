@@ -7,7 +7,6 @@ reached through `CommandRunner`, so tests use a fake and never need a daemon.
 
 from __future__ import annotations
 
-import contextlib
 import os
 import re
 import subprocess
@@ -17,6 +16,7 @@ from pathlib import Path
 from typing import Protocol
 
 from hermetic.discover.models import DependencyKind
+from hermetic.provision.compose import ProvisionError, refuse_links
 from hermetic.provision.images import ENGINES
 from hermetic.provision.validate import PROJECT_PREFIX, ComposeError, check_compose, printable
 
@@ -98,10 +98,17 @@ def _say(result: CommandResult) -> str:
 
 
 def _compose(
-    runner: CommandRunner, project: str, args: Sequence[str], *, timeout: float
+    runner: CommandRunner, project: str, args: Sequence[str], *, text: str, timeout: float
 ) -> CommandResult:
-    argv = ["docker", "compose", "-p", project, *args]
-    return runner(argv, stdin=None, timeout=timeout)
+    # Always `-f -`: without a file Compose would load whatever sits in the working directory,
+    # which never passed the allowlist.
+    argv = ["docker", "compose", "-p", project, "-f", "-", *args]
+    return runner(argv, stdin=text, timeout=timeout)
+
+
+def _stub(project: str) -> str:
+    """A file with no services: enough for Compose to find a project's containers by name."""
+    return f"name: {project}\nservices: {{}}\n"
 
 
 def project_name(service: str) -> str:
@@ -116,15 +123,19 @@ def up(service: str, path: Path, text: str, runner: CommandRunner = run_command)
     On any failure after the start has begun, what was started is taken down again.
     """
     try:
+        refuse_links(path)
         document = check_compose(text, path.parent)
         _make_mount_sources(path.parent, document)
         # A source that did not exist was accepted above; now every one exists, so look again.
         document = check_compose(text, path.parent)
+    except ProvisionError as exc:
+        raise StackError(str(exc)) from exc
     except ComposeError as exc:
         raise StackError(f"refusing to run {path}: {exc}") from exc
     project = str(document["name"])
     if project != project_name(service):
         raise StackError(f"{path} is the stack {project!r}, not {project_name(service)!r}")
+    _refuse_if_running(runner, project, service)
     argv = [
         "docker",
         "compose",
@@ -144,10 +155,28 @@ def up(service: str, path: Path, text: str, runner: CommandRunner = run_command)
         started = runner(argv, stdin=text, timeout=UP_TIMEOUT_SECONDS)
         if started.returncode != 0:
             raise StackError(f"docker compose up failed: {_say(started)}")
-        return _endpoints(runner, project, document["services"])
-    except BaseException:  # a timeout or Ctrl-C can leave containers behind too
-        _best_effort_down(runner, project)
+        return _endpoints(runner, project, text, document["services"])
+    except BaseException as failure:  # a timeout or Ctrl-C can leave containers behind too
+        left = _take_down(runner, project)
+        if left is not None and isinstance(failure, StackError):
+            raise StackError(
+                f"{failure}; cleaning up also failed ({left}); "
+                f"run `hermetic down --service {service}`"
+            ) from failure
         raise
+
+
+def _refuse_if_running(runner: CommandRunner, project: str, service: str) -> None:
+    """A second start would, on failing, take down the first one's stack with it."""
+    listed = runner(
+        ["docker", "ps", "--quiet", "--filter", f"label=com.docker.compose.project={project}"],
+        stdin=None,
+        timeout=COMMAND_TIMEOUT_SECONDS,
+    )
+    if listed.returncode != 0:
+        raise StackError(f"cannot tell whether {project} is running: {_say(listed)}")
+    if listed.stdout.strip():
+        raise StackError(f"{project} is already running; run `hermetic down --service {service}`")
 
 
 def _make_mount_sources(folder: Path, document: Mapping[str, Mapping[str, object]]) -> None:
@@ -171,7 +200,7 @@ def _make_mount_sources(folder: Path, document: Mapping[str, Mapping[str, object
 
 
 def _endpoints(
-    runner: CommandRunner, project: str, services: Mapping[str, Mapping[str, object]]
+    runner: CommandRunner, project: str, text: str, services: Mapping[str, Mapping[str, object]]
 ) -> list[Endpoint]:
     found: list[Endpoint] = []
     for name, service in services.items():
@@ -180,6 +209,7 @@ def _endpoints(
             runner,
             project,
             ["port", name, str(ENGINES[kind].port)],
+            text=text,
             timeout=COMMAND_TIMEOUT_SECONDS,
         )
         if asked.returncode != 0:
@@ -192,10 +222,13 @@ def _endpoints(
     return found
 
 
-def _best_effort_down(runner: CommandRunner, project: str) -> None:
-    # the failure that brought us here is the one worth reporting
-    with contextlib.suppress(StackError):
+def _take_down(runner: CommandRunner, project: str) -> str | None:
+    """Try to remove the project; the reason it could not be, or None."""
+    try:
         down_project(runner, project)
+    except StackError as exc:
+        return str(exc)
+    return None
 
 
 def down_project(runner: CommandRunner, project: str) -> None:
@@ -203,10 +236,26 @@ def down_project(runner: CommandRunner, project: str) -> None:
         runner,
         project,
         ["down", "--volumes", "--remove-orphans"],
+        text=_stub(project),
         timeout=COMMAND_TIMEOUT_SECONDS,
     )
     if done.returncode != 0:
         raise StackError(f"docker compose down failed: {_say(done)}")
+    # With no services in the stub, Compose leaves the project's network behind.
+    label = f"label=com.docker.compose.project={project}"
+    listed = runner(
+        ["docker", "network", "ls", "--quiet", "--filter", label],
+        stdin=None,
+        timeout=COMMAND_TIMEOUT_SECONDS,
+    )
+    if listed.returncode != 0:
+        raise StackError(f"cannot list the networks of {project}: {_say(listed)}")
+    for network in listed.stdout.split():
+        removed = runner(
+            ["docker", "network", "rm", network], stdin=None, timeout=COMMAND_TIMEOUT_SECONDS
+        )
+        if removed.returncode != 0:
+            raise StackError(f"cannot remove a network of {project}: {_say(removed)}")
 
 
 def down(service: str, runner: CommandRunner = run_command) -> None:
