@@ -41,6 +41,16 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv sync --locked --group dev
+      - name: Pull the images the tests start, retried so a registry hiccup is not a test failure
+        run: |
+          images="$(uv run python -c 'from hermetic.provision import APPROVED_IMAGES; print("\n".join(sorted(APPROVED_IMAGES)))')"
+          for image in $images; do
+            for attempt in 1 2 3; do
+              docker pull --quiet "$image" && break
+              [ "$attempt" = 3 ] && exit 1
+              sleep 10
+            done
+          done
       - run: uv run pytest -m integration --no-cov
 
   docker:
