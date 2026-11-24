@@ -8,8 +8,10 @@ names, attributes and fixtures that reach the system are refused.
 from __future__ import annotations
 
 import ast
+import importlib
 import importlib.util
 import string
+import types
 
 ALLOWED_IMPORTS = frozenset(
     {
@@ -90,15 +92,13 @@ def validate_source(source: str, operation_id: str) -> None:
         if isinstance(found, ast.Import)
         for alias in found.names
     }
-    attributed: set[int] = set()  # `pytest` names that are the base of an attribute access
+    attributed: set[int] = set()  # module names that are the base of an attribute access
     for node in ast.walk(tree):  # parents come before their children, so `attributed` fills first
-        if (
-            isinstance(node, ast.Attribute)
-            and isinstance(node.value, ast.Name)
-            and node.value.id == "pytest"
-        ):
-            attributed.add(id(node.value))
-            if node.attr not in PYTEST_API:
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            base = node.value.id
+            if base == "pytest" or base in modules:
+                attributed.add(id(node.value))
+            if base == "pytest" and node.attr not in PYTEST_API:
                 allowed = ", ".join(sorted(PYTEST_API))
                 raise SourceRejected(
                     f"attribute `{node.attr}` is not allowed in a test (from pytest: {allowed})"
@@ -118,7 +118,7 @@ def validate_source(source: str, operation_id: str) -> None:
                     or alias.name.startswith("_")  # private helpers: `uuid._get_command_stdout`
                     or alias.name in FORBIDDEN_NAMES | FORBIDDEN_ATTRIBUTES | EVALUATING_MARKS
                     or (node.module == "pytest" and alias.name not in PYTEST_API)
-                    or _is_submodule(node.module, alias.name)  # `from json import tool`
+                    or _is_module(node.module, alias.name)  # `from re import enum`
                 ):
                     raise SourceRejected(f"importing `{alias.name}` is not allowed in a test")
         elif isinstance(node, ast.Name) and (
@@ -126,16 +126,17 @@ def validate_source(source: str, operation_id: str) -> None:
             or node.id in EVALUATING_MARKS
             or node.id == "usefixtures"
             or node.id.startswith(("__", "pytest_"))  # `pytest_plugins` loads any plugin
-            or (node.id == "pytest" and id(node) not in attributed)  # `p = pytest` hides the API
+            # `p = re` would hide `p.enum`: an imported module is only used as `module.name`
+            or ((node.id == "pytest" or node.id in modules) and id(node) not in attributed)
         ):
             raise SourceRejected(f"`{node.id}` is not allowed in a test")
         elif (
             isinstance(node, ast.Attribute)
             and isinstance(node.value, ast.Name)
             and node.value.id in modules
-            and _is_submodule(modules[node.value.id], node.attr)
-        ):  # `json.tool` reaches argparse, and so any file
-            raise SourceRejected(f"submodule `{node.attr}` is not allowed in a test")
+            and _is_module(modules[node.value.id], node.attr)
+        ):  # `json.tool` reaches argparse and `re.enum.bltns` the builtins: a way round every list
+            raise SourceRejected(f"module `{node.attr}` may not be reached through another module")
         elif isinstance(node, ast.Attribute) and (
             node.attr in FORBIDDEN_ATTRIBUTES
             or node.attr.startswith("_")  # private and dunder attributes alike
@@ -206,18 +207,22 @@ def _check_module(name: str) -> None:
         raise SourceRejected(f"importing `{name}` is not allowed in a test")
 
 
-def _is_submodule(module: str, name: str) -> bool:
-    """True if `module.name` is a module itself, not an attribute: `json.tool`, not `json.loads`.
+def _is_module(module: str, name: str) -> bool:
+    """True if `module.name` is a module, not a function or class.
 
-    `find_spec` imports the parent package, so it is only asked about modules the test is
-    allowed to import; a name the test merely mentions is never imported by validation.
+    That is a submodule (`json.tool`) or a module the allowed one imported (`re.enum`,
+    `json.codecs`): a test reaches only what an allowed module defines, not what it imports,
+    because what it imports leads to the builtins, the system and the file system. Only modules
+    the test may import are looked at, so validation never imports a name the test merely mentions.
     """
     if module not in ALLOWED_IMPORTS:
         return False
     try:
-        return importlib.util.find_spec(f"{module}.{name}") is not None
+        if importlib.util.find_spec(f"{module}.{name}") is not None:
+            return True
     except (ImportError, ValueError, AttributeError):  # `uuid` is not a package, for one
-        return False
+        pass
+    return isinstance(getattr(importlib.import_module(module), name, None), types.ModuleType)
 
 
 def _marks_operation(decorator: ast.expr, operation_id: str) -> bool:

@@ -43,6 +43,8 @@ Rules for the module:
   response shape the spec describes. Do not assert on values the spec does not promise.
 - Never read files, spawn processes or use the network except through hermetic_client.
 - From pytest use only: {_PYTEST_NAMES}. Do not rename the pytest module or pass it around.
+- Use each imported module only as module.name, through what it defines itself (json.loads,
+  re.compile), never through a module it imports (re.enum) and never by assigning it to a variable.
 - The tests are rejected if they use any of these names, even as variable names: {_BANNED_NAMES}.
   Also avoid names or attributes that start with an underscore, assigning to an attribute
   (hermetic_client.timeout = 1), pytest.mark.skipif and xfail (call pytest.skip(...) in the

@@ -156,8 +156,15 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
         ("import pytest\np = pytest\n", "`pytest` is not allowed"),
         ("import json.tool\n", "importing `json.tool`"),
         ("from json import tool\n", "importing `tool`"),
-        ("import json\njson.tool\n", "submodule `tool`"),
-        ("import json as j\nj.tool.argparse\n", "submodule `tool`"),
+        ("import json\njson.tool\n", "module `tool`"),
+        ("import json as j\nj.tool.argparse\n", "module `tool`"),
+        # Every route to a module an allowed module imported: `re.enum.bltns` is the builtins.
+        ("import re\nre.enum.bltns.vars(re.enum.bltns)\n", "module `enum`"),
+        ("import re as r\nr.enum\n", "module `enum`"),
+        ("from re import enum\n", "importing `enum`"),
+        ("import re\nx = re\nx.enum\n", "`re` is not allowed"),
+        ("import re\nf(re)\n", "`re` is not allowed"),
+        ("import base64\nbase64.struct\n", "module `struct`"),
         (
             "def test_a():\n    match 1:\n        case object(sys=s): ...\n",
             "class patterns may not bind forbidden or private attributes",
@@ -174,7 +181,7 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
         ("x = '{0[a]}'.format({})\n", "format field may not use attribute or index access"),
         ("x = '{:{0.x}}'.format(1)\n", "format field may not use attribute or index access"),
         ("import json\njson.codecs.open('x', 'w')\n", "attribute `(codecs|open)`"),
-        ("import json\njson.codecs\n", "attribute `codecs`"),
+        ("import json\njson.codecs\n", "module `codecs`"),
         ("from json import codecs\n", "importing `codecs`"),
         (
             "import pytest\n"
