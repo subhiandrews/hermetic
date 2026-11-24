@@ -369,3 +369,28 @@ def test_control_characters_in_the_note_are_dropped(tmp_path: Path) -> None:
     changes = generate_suite(model_from(tmp_path), FakeAuthor(note=note), tmp_path / "s")
     assert all(c.isprintable() for c in changes[0].reason)
     assert "\x1b" not in changes[0].reason and "\x9b" not in changes[0].reason
+
+
+def test_manifest_is_never_read_or_written_through_a_symlink(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "manifest.json").write_text("{}")
+    linked_dir = tmp_path / "linked"
+    linked_dir.symlink_to(outside, target_is_directory=True)
+    linked_file = tmp_path / "file" / "manifest.json"
+    linked_file.parent.mkdir()
+    linked_file.symlink_to(outside / "manifest.json")
+    for path in (linked_dir / "manifest.json", linked_file):
+        with pytest.raises(ManifestError, match="symlink"):
+            load_manifest(path)
+        with pytest.raises(ManifestError, match="symlink"):
+            save_manifest(path, Manifest())
+    assert (outside / "manifest.json").read_text() == "{}"
+
+
+def test_a_validation_error_does_not_echo_the_file_content(tmp_path: Path) -> None:
+    path = tmp_path / "manifest.json"
+    path.write_text('{"version": "SECRET-MARKER"}')
+    with pytest.raises(ManifestError, match="not valid") as info:
+        load_manifest(path)
+    assert "SECRET-MARKER" not in str(info.value)

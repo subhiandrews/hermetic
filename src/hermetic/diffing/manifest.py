@@ -48,8 +48,15 @@ class Manifest(_Frozen):
     entries: dict[str, ManifestEntry] = {}  # operation_id -> entry
 
 
+def _refuse_symlinks(path: Path) -> None:
+    """The manifest is committed and untrusted: never read or write through a link."""
+    if path.is_symlink() or path.parent.is_symlink():
+        raise ManifestError(f"manifest {path} or its directory is a symlink")
+
+
 def load_manifest(path: Path) -> Manifest:
     """Read the manifest; a missing file is an empty manifest (nothing generated yet)."""
+    _refuse_symlinks(path)
     try:
         size = path.stat().st_size
     except FileNotFoundError:
@@ -60,8 +67,10 @@ def load_manifest(path: Path) -> Manifest:
         raise ManifestError(f"manifest {path} is larger than {MAX_MANIFEST_BYTES} bytes")
     try:
         manifest = Manifest.model_validate(json.loads(path.read_text(encoding="utf-8")))
-    except (OSError, ValueError, ValidationError, RecursionError) as exc:
-        raise ManifestError(f"manifest {path} is not valid: {exc}") from exc
+    except ValidationError as exc:  # its text quotes the input, so never echo it
+        raise ManifestError(f"manifest {path} is not valid: {exc.error_count()} errors") from exc
+    except (OSError, ValueError, RecursionError) as exc:
+        raise ManifestError(f"manifest {path} is not valid: {type(exc).__name__}") from exc
     if manifest.version != MANIFEST_VERSION:
         raise ManifestError(
             f"manifest {path} has version {manifest.version}; expected {MANIFEST_VERSION}"
@@ -84,6 +93,7 @@ def manifest_text(manifest: Manifest) -> str:
 
 def save_manifest(path: Path, manifest: Manifest) -> None:
     """Write the manifest atomically."""
+    _refuse_symlinks(path)
     text = manifest_text(manifest)
     size = len(text.encode("utf-8"))
     if size > MAX_MANIFEST_BYTES:  # never write what `load_manifest` would refuse to read back
