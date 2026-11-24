@@ -67,6 +67,15 @@ A run record holds metadata (target, spec/doc hashes, prompt and tool versions),
 - **Store errors never reach a client or the log.** A missing or malformed run id is a 404 and an unreadable run is a generic 500; every response, errors included, carries the security headers. The store's message can quote the record (a corrupt file's validation error does), so only the kind of failure is logged.
 - **The run list is capped**, because history only grows; the page says when it shows a partial list.
 
+### Central history
+
+`hermetic serve` can also be the place runs are kept. The API is the interface: the CLI and the page only use it, so the file store behind it can later be a database. `GET /api/services` lists the services, `GET /api/services/<service>/runs` and `/<run_id>` read them, and `POST /api/services/<service>/runs` records one. `hermetic run --history-dir https://host` does that through `HttpRunStore`, which passes the same contract tests as the file store.
+
+- **Ingest is off unless the server has `HERMETIC_API_TOKEN`.** The token is a bearer token, compared in constant time and checked before the body is read. With none configured, a POST is refused, so a local process or a web page cannot write history. The client reads the same variable.
+- **The token only travels where it is safe.** `HttpRunStore` refuses to send it over plain `http` to a host that is not on this machine, does not follow redirects, and never puts the token, the address's credentials or a response body in an error. A server reachable beyond loopback should sit behind TLS; `serve` says so.
+- **The body is untrusted.** It is capped at 10 MB, parsed as a run record, and must name the service in the address and a run id the store accepts. A rejected body is answered with where and what was wrong, never the value. A run with an existing id replaces it, as in the store protocol.
+- **The server must allow the client's host name** (`--allowed-host`), as for any other client. Reads are not authenticated yet; that is needed before a server is shared beyond one team.
+
 ## Safety
 
 - Tests only reach `--target` and the generated mocks, never real downstream hosts. API keys are never logged.

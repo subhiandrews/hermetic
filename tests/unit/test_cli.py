@@ -34,6 +34,18 @@ def status_with_host(served: Any, host: str) -> int:
     return int(client.get("/api/runs", headers={"host": host}).status_code)
 
 
+def post_status(served: Any, token: str) -> int:
+    from tests.factories import make_record
+
+    client = TestClient(served, base_url="http://localhost")
+    response = client.post(
+        "/api/services/default/runs",
+        content=make_record("r1").model_dump_json(),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    return int(response.status_code)
+
+
 def test_serve_listens_on_loopback_only_by_default(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -191,6 +203,33 @@ def test_serve_on_a_bare_ipv6_address_accepts_its_bracketed_host_header(
     result = runner.invoke(app, ["serve", "--history-dir", str(tmp_path), "--host", "fe80::1"])
     assert result.exit_code == 0 and len(calls) == 1
     assert status_with_host(calls[0][0], "[fe80::1]:8000") == 200
+
+
+def test_serve_accepts_runs_only_when_a_token_is_set(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls = fake_uvicorn(monkeypatch)
+    monkeypatch.delenv("HERMETIC_API_TOKEN", raising=False)
+    off = runner.invoke(app, ["serve", "--history-dir", str(tmp_path)])
+    assert "ingest" not in off.output
+    assert post_status(calls[0][0], "anything") == 403
+
+    monkeypatch.setenv("HERMETIC_API_TOKEN", "s3cret")
+    on = runner.invoke(app, ["serve", "--history-dir", str(tmp_path)])
+    assert "ingest is on" in on.output and "s3cret" not in on.output
+    assert "unencrypted" not in on.output  # loopback: nothing crosses the network
+    assert post_status(calls[1][0], "wrong") == 401
+    assert post_status(calls[1][0], "s3cret") == 201
+
+
+def test_serve_beyond_loopback_with_ingest_says_the_token_is_not_encrypted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake_uvicorn(monkeypatch)
+    monkeypatch.setenv("HERMETIC_API_TOKEN", "s3cret")
+    result = runner.invoke(app, ["serve", "--history-dir", str(tmp_path), "--host", "192.168.1.5"])
+    assert "ingest is on" in result.output and "unencrypted unless a TLS proxy" in result.output
+    assert "s3cret" not in result.output
 
 
 @pytest.mark.parametrize("port", ["0", "70000"])

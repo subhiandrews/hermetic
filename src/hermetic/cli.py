@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import socket
 from collections.abc import Sequence
 from pathlib import Path
@@ -14,7 +15,13 @@ from hermetic import __version__
 from hermetic.agent import ClaudeAuthor
 from hermetic.execute import ExecuteError, check_target
 from hermetic.generate import GenerateError, ManifestError, SuiteAuthor, generate_suite
-from hermetic.history import RunRecord, RunStoreError, SuiteChange, open_store
+from hermetic.history import (
+    API_TOKEN_ENV,
+    RunRecord,
+    RunStoreError,
+    SuiteChange,
+    open_store,
+)
 from hermetic.ingest import IngestError, ServiceModel
 from hermetic.ingest import ingest as run_ingest
 from hermetic.report import SinkContext, SinkError, load_sinks
@@ -118,9 +125,13 @@ def run(
     docs: Annotated[
         Path | None, typer.Option(help="Design documents, to record their hashes.")
     ] = None,
-    history_dir: Annotated[Path, typer.Option(help="Where run history is stored.")] = Path(
-        ".hermetic/runs"
-    ),
+    history_dir: Annotated[
+        str,
+        typer.Option(
+            help="Where run history is stored: a directory, or the address of a Hermetic "
+            "server (http:// or https://; the token is read from HERMETIC_API_TOKEN)."
+        ),
+    ] = ".hermetic/runs",
     report_dir: Annotated[Path, typer.Option(help="Where file reports are written.")] = Path(
         "hermetic-reports"
     ),
@@ -188,7 +199,7 @@ def run(
 
 @app.command()
 def serve(
-    history_dir: Annotated[Path, typer.Option(help="Where run history is read from.")] = Path(
+    history_dir: Annotated[str, typer.Option(help="Where run history is read from.")] = (
         ".hermetic/runs"
     ),
     host: Annotated[
@@ -229,7 +240,20 @@ def serve(
             "reach this server by rebinding its own domain to it, even if the port is firewalled",
             err=True,
         )
-    uvicorn.run(create_app(open_store(history_dir), hosts), host=host, port=port)
+    token = os.environ.get(API_TOKEN_ENV) or None
+    if token:
+        typer.echo(
+            "ingest is on: runs are accepted at /api/services/<service>/runs with the "
+            f"{API_TOKEN_ENV} bearer token",
+            err=True,
+        )
+        if host not in _LOOPBACK_ADDRESSES:
+            typer.echo(
+                "warning: the token and the runs travel unencrypted unless a TLS proxy fronts "
+                "this server",
+                err=True,
+            )
+    uvicorn.run(create_app(open_store(history_dir), hosts, token), host=host, port=port)
 
 
 _LOOPBACK_ADDRESSES = ("127.0.0.1", "localhost", "::1")

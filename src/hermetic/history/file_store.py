@@ -6,20 +6,17 @@ import contextlib
 import json
 import logging
 import os
-import re
 import tempfile
 from pathlib import Path
 
 from pydantic import TypeAdapter, ValidationError
 
 from hermetic.history.models import RunRecord, RunSummary, ServiceSummary, summarize
-from hermetic.history.store import RunNotFoundError, RunStoreError
+from hermetic.history.store import RunNotFoundError, RunStoreError, is_valid_run_id
 from hermetic.service import DEFAULT_SERVICE, is_valid_service
 
 _logger = logging.getLogger("hermetic.history")
 INDEX_NAME = "index.json"
-# run_id becomes a file name, so it must not be able to name a path.
-_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 RunIds = list[str]  # aliases: `list` is shadowed by the method inside the class
 Summaries = list[RunSummary]
 Services = list[ServiceSummary]
@@ -27,14 +24,8 @@ Names = list[str]
 _INDEX = TypeAdapter(Summaries)
 
 
-def _valid_run_id(run_id: str) -> bool:
-    return _RUN_ID.fullmatch(run_id) is not None and run_id.lower() != INDEX_NAME.removesuffix(
-        ".json"
-    )
-
-
 def _check_run_id(run_id: str) -> None:
-    if not _valid_run_id(run_id):
+    if not is_valid_run_id(run_id):
         raise RunStoreError(f"invalid run id: {run_id!r}")
 
 
@@ -82,7 +73,7 @@ class _ServiceDir:
             (self._root / INDEX_NAME).unlink(missing_ok=True)
 
     def get(self, run_id: str) -> RunRecord:
-        if not _valid_run_id(run_id):  # no run can have this id, so it is simply not found
+        if not is_valid_run_id(run_id):  # no run can have this id, so it is simply not found
             raise RunNotFoundError(f"no run {run_id!r}")
         path = self._root / f"{run_id}.json"
         try:
@@ -223,7 +214,7 @@ def _is_earlier_history(path: Path) -> bool:
             _INDEX.validate_json(text)
         else:
             RunRecord.model_validate_json(text)
-            return _valid_run_id(path.stem)
+            return is_valid_run_id(path.stem)
     except (OSError, UnicodeDecodeError, ValidationError):
         return False
     return True
