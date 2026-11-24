@@ -160,7 +160,10 @@ def _prefix(model: ServiceModel) -> str:
     """The path part of the spec's first server, which callers put before every path."""
     if not model.servers:
         return ""
-    path = urlparse(model.servers[0]).path.rstrip("/")
+    try:
+        path = urlparse(model.servers[0]).path.rstrip("/")
+    except ValueError as exc:  # e.g. unbalanced IPv6 brackets
+        raise ProvisionError(f"the first server URL cannot be parsed: {exc}") from exc
     return path if path.startswith("/") else ""
 
 

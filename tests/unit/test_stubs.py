@@ -202,6 +202,12 @@ def test_a_relative_server_url_is_not_a_prefix(model: ServiceModel) -> None:
     assert all(not m["request"]["urlPathPattern"].startswith("/v1") for m in stubs.values())
 
 
+def test_an_unparseable_server_url_is_a_provision_error(model: ServiceModel) -> None:
+    other = model.model_copy(update={"servers": ["http://[::1"]})
+    with pytest.raises(ProvisionError, match="cannot be parsed"):
+        build_stubs(other)
+
+
 def _operation(method: str, status: str = "200", media: str = "application/json") -> Operation:
     return Operation(
         operation_id="Weird Name!!",
