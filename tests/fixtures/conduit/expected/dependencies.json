@@ -1,0 +1,41 @@
+{
+  "dependencies": [
+    {
+      "evidence": [
+        {
+          "line": 9,
+          "source": "architecture.md"
+        }
+      ],
+      "kind": "postgres",
+      "name": "postgres",
+      "origin": "hint"
+    },
+    {
+      "evidence": [
+        {
+          "line": 11,
+          "source": "architecture.md"
+        }
+      ],
+      "kind": "redis",
+      "name": "redis",
+      "origin": "hint"
+    },
+    {
+      "evidence": [
+        {
+          "line": 17,
+          "source": "architecture.md"
+        }
+      ],
+      "kind": "http",
+      "name": "mail",
+      "origin": "agent"
+    }
+  ],
+  "docs_hash": "2716e614d269ae7d846e0baec4b4a19ed6243e1cb6a0985b59855a9c6e11b053",
+  "prompt_version": "golden",
+  "service": "conduit",
+  "version": 1
+}
