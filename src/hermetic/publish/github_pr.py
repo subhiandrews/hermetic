@@ -7,10 +7,11 @@ in docs/architecture.md.
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import os
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
@@ -29,12 +30,12 @@ API_VARIABLE = "HERMETIC_GITHUB_API"
 _MESSAGE_CHARS = 200
 
 TokenSource = Callable[[], str]
-_REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-_BRANCH = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._/-]*$")
+_REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+_BRANCH = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._/-]*")
 
 
 def _is_branch(name: str) -> bool:
-    if not _BRANCH.match(name) or ".." in name or "//" in name:
+    if not _BRANCH.fullmatch(name) or ".." in name or "//" in name:
         return False
     return not name.endswith(("/", ".lock", "."))
 
@@ -75,7 +76,7 @@ class GitHubPRPublisher:
         timeout: float = 30.0,
         client: httpx.Client | None = None,
     ) -> None:
-        if not _REPO.match(repo):
+        if not _REPO.fullmatch(repo) or {".", ".."} & set(repo.split("/")):
             raise PublisherError(f"{REPO_VARIABLE} must look like owner/name, not {repo!r}")
         if base is not None and not _is_branch(base):
             raise PublisherError(f"{BASE_VARIABLE} is not a branch name: {base!r}")
@@ -91,10 +92,26 @@ class GitHubPRPublisher:
         self._base = base
         self._token_source = token_source
         self._where = host
+        self._injected = client
+        self._client = client
+        self._api_url = api_url.rstrip("/")
+        self._timeout = timeout
+
+    @contextlib.contextmanager
+    def _session(self) -> Iterator[None]:
+        """Holds an HTTP client for one publish; one this class built is closed afterwards."""
+        if self._injected is not None:
+            yield
+            return
         # trust_env=False: a proxy named in the environment must not see the token.
-        self._client = client or httpx.Client(
-            base_url=api_url.rstrip("/"), timeout=timeout, follow_redirects=False, trust_env=False
-        )
+        with httpx.Client(
+            base_url=self._api_url, timeout=self._timeout, follow_redirects=False, trust_env=False
+        ) as client:
+            self._client = client
+            try:
+                yield
+            finally:
+                self._client = None
 
     @classmethod
     def from_environment(cls, env: Mapping[str, str] | None = None) -> GitHubPRPublisher:
@@ -118,6 +135,10 @@ class GitHubPRPublisher:
 
     def publish(self, service: str, suite_dir: Path) -> str:
         files = read_suite(suite_dir)
+        with self._session():
+            return self._publish(service, files)
+
+    def _publish(self, service: str, files: list[tuple[str, bytes]]) -> str:
         token = self._token_source()
         if not token or not is_header_token(token):
             raise PublisherError("the GitHub token cannot be sent: use printable ASCII, no spaces")
@@ -142,6 +163,8 @@ class GitHubPRPublisher:
         existing = self._call(token, "GET", f"{repo}/git/ref/heads/{head}", accept=(404,))
         if existing.status_code == 404:
             self._create_branch(token, service, branch, base_sha, files)
+        elif self._holds_only_the_suite(token, service, branch, base_sha, files):
+            raise PublisherError(f"{base} already has what branch {branch} holds")
         response = self._call(
             token,
             "POST",
@@ -156,15 +179,49 @@ class GitHubPRPublisher:
             },
         )
         if response.status_code == 422:
-            # The branch holds this suite's commit and its pull request was merged: nothing to add.
-            if "No commits between" in self._reasons(response, token):
-                raise PublisherError(f"{base} already has this suite (branch {branch})")
             raise PublisherError(self._refusal(422, response, token))
         try:
             pull = response.json()
         except ValueError as exc:
             raise PublisherError(f"{self._where} sent a reply that is not valid") from exc
         return _address(pull)
+
+    def _holds_only_the_suite(
+        self, token: str, service: str, branch: str, base_sha: str, files: list[tuple[str, bytes]]
+    ) -> bool:
+        """Whether the base already has the branch's commits; refuses a branch with anything else.
+
+        A reused branch should be one Hermetic made earlier, but anyone who can push may have added
+        to it, so it must be exactly one commit on `base_sha` that adds this suite's files.
+        """
+        repo = f"repos/{self._repo}"
+        head = quote(branch, safe="/")
+        diff = self._json(token, "GET", f"{repo}/compare/{base_sha}...{head}")
+        if diff.get("ahead_by") == 0 if isinstance(diff, dict) else False:
+            return True  # the branch is part of the base's history: it was merged
+        found = {}
+        listed = diff.get("files") if isinstance(diff, dict) else None
+        if isinstance(listed, list):
+            found = {
+                f.get("filename"): f.get("sha")
+                for f in listed
+                if isinstance(f, dict) and f.get("status") in ("added", "modified")
+            }
+            if len(found) != len(listed):
+                found = {}
+        expected = {f"tests/{service}/{name}": _blob_sha(data) for name, data in files}
+        one_commit = (
+            isinstance(diff, dict)
+            and diff.get("ahead_by") == 1
+            and diff.get("behind_by") == 0
+            and _text(diff, "merge_base_commit", "sha") == base_sha
+        )
+        if not one_commit or found != expected:
+            raise PublisherError(
+                f"branch {branch} holds more or other than this suite on {base_sha[:12]}; "
+                "delete it or publish from a changed suite"
+            )
+        return False
 
     def _create_branch(
         self, token: str, service: str, branch: str, base_sha: str, files: list[tuple[str, bytes]]
@@ -238,6 +295,7 @@ class GitHubPRPublisher:
             "X-GitHub-Api-Version": "2022-11-28",
         }
         try:
+            assert self._client is not None  # only called within `_session`
             response = self._client.request(
                 method, f"/{path}", json=body, params=params, headers=headers
             )
@@ -275,6 +333,11 @@ class GitHubPRPublisher:
             return ""
         text = "; ".join(str(part) for part in parts if part).replace(token, "[REDACTED]")
         return "".join(c for c in text if c.isprintable())[:_MESSAGE_CHARS]
+
+
+def _blob_sha(data: bytes) -> str:
+    """The id git gives a file with these bytes."""
+    return hashlib.sha1(b"blob %d\0" % len(data) + data, usedforsecurity=False).hexdigest()
 
 
 def _digest(files: list[tuple[str, bytes]]) -> str:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,7 @@ class FakeGitHub:
         self.requests: list[httpx.Request] = []
         self.open_prs: list[dict[str, Any]] = []
         self.branch_exists = False
+        self.compare: Any = None  # None: what a clean earlier run left
         self.replies: dict[str, httpx.Response] = {}  # "METHOD path" -> a forced reply
         self.created: dict[str, list[dict[str, object]]] = {}
 
@@ -53,6 +55,8 @@ class FakeGitHub:
             self.created.setdefault(path, []).append(json.loads(request.content))
         if path.startswith(f"repos/{REPO}/git/ref/heads/hermetic/"):
             return httpx.Response(200 if self.branch_exists else 404, json={})
+        if "/compare/" in path:
+            return httpx.Response(200, json=self.compare or self.clean_compare())
         routes = {
             f"GET repos/{REPO}/pulls": httpx.Response(200, json=self.open_prs),
             f"GET repos/{REPO}": httpx.Response(200, json={"default_branch": "main"}),
@@ -69,6 +73,25 @@ class FakeGitHub:
             f"POST repos/{REPO}/pulls": httpx.Response(201, json={"html_url": PR_URL}),
         }
         return routes.get(key, httpx.Response(500, json={"message": f"unexpected {key}"}))
+
+    @staticmethod
+    def clean_compare() -> dict[str, Any]:
+        def blob(data: bytes) -> str:
+            return hashlib.sha1(b"blob %d\0" % len(data) + data, usedforsecurity=False).hexdigest()
+
+        return {
+            "ahead_by": 1,
+            "behind_by": 0,
+            "merge_base_commit": {"sha": "base-sha"},
+            "files": [
+                {"filename": "tests/petstore/test_a.py", "status": "added", "sha": blob(b"# a\n")},
+                {
+                    "filename": "tests/petstore/.hermetic/manifest.json",
+                    "status": "added",
+                    "sha": blob(b"{}"),
+                },
+            ],
+        }
 
     def publisher(self, base: str | None = None) -> GitHubPRPublisher:
         client = httpx.Client(
@@ -144,15 +167,68 @@ def test_a_suite_whose_pull_request_was_merged_says_the_base_already_has_it(
 ) -> None:
     github = FakeGitHub()
     github.branch_exists = True
-    github.replies[f"POST repos/{REPO}/pulls"] = httpx.Response(
-        422,
-        json={
-            "message": "Validation Failed",
-            "errors": [{"message": "No commits between a and b"}],
-        },
-    )
-    with pytest.raises(PublisherError, match=r"main already has this suite \(branch hermetic/"):
+    github.compare = {"ahead_by": 0, "behind_by": 3}
+    with pytest.raises(PublisherError, match=r"main already has what branch hermetic/"):
         github.publisher().publish("petstore", make_suite(tmp_path / "s"))
+
+
+def _tampered() -> list[dict[str, Any]]:
+    clean = FakeGitHub.clean_compare()
+    extra = {"filename": ".github/workflows/x.yml", "status": "added", "sha": "f" * 40}
+    changed = {**clean, "files": [*clean["files"], extra]}
+    wrong = {**clean, "files": [{**clean["files"][0], "sha": "0" * 40}, clean["files"][1]]}
+    removed = {**clean, "files": [{**f, "status": "removed"} for f in clean["files"]]}
+    return [
+        changed,
+        wrong,
+        removed,
+        {**clean, "ahead_by": 2},
+        {**clean, "behind_by": 1},
+        {**clean, "merge_base_commit": {"sha": "other"}},
+        {**clean, "files": "none"},
+        {**clean, "files": [3]},
+    ]
+
+
+@pytest.mark.parametrize("compare", _tampered())
+def test_a_branch_that_holds_more_than_the_suite_is_not_opened_as_a_pull_request(
+    tmp_path: Path, compare: dict[str, Any]
+) -> None:
+    github = FakeGitHub()
+    github.branch_exists = True
+    github.compare = compare
+    with pytest.raises(PublisherError, match="holds more or other than this suite"):
+        github.publisher().publish("petstore", make_suite(tmp_path / "s"))
+    assert not [path for path in github.paths() if path.startswith("POST")]
+
+
+def test_a_comparison_that_is_not_an_object_is_refused(tmp_path: Path) -> None:
+    github = FakeGitHub()
+    github.branch_exists = True
+    github.compare = [1]
+    with pytest.raises(PublisherError, match="holds more or other than this suite"):
+        github.publisher().publish("petstore", make_suite(tmp_path / "s"))
+
+
+def test_a_client_the_publisher_built_is_closed_and_built_again_for_the_next_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    github = FakeGitHub()
+    real = httpx.Client
+    built: list[httpx.Client] = []
+
+    def make(**kwargs: Any) -> httpx.Client:
+        client = real(transport=httpx.MockTransport(github), **kwargs)
+        built.append(client)
+        return client
+
+    monkeypatch.setattr(httpx, "Client", make)
+    publisher = GitHubPRPublisher(REPO, lambda: TOKEN)
+    suite = make_suite(tmp_path / "s")
+    publisher.publish("petstore", suite)
+    github.branch_exists = True
+    publisher.publish("petstore", suite)
+    assert len(built) == 2 and all(client.is_closed for client in built)
 
 
 def test_any_other_refusal_to_open_the_pull_request_is_reported_with_its_reasons(
@@ -376,8 +452,14 @@ def test_a_bad_configuration_says_what_to_set(values: dict[str, str], message: s
         GitHubPRPublisher.from_environment(values)
 
 
+@pytest.mark.parametrize("repo", ["acme/tests\n", "../x", "a/..", "./x", "a/b/c", "a"])
+def test_a_repository_name_that_is_not_plain_is_refused(repo: str) -> None:
+    with pytest.raises(PublisherError, match="owner/name"):
+        GitHubPRPublisher(repo, lambda: TOKEN)
+
+
 @pytest.mark.parametrize(
-    "base", ["a..b", "a//b", "a/", "x.lock", "-lead", "has space", ".hid", "a."]
+    "base", ["main\n", "a..b", "a//b", "a/", "x.lock", "-lead", "has space", ".hid", "a."]
 )
 def test_an_unsafe_branch_name_is_refused(base: str) -> None:
     with pytest.raises(PublisherError, match="not a branch name"):
@@ -402,7 +484,9 @@ def test_the_api_address_must_be_https_without_credentials(api: str) -> None:
 
 def test_an_enterprise_address_is_accepted_and_redirects_are_not_followed() -> None:
     publisher = GitHubPRPublisher(REPO, lambda: TOKEN, api_url="https://ghe.example.com/api/v3/")
-    client = publisher._client
+    with publisher._session():
+        client = publisher._client
+        assert client is not None
     assert client.follow_redirects is False and client.trust_env is False
     assert str(client.base_url).startswith("https://ghe.example.com/api/v3")
 
