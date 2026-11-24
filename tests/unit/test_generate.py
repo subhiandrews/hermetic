@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from hermetic.diffing.manifest import ManifestEntry, file_name_for, load_manifest, save_manifest
-from hermetic.generate import GenerateError, Manifest, ManifestError, generate_suite
+from hermetic.generate import (
+    AuthoredTest,
+    AuthorRequest,
+    GenerateError,
+    Manifest,
+    ManifestError,
+    generate_suite,
+)
 from hermetic.generate.suite import MANIFEST_NAME, fragment_text
 from hermetic.ingest import ServiceModel, ingest
 from tests.fakes import FakeAuthor, good_source
@@ -173,7 +181,31 @@ def test_a_deleted_test_file_is_regenerated(tmp_path: Path) -> None:
     assert (suite / file_name_for("addPet")).exists()
 
 
-def test_authoring_runs_concurrently_and_reports_the_first_failure_in_spec_order(
+class OverlapAuthor(FakeAuthor):
+    """Its first two calls only return once both are running at the same time."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._barrier = threading.Barrier(2, timeout=10)
+        self._lock = threading.Lock()
+        self._calls = 0
+
+    def write_test(self, request: AuthorRequest) -> AuthoredTest:
+        with self._lock:
+            overlap = self._calls < 2
+            self._calls += 1
+        if overlap:
+            self._barrier.wait()  # a serial author never gets a second caller: this breaks
+        return super().write_test(request)
+
+
+def test_model_calls_overlap(tmp_path: Path) -> None:
+    model = model_from(tmp_path)
+    changes = generate_suite(model, OverlapAuthor(), tmp_path / "suite")
+    assert len(changes) == len(model.operations)
+
+
+def test_the_first_failure_in_spec_order_is_reported(
     tmp_path: Path,
 ) -> None:
     model = model_from(tmp_path)
