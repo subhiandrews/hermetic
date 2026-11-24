@@ -23,7 +23,7 @@ from hermetic.ingest.models import Json, Operation, ServiceModel
 from hermetic.provision.compose import ProvisionError, refuse_links
 
 MAX_STUBS = 500
-MAX_BODY_BYTES = 65_536
+MAX_STUB_BYTES = 131_072  # a whole stub file as written; also the most `_ours` will read
 MAX_DEPTH = 8
 MAX_KEYS = 64  # properties kept per object, so a wide schema cannot grow a body without bound
 METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
@@ -181,6 +181,11 @@ def _file_name(operation: Operation) -> str:
     return f"{slug}-{digest}.json"
 
 
+def render(mapping: dict[str, Any]) -> str:
+    """The text of a stub file."""
+    return json.dumps(mapping, indent=2, sort_keys=True) + "\n"
+
+
 def build_stubs(model: ServiceModel) -> tuple[dict[str, dict[str, Any]], list[str]]:
     """File name to mapping, and a line for each operation that got no stub and why."""
     prefix = _prefix(model)
@@ -199,15 +204,9 @@ def build_stubs(model: ServiceModel) -> tuple[dict[str, dict[str, Any]], list[st
             status, schema = found
             response: dict[str, Any] = {"status": 200 if status == "2XX" else int(status)}
             if schema is not None:
-                body = sample(schema)
-                # measured as written (indented), so the cap holds on disk
-                encoded = json.dumps(body, indent=2, sort_keys=True)
-                if len(encoded.encode()) > MAX_BODY_BYTES:
-                    skipped.append(f"{label}: example larger than {MAX_BODY_BYTES} bytes")
-                    continue
                 response["headers"] = {"Content-Type": "application/json"}
-                response["jsonBody"] = body
-            stubs[_file_name(operation)] = {
+                response["jsonBody"] = sample(schema)
+            mapping = {
                 "priority": min(1 + len(_PARAM.findall(operation.path)), 9),
                 "request": {
                     "method": operation.method,
@@ -216,6 +215,11 @@ def build_stubs(model: ServiceModel) -> tuple[dict[str, dict[str, Any]], list[st
                 "response": response,
                 "metadata": {MARKER: True, "operation": operation.operation_id},
             }
+            # measured exactly as it will be written, so what is made is what `_ours` can read
+            if len(render(mapping).encode()) > MAX_STUB_BYTES:
+                skipped.append(f"{label}: stub larger than {MAX_STUB_BYTES} bytes")
+                continue
+            stubs[_file_name(operation)] = mapping
     return stubs, skipped
 
 
@@ -224,7 +228,7 @@ def _ours(path: Path) -> bool:
     if path.suffix != ".json" or path.is_symlink() or not path.is_file():
         return False
     try:
-        if path.stat().st_size > MAX_BODY_BYTES * 2:
+        if path.stat().st_size > MAX_STUB_BYTES:
             return False
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, RecursionError):
@@ -249,8 +253,7 @@ def write_stubs(folder: Path, stubs: dict[str, dict[str, Any]]) -> None:
         fd, tmp = tempfile.mkstemp(dir=folder, prefix=".stub-", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(mapping, handle, indent=2, sort_keys=True)
-                handle.write("\n")
+                handle.write(render(mapping))
             os.chmod(tmp, 0o644)
             os.replace(tmp, folder / name)
         except BaseException:

@@ -238,9 +238,9 @@ def test_the_number_of_stubs_is_capped(
 def test_a_body_over_the_cap_is_skipped(
     model: ServiceModel, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(stubs_module, "MAX_BODY_BYTES", 5)
+    monkeypatch.setattr(stubs_module, "MAX_STUB_BYTES", 5)
     stubs, skipped = build_stubs(model)
-    assert any("example larger than 5 bytes" in line for line in skipped)
+    assert any("stub larger than 5 bytes" in line for line in skipped)
     assert all(m["metadata"]["operation"] != "getCharge" for m in stubs.values())
 
 
@@ -331,7 +331,7 @@ def test_an_oversized_file_is_not_read(
     folder.mkdir()
     big = folder / "big.json"
     big.write_text(json.dumps({"metadata": {"hermetic": True}, "pad": "x" * 100}))
-    monkeypatch.setattr(stubs_module, "MAX_BODY_BYTES", 10)
+    monkeypatch.setattr(stubs_module, "MAX_STUB_BYTES", 10)
     write_stubs(folder, {})
     assert big.exists()
 
@@ -345,19 +345,31 @@ def test_a_deeply_nested_file_is_left_alone(tmp_path: Path) -> None:
     assert deep.exists()
 
 
-def test_the_body_cap_counts_the_indented_form(
-    model: ServiceModel, monkeypatch: pytest.MonkeyPatch
+def test_the_cap_counts_the_whole_file_as_written(
+    model: ServiceModel, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    compact = len(json.dumps([1, 2, 3]))
-    indented = len(json.dumps([1, 2, 3], indent=2))
-    assert indented > compact
-    op = _operation("GET")
-    monkeypatch.setattr(stubs_module, "sample", lambda _s: [1, 2, 3])
-    monkeypatch.setattr(stubs_module, "MAX_BODY_BYTES", compact)
-    other = model.model_copy(update={"operations": [op]})
+    body = [[[[0] * 10] * 10] * 10] * 10  # small compact, large indented and nested under jsonBody
+    monkeypatch.setattr(stubs_module, "sample", lambda _s: body)
+    other = model.model_copy(update={"operations": [_operation("GET")]})
+    compact = len(json.dumps(body))
+    assert compact < stubs_module.MAX_STUB_BYTES / 2  # the old measure would have let it pass
     stubs, skipped = build_stubs(other)
     assert stubs == {}
-    assert any("example larger than" in line for line in skipped)
+    assert any("stub larger than" in line for line in skipped)
+
+
+def test_what_is_written_is_never_more_than_the_reader_accepts(
+    model: ServiceModel, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(stubs_module, "sample", lambda _s: [[0] * 30] * 30)
+    other = model.model_copy(update={"operations": [_operation("GET")]})
+    stubs, _ = build_stubs(other)
+    assert len(stubs) == 1
+    folder = tmp_path / "m"
+    write_stubs(folder, stubs)
+    write_stubs(folder, stubs)  # a rerun recognises and replaces it
+    written = next(folder.iterdir())
+    assert written.stat().st_size <= stubs_module.MAX_STUB_BYTES
 
 
 def test_a_linked_stub_file_is_left_alone(model: ServiceModel, tmp_path: Path) -> None:
