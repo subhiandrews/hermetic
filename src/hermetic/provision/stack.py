@@ -125,6 +125,9 @@ def up(service: str, path: Path, text: str, runner: CommandRunner = run_command)
     try:
         refuse_links(path)
         document = check_compose(text, path.parent)
+        project = str(document["name"])
+        if project != project_name(service):  # before anything is created on disk
+            raise StackError(f"{path} is the stack {project!r}, not {project_name(service)!r}")
         _make_mount_sources(path.parent, document)
         # A source that did not exist was accepted above; now every one exists, so look again.
         document = check_compose(text, path.parent)
@@ -132,9 +135,6 @@ def up(service: str, path: Path, text: str, runner: CommandRunner = run_command)
         raise StackError(str(exc)) from exc
     except ComposeError as exc:
         raise StackError(f"refusing to run {path}: {exc}") from exc
-    project = str(document["name"])
-    if project != project_name(service):
-        raise StackError(f"{path} is the stack {project!r}, not {project_name(service)!r}")
     _refuse_if_running(runner, project, service)
     argv = [
         "docker",

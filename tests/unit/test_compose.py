@@ -321,6 +321,29 @@ def test_a_mount_may_only_reach_read_only_into_the_working_directory(
     assert any(expected in problem for problem in problems)
 
 
+def test_a_path_that_cannot_be_resolved_is_refused_not_a_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    real_resolve = Path.resolve
+
+    def resolve(self: Path, strict: bool = False) -> Path:
+        # Python 3.12 raises RuntimeError for a symlink loop; other versions raise OSError.
+        if self.name == "loop":
+            raise RuntimeError("Symlink loop from " + str(self))
+        if self.name == "broken":
+            raise OSError("cannot read")
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    for name in ("loop", "broken"):
+        problems = problems_of(document_with(volumes=[f"./{name}:/x:ro"]), work)
+        assert any("cannot be checked" in problem for problem in problems)
+    problems = problems_of(document_with(volumes=["./a:/x:ro"]), work / "loop")
+    assert any("working directory cannot be checked" in problem for problem in problems)
+
+
 def test_a_mount_with_too_many_files_to_look_through_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -126,6 +126,7 @@ def test_a_stack_of_another_service_is_not_started(stack: tuple[Path, str]) -> N
     with pytest.raises(StackError, match="not 'hermetic-other'"):
         up("other", path, text, docker)
     assert docker.calls == []
+    assert not (path.parent / "mocks").exists()  # a refused file creates nothing
 
 
 def test_a_failed_start_is_cleaned_up(stack: tuple[Path, str]) -> None:

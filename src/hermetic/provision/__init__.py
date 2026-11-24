@@ -12,7 +12,7 @@ from hermetic.provision.compose import (
     write_compose,
 )
 from hermetic.provision.images import APPROVED_IMAGES, ENGINES, Engine
-from hermetic.provision.stack import Endpoint, StackError, down, up
+from hermetic.provision.stack import Endpoint, StackError, down, project_name, up
 from hermetic.provision.validate import ComposeError, check_compose
 
 __all__ = [
@@ -28,6 +28,7 @@ __all__ = [
     "check_compose",
     "down",
     "generate_compose",
+    "project_name",
     "read_compose_file",
     "refuse_links",
     "up",

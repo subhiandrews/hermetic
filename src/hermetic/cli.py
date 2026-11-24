@@ -40,6 +40,7 @@ from hermetic.provision import (
     StackError,
     check_compose,
     generate_compose,
+    project_name,
     read_compose_file,
     refuse_links,
     write_compose,
@@ -243,11 +244,12 @@ def down(
 ) -> None:
     """Stop and remove a service's mock stack, data included."""
     try:
-        stop_stack(resolve_service(None, service))
+        service_id = resolve_service(None, service)
+        stop_stack(service_id)
     except (InvalidServiceError, StackError) as exc:
         typer.echo(f"error: {printable(str(exc))}", err=True)
         raise typer.Exit(code=2) from exc
-    typer.echo(f"stopped hermetic-{service}")
+    typer.echo(f"stopped {project_name(service_id)}")
 
 
 @app.command()
