@@ -91,7 +91,23 @@ def model(tmp_path: Path) -> ServiceModel:
         ({"type": "integer"}, 0),
         ({"type": "integer", "minimum": 5}, 5),
         ({"type": "integer", "maximum": -3}, -3),
+        ({"type": "integer", "exclusiveMinimum": 0}, 1),
+        ({"type": "integer", "minimum": 0, "exclusiveMinimum": True}, 1),
+        ({"type": "integer", "minimum": 5.5}, 6),
+        ({"type": "integer", "maximum": -2.5}, -3),
+        ({"type": "integer", "exclusiveMaximum": 0}, -1),
+        ({"type": "integer", "exclusiveMaximum": -4}, -5),
+        ({"type": "integer", "exclusiveMinimum": True}, 0),
+        ({"type": "integer", "minimum": 10**400}, 10**400),
         ({"type": "number"}, 0.0),
+        ({"type": "number", "minimum": 2.5}, 2.5),
+        ({"type": "number", "exclusiveMinimum": 0}, 1.0),
+        ({"type": "number", "exclusiveMinimum": 0, "maximum": 1}, 0.5),
+        ({"type": "number", "exclusiveMinimum": 3, "exclusiveMaximum": 4}, 3.5),
+        ({"type": "number", "maximum": -1.5}, -1.5),
+        ({"type": "number", "exclusiveMaximum": 0}, -1.0),
+        ({"type": "number", "minimum": -2, "exclusiveMaximum": 0}, -1.0),
+        ({"type": "number", "minimum": -2, "maximum": 5}, 0.0),
         ({"type": "boolean"}, True),
         ({"type": ["null", "string"]}, "string"),
         ({"type": ["null"]}, None),
@@ -418,3 +434,68 @@ def test_stubs_command_refuses(project: Path, args: list[str], message: str) -> 
     result = cli_runner.invoke(app, ["stubs", *full])
     assert result.exit_code == 2
     assert message in result.output
+
+
+def test_a_bound_too_large_for_a_float_is_an_error() -> None:
+    with pytest.raises(ProvisionError, match="too large to sample"):
+        sample({"type": "number", "minimum": 10**400})
+    with pytest.raises(ProvisionError, match="too large to sample"):
+        sample({"type": "number", "exclusiveMinimum": 10**400})
+    with pytest.raises(ProvisionError, match="too large to sample"):
+        sample({"type": "number", "maximum": -(10**400)})
+
+
+def test_a_success_range_gets_a_stub(tmp_path: Path) -> None:
+    code = "2XX"
+    path = tmp_path / "s.yaml"
+    path.write_text(
+        "openapi: 3.0.3\ninfo: {title: t, version: '1'}\npaths:\n  /a:\n    get:\n"
+        f"      operationId: a\n      responses: {{'{code}': {{description: ok}}}}\n"
+    )
+    stubs, skipped = build_stubs(ingest(path))
+    assert skipped == []
+    assert next(iter(stubs.values()))["response"] == {"status": 200}
+
+
+def test_a_name_clash_changes_nothing(model: ServiceModel, tmp_path: Path) -> None:
+    folder = tmp_path / "m"
+    stubs, _ = build_stubs(model)
+    write_stubs(folder, stubs)
+    before = {p.name: p.read_text() for p in folder.iterdir()}
+    names = sorted(stubs)
+    (folder / names[-1]).write_text("{}")  # a hand-written file takes a generated name
+    before[names[-1]] = "{}"
+    with pytest.raises(ProvisionError, match="not a stub Hermetic made"):
+        write_stubs(folder, stubs)
+    assert {p.name: p.read_text() for p in folder.iterdir()} == before
+
+
+def test_a_failed_write_keeps_the_old_stubs(
+    model: ServiceModel, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = tmp_path / "m"
+    stubs, _ = build_stubs(model)
+    write_stubs(folder, stubs)
+    before = {p.name: p.read_text() for p in folder.iterdir()}
+
+    def boom(src: str, dst: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("hermetic.provision.stubs.os.replace", boom)
+    with pytest.raises(OSError, match="disk full"):
+        write_stubs(folder, {**stubs, "extra-00000000.json": {"metadata": {"hermetic": True}}})
+    assert {p.name: p.read_text() for p in folder.iterdir()} == before
+
+
+def test_the_command_reports_a_bound_it_cannot_sample(project: Path) -> None:
+    (project / "big.yaml").write_text(
+        "openapi: 3.0.3\ninfo: {title: t, version: '1'}\npaths:\n  /a:\n    get:\n"
+        "      operationId: a\n      responses:\n        '200':\n          description: ok\n"
+        "          content:\n            application/json:\n              schema:\n"
+        f"                type: number\n                minimum: {10**400}\n"
+    )
+    result = cli_runner.invoke(
+        app, ["stubs", "--service", "shop", "--name", "payments", "--spec", "big.yaml"]
+    )
+    assert result.exit_code == 2
+    assert "too large to sample" in result.output

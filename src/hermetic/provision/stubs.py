@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import tempfile
@@ -27,7 +28,7 @@ MAX_DEPTH = 8
 MAX_KEYS = 64  # properties kept per object, so a wide schema cannot grow a body without bound
 METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
 MARKER = "hermetic"
-_SUCCESS = re.compile(r"^2\d\d$")
+_SUCCESS = re.compile(r"^2(\d\d|XX)$")  # OpenAPI also allows the range "2XX"
 _PARAM = re.compile(r"\{[^{}/]+\}")
 _REGEX_SPECIAL = set(".\\+*?^$()[]{}|")
 _FORMATS = {
@@ -44,15 +45,48 @@ def _is_json(media_type: str) -> bool:
     return base == "application/json" or base.endswith("+json")
 
 
+def _is_number(value: object) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+def _bound(schema: Json, inclusive: str, exclusive: str) -> tuple[Any, bool]:
+    """A bound and whether it excludes its own value, in the 3.0 and the 3.1 spelling."""
+    marked = schema.get(exclusive)
+    if _is_number(marked):  # 3.1: the exclusive key holds the number
+        return marked, True
+    value = schema.get(inclusive)
+    if _is_number(value):
+        return value, marked is True  # 3.0: a flag beside `minimum`
+    return None, False
+
+
 def _number(schema: Json, *, whole: bool) -> int | float:
-    low = schema.get("minimum")
-    high = schema.get("maximum")
-    value: float = 0
-    if isinstance(low, int | float) and not isinstance(low, bool) and low > value:
-        value = low
-    if isinstance(high, int | float) and not isinstance(high, bool) and high < value:
-        value = high
-    return int(value) if whole else float(value)
+    """A number inside the schema's bounds, as near zero as they allow."""
+    low, low_open = _bound(schema, "minimum", "exclusiveMinimum")
+    high, high_open = _bound(schema, "maximum", "exclusiveMaximum")
+    try:
+        if whole:
+            first = None if low is None else (math.floor(low) + 1 if low_open else math.ceil(low))
+            last = (
+                None if high is None else (math.ceil(high) - 1 if high_open else math.floor(high))
+            )
+            value = 0
+            if first is not None and value < first:
+                value = first
+            if last is not None and value > last:
+                value = last
+            return value
+        if low is not None and (low > 0 or (low_open and low == 0)):
+            if not low_open:
+                return float(low)
+            return float((low + high) / 2 if high is not None else low + 1)
+        if high is not None and (high < 0 or (high_open and high == 0)):
+            if not high_open:
+                return float(high)
+            return float((low + high) / 2 if low is not None else high - 1)
+        return 0.0
+    except OverflowError as exc:  # an integer bound too large for a float
+        raise ProvisionError("a bound in the spec is too large to sample") from exc
 
 
 def sample(schema: Json | bool, depth: int = 0) -> Any:
@@ -161,7 +195,7 @@ def build_stubs(model: ServiceModel) -> tuple[dict[str, dict[str, Any]], list[st
             skipped.append(f"{label}: more than {MAX_STUBS} operations")
         else:
             status, schema = found
-            response: dict[str, Any] = {"status": int(status)}
+            response: dict[str, Any] = {"status": 200 if status == "2XX" else int(status)}
             if schema is not None:
                 body = sample(schema)
                 encoded = json.dumps(body, sort_keys=True)
@@ -197,23 +231,28 @@ def _ours(path: Path) -> bool:
 
 
 def write_stubs(folder: Path, stubs: dict[str, dict[str, Any]]) -> None:
-    """Replace the stubs an earlier run made with these, leaving every other file alone."""
+    """Make the folder hold these stubs, replacing the ones an earlier run made.
+
+    Hand-written files are left alone, and a name that one of them already has is refused
+    before anything changes. Old stubs go last, so a failed write never leaves the folder bare.
+    """
     refuse_links(folder / "x")  # the folder itself and everything above it
     folder.mkdir(parents=True, exist_ok=True)
-    for old in folder.iterdir():
-        if _ours(old):
-            old.unlink()
-    for name, mapping in stubs.items():
+    for name in stubs:
         target = folder / name
-        if target.exists() or target.is_symlink():
+        if (target.exists() or target.is_symlink()) and not _ours(target):
             raise ProvisionError(f"{target} exists and is not a stub Hermetic made")
+    for name, mapping in stubs.items():
         fd, tmp = tempfile.mkstemp(dir=folder, prefix=".stub-", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(mapping, handle, indent=2, sort_keys=True)
                 handle.write("\n")
             os.chmod(tmp, 0o644)
-            os.replace(tmp, target)
+            os.replace(tmp, folder / name)
         except BaseException:
             Path(tmp).unlink(missing_ok=True)
             raise
+    for old in folder.iterdir():
+        if old.name not in stubs and _ours(old):
+            old.unlink()
