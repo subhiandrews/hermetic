@@ -5,9 +5,9 @@
 # The checks cover the working tree, not just what is staged, so unstaged edits can fail a
 # commit whose staged content is clean. The hooks are best-effort; CI is the gate.
 #
-# Both the git pre-commit hook and the Claude Code hook in .claude/settings.json call this, so a
-# commit made through Claude Code runs it twice (under a second). That is deliberate: if either
-# hook skipped when the other is installed, a commit that bypasses the git hook would skip both.
+# Called by both the git pre-commit hook and the Claude Code hook, so a Claude commit runs it
+# twice. Deliberate: if either hook skipped when the other is installed, a commit that bypasses
+# the git hook would skip both.
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
