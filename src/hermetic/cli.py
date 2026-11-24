@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import ipaddress
+import socket
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated
 
@@ -165,25 +168,67 @@ def serve(
         str, typer.Option(help="Address to listen on; loopback keeps it on this machine.")
     ] = "127.0.0.1",
     port: Annotated[int, typer.Option(min=1, max=65535, help="Port to listen on.")] = 8000,
+    allowed_host: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--allowed-host",
+            help=(
+                "A host name the UI answers to, besides loopback and this machine's own names "
+                "(repeatable). '*' answers to any, which leaves it open to DNS rebinding."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Serve a read-only web UI over the run history."""
+    hosts = _allowed_hosts(host, allowed_host or [])
     if host not in _LOOPBACK_ADDRESSES:
         typer.echo(
             f"warning: listening on {host}: anyone who can reach this port can read the run "
             "history, including request and response bodies (secrets are redacted)",
             err=True,
         )
-    uvicorn.run(create_app(open_store(history_dir), _allowed_hosts(host)), host=host, port=port)
+    if WILDCARD in hosts:
+        typer.echo(
+            "warning: --allowed-host '*' turns off the Host check, so a web page you open can "
+            "reach this server by rebinding its own domain to it, even if the port is firewalled",
+            err=True,
+        )
+    uvicorn.run(create_app(open_store(history_dir), hosts), host=host, port=port)
 
 
 _LOOPBACK_ADDRESSES = ("127.0.0.1", "localhost", "::1")
 
 
-def _allowed_hosts(listen: str) -> list[str]:
-    """The `Host` values the UI answers to: loopback, plus the address it was asked to bind."""
-    if listen in ("0.0.0.0", "::"):  # every interface: the address a client uses is unknowable
-        return [WILDCARD]
-    return [*LOOPBACK_HOSTS, f"[{listen}]" if ":" in listen else listen]
+def _binds_every_interface(listen: str) -> bool:
+    try:
+        return ipaddress.ip_address(listen.strip("[]")).is_unspecified
+    except ValueError:  # a host name, not an address
+        return False
+
+
+def _allowed_hosts(listen: str, extra: Sequence[str]) -> list[str]:
+    """The `Host` values the UI answers to; anything else is refused.
+
+    That is loopback, the names given with --allowed-host and the address it is asked to bind.
+    On every interface no client sends the bound address, so this machine's own names stand in
+    for it. A web page that rebinds its own domain to this server is not on the list.
+    """
+    hosts = [*LOOPBACK_HOSTS, *extra]
+    if _binds_every_interface(listen):
+        hosts.extend(_machine_hosts())
+    else:
+        hosts.append(f"[{listen}]" if ":" in listen else listen)
+    return hosts
+
+
+def _machine_hosts() -> list[str]:
+    """What a client on this machine's network may call it: its host name and its addresses."""
+    name = socket.gethostname()
+    try:
+        addresses = socket.gethostbyname_ex(name)[2]
+    except OSError:  # the name does not resolve; the name itself still counts
+        addresses = []
+    return [name, *addresses]
 
 
 def _any_failed(record: RunRecord) -> bool:

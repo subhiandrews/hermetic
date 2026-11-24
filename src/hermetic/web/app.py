@@ -1,18 +1,13 @@
-"""The read-only web UI: the run history as JSON under /api, and a static page over it.
-
-The page shows request and response bodies of the service under test, which is data this tool
-does not control. The server therefore refuses a `Host` header it was not started for (a web
-page cannot reach a local server through DNS rebinding), sends a content security policy that
-forbids inline script and style, and never puts a store's error text in a response.
-"""
+"""The read-only web UI: the run history as JSON under /api, and a static page over it."""
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -21,6 +16,8 @@ from hermetic.history import RunNotFoundError, RunRecord, RunStore, RunStoreErro
 STATIC_DIR = Path(__file__).parent / "static"
 LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "[::1]")
 WILDCARD = "*"
+DEFAULT_RUN_LIMIT = 200
+MAX_RUN_LIMIT = 10_000
 
 _logger = logging.getLogger("hermetic.web")
 _SECURITY_HEADERS = {
@@ -67,13 +64,16 @@ def create_app(store: RunStore, allowed_hosts: Sequence[str] = LOOPBACK_HOSTS) -
 
     @app.exception_handler(RunStoreError)
     async def unreadable(request: Request, exc: RunStoreError) -> JSONResponse:
-        # The message can quote the stored record, so it goes to the server log, cut short.
-        _logger.warning("run history could not be read: %.200s", exc)
+        # The message can quote the stored record (a corrupt file's validation error does), so
+        # neither the client nor the log gets it: only what kind of failure it was.
+        _logger.warning("run history could not be read (%s)", type(exc).__name__)
         return JSONResponse({"detail": "the run history could not be read"}, status_code=500)
 
     @app.get("/api/runs")
-    def list_runs() -> list[RunSummary]:
-        return store.list()
+    def list_runs(
+        limit: Annotated[int, Query(ge=1, le=MAX_RUN_LIMIT)] = DEFAULT_RUN_LIMIT,
+    ) -> list[RunSummary]:
+        return store.list()[:limit]  # newest first; history only grows, so the payload is capped
 
     @app.get("/api/runs/{run_id}")
     def get_run(run_id: str) -> RunRecord:

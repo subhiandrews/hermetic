@@ -1,4 +1,5 @@
 import json
+import socket
 from pathlib import Path
 from typing import Any
 
@@ -61,20 +62,89 @@ def test_serve_warns_when_asked_to_listen_beyond_loopback(
     assert status_with_host(served, "evil.example") == 421
 
 
-def test_serve_on_every_interface_accepts_any_host_header(
+def fake_machine(monkeypatch: pytest.MonkeyPatch, *, resolves: bool = True) -> None:
+    monkeypatch.setattr("socket.gethostname", lambda: "box.example")
+
+    def resolve(name: str) -> tuple[str, list[str], list[str]]:
+        if not resolves:
+            raise socket.gaierror("no such host")
+        return (name, [], ["10.0.0.7"])
+
+    monkeypatch.setattr("socket.gethostbyname_ex", resolve)
+
+
+@pytest.mark.parametrize("every_interface", ["0.0.0.0", "::", "0:0:0:0:0:0:0:0", "[::]"])
+def test_serve_on_every_interface_still_checks_the_host_header(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, every_interface: str
+) -> None:
+    # Opening the port to the network must not open it to DNS rebinding: the page the user
+    # has open in a browser reaches the server as "evil.example", on the same port.
+    calls = fake_uvicorn(monkeypatch)
+    fake_machine(monkeypatch)
+    result = runner.invoke(
+        app, ["serve", "--history-dir", str(tmp_path), "--host", every_interface]
+    )
+    assert result.exit_code == 0 and "listening on" in result.output
+    assert "rebinding" not in result.output
+    served = calls[0][0]
+    for accepted in ("localhost:8000", "box.example:8000", "10.0.0.7:8000"):
+        assert status_with_host(served, accepted) == 200
+    assert status_with_host(served, "evil.example") == 421
+
+
+def test_serve_on_every_interface_keeps_this_machines_name_when_it_does_not_resolve(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     calls = fake_uvicorn(monkeypatch)
-    result = runner.invoke(app, ["serve", "--history-dir", str(tmp_path), "--host", "0.0.0.0"])
-    assert result.exit_code == 0 and "warning" in result.output
-    assert status_with_host(calls[0][0], "hermetic.internal:8000") == 200
+    fake_machine(monkeypatch, resolves=False)
+    runner.invoke(app, ["serve", "--history-dir", str(tmp_path), "--host", "0.0.0.0"])
+    assert status_with_host(calls[0][0], "box.example") == 200
+    assert status_with_host(calls[0][0], "10.0.0.7") == 421
+
+
+def test_serve_answers_to_the_names_it_is_given(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls = fake_uvicorn(monkeypatch)
+    fake_machine(monkeypatch)
+    names = ["--allowed-host", "hermetic.internal", "--allowed-host", "other.test"]
+    result = runner.invoke(
+        app, ["serve", "--history-dir", str(tmp_path), "--host", "0.0.0.0", *names]
+    )
+    assert result.exit_code == 0 and "rebinding" not in result.output
+    for accepted in ("hermetic.internal:8000", "other.test"):
+        assert status_with_host(calls[0][0], accepted) == 200
+    assert status_with_host(calls[0][0], "evil.example") == 421
+
+
+def test_serve_only_accepts_any_host_when_asked_to_and_says_what_that_risks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls = fake_uvicorn(monkeypatch)
+    result = runner.invoke(app, ["serve", "--history-dir", str(tmp_path), "--allowed-host", "*"])
+    assert result.exit_code == 0
+    assert "turns off the Host check" in result.output and "rebinding" in result.output
+    assert status_with_host(calls[0][0], "anything.example") == 200
+
+
+def test_serve_bound_to_a_host_name_answers_to_that_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls = fake_uvicorn(monkeypatch)
+    quiet = runner.invoke(app, ["serve", "--history-dir", str(tmp_path), "--host", "localhost"])
+    assert quiet.exit_code == 0 and "warning" not in quiet.output
+    named = runner.invoke(app, ["serve", "--history-dir", str(tmp_path), "--host", "box.example"])
+    assert named.exit_code == 0 and "listening on box.example" in named.output
+    assert status_with_host(calls[1][0], "box.example:8000") == 200
+    assert status_with_host(calls[1][0], "evil.example") == 421
 
 
 def test_serve_on_a_bare_ipv6_address_accepts_its_bracketed_host_header(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     calls = fake_uvicorn(monkeypatch)
-    runner.invoke(app, ["serve", "--history-dir", str(tmp_path), "--host", "fe80::1"])
+    result = runner.invoke(app, ["serve", "--history-dir", str(tmp_path), "--host", "fe80::1"])
+    assert result.exit_code == 0 and len(calls) == 1
     assert status_with_host(calls[0][0], "[fe80::1]:8000") == 200
 
 

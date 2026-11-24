@@ -17,7 +17,7 @@ from hermetic.history import (
     summarize,
 )
 from hermetic.web import create_app
-from hermetic.web.app import STATIC_DIR, hostname
+from hermetic.web.app import DEFAULT_RUN_LIMIT, MAX_RUN_LIMIT, STATIC_DIR, hostname
 from tests.factories import make_record, make_result
 
 SECRET = "secret-marker"
@@ -78,6 +78,32 @@ def test_runs_are_listed_newest_first_with_their_counts(client: TestClient) -> N
     assert runs[0]["failed"] == 1 and runs[0]["passed"] == 1 and runs[0]["added"] == 1
 
 
+def test_the_run_list_is_capped_and_the_cap_can_be_set() -> None:
+    def started(index: int) -> str:  # strictly increasing, so a higher index is newer
+        return f"2026-01-01T00:{index // 60:02d}:{index % 60:02d}+00:00"
+
+    runs = [
+        make_record(f"run-{index:03d}", started_at=started(index))
+        for index in range(DEFAULT_RUN_LIMIT + 5)
+    ]
+    client = TestClient(create_app(MemoryStore(*runs)), base_url="http://localhost")
+    everything = client.get("/api/runs").json()
+    assert len(everything) == DEFAULT_RUN_LIMIT
+    assert everything[0]["run_id"] == f"run-{DEFAULT_RUN_LIMIT + 4:03d}"  # the newest survive
+    assert [run["run_id"] for run in client.get("/api/runs?limit=2").json()] == [
+        "run-204",
+        "run-203",
+    ]
+    assert client.get("/api/runs?limit=0").status_code == 422
+    assert client.get(f"/api/runs?limit={MAX_RUN_LIMIT + 1}").status_code == 422
+
+
+def test_the_page_asks_for_the_same_limit_the_server_defaults_to() -> None:
+    script = (STATIC_DIR / "app.js").read_text()
+    match = re.search(r"const RUN_LIMIT = (\d+);", script)
+    assert match is not None and int(match.group(1)) == DEFAULT_RUN_LIMIT
+
+
 def test_a_run_comes_back_with_its_results_and_changes(client: TestClient) -> None:
     response = client.get("/api/runs/new")
     assert response.status_code == 200
@@ -120,7 +146,9 @@ def test_an_unreadable_store_is_a_500_that_leaks_nothing(caplog: pytest.LogCaptu
         assert response.status_code == 500
         assert response.json() == {"detail": "the run history could not be read"}
         assert SECRET not in response.text
-    assert "run history could not be read" in caplog.text  # the operator still learns of it
+    # The operator still learns that it failed and how, but not what the stored record held.
+    assert "run history could not be read (RunStoreError)" in caplog.text
+    assert SECRET not in caplog.text
 
 
 def test_a_corrupt_run_file_is_a_500_without_its_content(tmp_path: Path) -> None:

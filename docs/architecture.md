@@ -61,8 +61,9 @@ A run record holds metadata (target, spec/doc hashes, prompt and tool versions),
 `hermetic serve` runs a read-only web UI over the store: a history table with a pass-rate trend, and a run detail view with Failed / Added / Modified / Dropped / All tabs. The same data is exposed as JSON at `/api/runs` and `/api/runs/<run_id>`. It is a small FastAPI app (`web/app.py`) that depends only on the `RunStore` protocol, plus a static page (`web/static/`) with no build step.
 
 - **Run records are untrusted data.** They hold request and response bodies from the service under test, so the page only ever inserts them as text, never as markup (a test fails if the script uses `innerHTML` and the like). The content security policy forbids inline script and style, and every response carries it.
-- **It listens on loopback by default** and refuses a `Host` header it was not started for, so a web page cannot reach it through DNS rebinding. `--host 0.0.0.0` (the container case) opens the header check and prints a warning, because anyone who can reach the port can read the history.
-- **Store errors never reach a client.** A missing or malformed run id is a 404 and an unreadable run is a generic 500; the store's message can quote the record, so it only goes to the server log.
+- **It listens on loopback by default** and refuses a `Host` header it was not started for, so a web page cannot reach it through DNS rebinding (the page's own domain, pointed at the server, is not on the list). Listening beyond loopback prints a warning, because anyone who can reach the port can read the history, but keeps the check: on `--host 0.0.0.0` it answers to loopback and this machine's own names and addresses. `--allowed-host NAME` (repeatable) adds others, such as a container's published name. `--allowed-host '*'` turns the check off, with a warning that says why that is unsafe.
+- **Store errors never reach a client or the log.** A missing or malformed run id is a 404 and an unreadable run is a generic 500. The store's message can quote the record (a corrupt file's validation error does), so only the kind of failure is logged.
+- **The run list is capped.** `/api/runs` returns the newest 200 runs unless `?limit=` says otherwise (up to 10,000), and the page says when it shows the newest 200 only.
 
 ## Safety
 

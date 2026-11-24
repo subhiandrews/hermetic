@@ -6,6 +6,7 @@
 
 const app = document.getElementById("app");
 const TREND_RUNS = 20;
+const RUN_LIMIT = 200; // the most runs the history table lists; the API caps the list to match
 const TABS = ["failed", "added", "modified", "dropped", "all"];
 const TAB_LABELS = {
   failed: "Failed",
@@ -111,6 +112,9 @@ function renderHistory(runs) {
     trend(runs),
     el("table", {}, el("thead", {}, header), el("tbody", {}, runs.map(historyRow))),
   );
+  if (runs.length >= RUN_LIMIT) {
+    view.append(el("p", { class: "empty" }, `Showing the newest ${RUN_LIMIT} runs.`));
+  }
   return view;
 }
 
@@ -275,7 +279,7 @@ async function route() {
     const match = /^#\/runs\/(.+)$/.exec(location.hash);
     view = match
       ? renderRun(await getJson(`/api/runs/${encodeURIComponent(decodeURIComponent(match[1]))}`))
-      : renderHistory(await getJson("/api/runs"));
+      : renderHistory(await getJson(`/api/runs?limit=${RUN_LIMIT}`));
   } catch (error) {
     document.title = "Not available · Hermetic";
     view = el("p", { class: "error" }, `Could not load this page: ${error.message}`);
