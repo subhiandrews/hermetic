@@ -25,7 +25,7 @@ _SENSITIVE_HEADERS = frozenset(
         "x-xsrf-token",
     }
 )
-_SENSITIVE_KEY_PARTS = (
+SENSITIVE_KEY_PARTS = (
     "password",
     "passwd",
     "passphrase",
@@ -59,7 +59,7 @@ _SENSITIVE_EXACT_KEYS = frozenset({"key", "sig", "jwt"})
 
 def _is_sensitive_key(key: str) -> bool:
     lowered = key.lower()
-    return lowered in _SENSITIVE_EXACT_KEYS or any(part in lowered for part in _SENSITIVE_KEY_PARTS)
+    return lowered in _SENSITIVE_EXACT_KEYS or any(part in lowered for part in SENSITIVE_KEY_PARTS)
 
 
 def is_sensitive_header(name: str) -> bool:

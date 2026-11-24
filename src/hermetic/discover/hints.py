@@ -12,6 +12,7 @@ from hermetic.discover.models import (
     KIND_ORDER,
     MAX_EVIDENCE,
     MAX_QUOTE_CHARS,
+    MAX_SOURCE_CHARS,
     Dependency,
     DependencyKind,
     Evidence,
@@ -41,18 +42,34 @@ def _kinds_in(line: str) -> list[DependencyKind]:
     return found
 
 
+def _quote(line: str) -> str:
+    """The line squeezed to one space between words and cut to the limit at a word boundary.
+
+    A cut inside a token could leave half a connection string, whose credentials the later
+    masking could no longer recognise. A single token longer than the limit gives no quote.
+    """
+    squeezed = " ".join(line.split())
+    if len(squeezed) <= MAX_QUOTE_CHARS:
+        return squeezed
+    if squeezed[MAX_QUOTE_CHARS] == " ":
+        return squeezed[:MAX_QUOTE_CHARS]
+    return squeezed[:MAX_QUOTE_CHARS].rpartition(" ")[0]
+
+
 def find_hints(docs: list[DocFile]) -> list[Dependency]:
     """One dependency per kind the documents name, each with the lines that name it."""
     evidence: dict[DependencyKind, list[Evidence]] = {}
     for doc in docs:
+        if len(doc.path) > MAX_SOURCE_CHARS:  # Evidence cannot name it; the agent may still
+            continue
         for line in doc.text.splitlines():
             for kind in dict.fromkeys(_kinds_in(line)):  # once per line, in order
+                quote = _quote(line)
                 quotes = evidence.setdefault(kind, [])
-                quote = " ".join(line.split())[:MAX_QUOTE_CHARS]
-                if len(quotes) < MAX_EVIDENCE:
+                if quote and len(quotes) < MAX_EVIDENCE:
                     quotes.append(Evidence(source=doc.path, quote=quote))
     return [
         Dependency(name=kind, kind=kind, origin="hint", evidence=evidence[kind])
         for kind in KIND_ORDER
-        if kind in evidence
+        if evidence.get(kind)
     ]

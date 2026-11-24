@@ -19,13 +19,16 @@ from hermetic.discover.models import (
     Evidence,
 )
 from hermetic.ingest.models import DocFile, ServiceModel
-from hermetic.redact import REDACTED, redact_url
+from hermetic.redact import REDACTED, SENSITIVE_KEY_PARTS, redact_url
 
 _URL_IN_TEXT = re.compile(r"[a-z][a-z0-9+.\-]*://\S+", re.IGNORECASE)
+_KEYS = "|".join(re.escape(part) for part in SENSITIVE_KEY_PARTS)
+# key, an optional closing quote, = or :, an optional opening quote, then the value
 _SECRET_PAIR = re.compile(
-    r"((?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)\w*\s*[=:]\s*)[^\s,;&\"']+",
-    re.IGNORECASE,
+    rf"((?:{_KEYS}|access[_-]?key)\w*[\"']?\s*[=:]\s*[\"']?)[^\s,;&\"']+", re.IGNORECASE
 )
+_AUTH_SCHEME = re.compile(r"\b(bearer|basic)(\s+)\S+", re.IGNORECASE)
+_BARE_USERINFO = re.compile(r"(?<![\w/])[^\s/@:]+:[^\s/@]+@(?=[\w.\-])")  # user:pw@host, no scheme
 
 
 class DiscoverError(Exception):
@@ -60,6 +63,8 @@ def _says(texts: dict[str, str], evidence: Evidence) -> bool:
 def _masked(quote: str) -> str:
     """The quote with credentials removed, since the file is meant to be committed."""
     clean = " ".join(_URL_IN_TEXT.sub(lambda m: redact_url(m.group()), quote).split())
+    clean = _BARE_USERINFO.sub(REDACTED + "@", clean)
+    clean = _AUTH_SCHEME.sub(lambda m: m.group(1) + m.group(2) + REDACTED, clean)
     return _SECRET_PAIR.sub(r"\1" + REDACTED, clean)[:MAX_QUOTE_CHARS]
 
 

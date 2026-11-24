@@ -16,6 +16,7 @@ NAME_PATTERN = r"^[a-z][a-z0-9-]{0,31}$"
 MAX_DEPENDENCIES = 32
 MAX_EVIDENCE = 5
 MAX_QUOTE_CHARS = 300
+MAX_SOURCE_CHARS = 300
 MIN_QUOTE_CHARS = 6  # shorter than a pinned image like `redis:7` is not a passage
 
 
@@ -26,7 +27,9 @@ class _Frozen(BaseModel):
 class Evidence(_Frozen):
     """A passage of a document that says the service has this dependency."""
 
-    source: str = Field(min_length=1, max_length=300)  # the document's path under the docs root
+    source: str = Field(
+        min_length=1, max_length=MAX_SOURCE_CHARS
+    )  # the document's path under the docs root
     quote: str = Field(min_length=1, max_length=MAX_QUOTE_CHARS)
 
 

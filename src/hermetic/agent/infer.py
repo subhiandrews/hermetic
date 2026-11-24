@@ -10,9 +10,9 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from typing import get_args
+from typing import Any, get_args
 
-from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from hermetic.agent.claude import AUTHOR_TIMEOUT_SECONDS, MAX_DOC_CHARS
 from hermetic.agent.prompt import data, quoted
@@ -70,9 +70,6 @@ class _Proposal(BaseModel):
     evidence: list[Evidence]
 
 
-_PROPOSALS = TypeAdapter(list[_Proposal])
-
-
 def build_prompt(request: InferRequest) -> str:
     """The user prompt. Docs are cut to a fixed size, in order."""
     operations = request.operations[:MAX_OPERATIONS]
@@ -101,12 +98,15 @@ def parse_response(text: str) -> list[Dependency]:
     if len(blocks) != 1:
         raise InferResponseError(f"expected one json block, found {len(blocks)}")
     try:
-        proposals = _PROPOSALS.validate_python(json.loads(blocks[0]))
-    except (ValueError, ValidationError) as exc:
+        items: Any = json.loads(blocks[0])
+    except ValueError as exc:
         raise InferResponseError("the json block is not a list of dependencies") from exc
+    if not isinstance(items, list):
+        raise InferResponseError("the json block is not a list of dependencies")
     found: list[Dependency] = []
-    for proposal in proposals:
-        try:
+    for item in items:
+        try:  # one bad proposal (a name that is not a slug, an odd kind, a long quote) is set aside
+            proposal = _Proposal.model_validate(item)
             found.append(
                 Dependency(
                     name=proposal.name,
@@ -115,7 +115,7 @@ def parse_response(text: str) -> list[Dependency]:
                     evidence=proposal.evidence[:MAX_EVIDENCE],
                 )
             )
-        except ValidationError:  # one bad proposal (say a name that is not a slug) is set aside
+        except ValidationError:
             continue
     return found
 

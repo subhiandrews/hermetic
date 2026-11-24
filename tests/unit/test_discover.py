@@ -224,7 +224,6 @@ def test_a_good_reply_becomes_agent_dependencies() -> None:
         (GOOD_REPLY + GOOD_REPLY, "found 2"),
         ("```json\nnot json\n```", "not a list"),
         ('```json\n{"name": "x"}\n```', "not a list"),
-        ('```json\n[{"name": "x", "kind": "oracle", "evidence": []}]\n```', "not a list"),
     ],
 )
 def test_a_reply_of_the_wrong_shape_is_refused(reply: str, message: str) -> None:
@@ -605,3 +604,50 @@ def test_credentials_are_masked_in_kept_quotes_from_hints_and_the_agent() -> Non
     assert len(quotes) == 2
     assert not any("hunter2" in q or "s3cret" in q for q in quotes)
     assert any("[REDACTED]" in q for q in quotes)
+
+
+def test_one_bad_proposal_does_not_discard_the_good_ones() -> None:
+    reply = """```json
+[{"name": "x", "kind": "oracle", "evidence": []},
+ {"name": "y", "kind": "redis", "evidence": [{"source": "a.md", "quote": "%s"}], "extra": 1},
+ {"name": "z", "kind": "redis", "evidence": [{"source": "a.md", "quote": "redis cache here"}]},
+ "not an object"]
+```""" % ("q" * 301)
+    assert [d.name for d in parse_response(reply)] == ["z"]
+
+
+@pytest.mark.parametrize(
+    ("quote", "leaked"),
+    [
+        ('{"password": "hunter2"}', "hunter2"),
+        ("PASSWORD='hunter2'", "hunter2"),
+        ('PASSWORD="hunter2"', "hunter2"),
+        ("Authorization: Bearer hunter2", "hunter2"),
+        ("the passphrase: hunter2 unlocks it", "hunter2"),
+        ("connect with admin:hunter2@db.internal/app", "hunter2"),
+        ("DB_CREDENTIAL=hunter2", "hunter2"),
+    ],
+)
+def test_common_credential_forms_are_masked(quote: str, leaked: str) -> None:
+    inferrer = FakeInferrer(dep("cache", "redis", evidence=[("a.md", quote)]))
+    result, _, _ = run_discover(inferrer, doc("a.md", f"x {quote} y"))
+    (kept,) = [e.quote for d in result.dependencies for e in d.evidence]
+    assert leaked not in kept and "[REDACTED]" in kept
+
+
+def test_a_long_hint_line_is_cut_between_words_so_a_url_is_never_half_kept() -> None:
+    line = "word " * 59 + "postgres://admin:hunter2@db/app"  # the URL starts near the limit
+    (hint,) = find_hints([doc("a.md", line)])
+    assert "hunter2" not in hint.evidence[0].quote and "admin" not in hint.evidence[0].quote
+    assert len(hint.evidence[0].quote) <= 300
+    assert find_hints([doc("a.md", "postgres://" + "x" * 400)]) == []
+
+
+def test_a_document_path_too_long_for_evidence_gives_no_hint() -> None:
+    assert find_hints([doc("d" * 301 + ".md", "postgres://db/app")]) == []
+
+
+def test_a_long_hint_line_that_breaks_exactly_at_the_limit_is_kept_whole_to_there() -> None:
+    line = "postgres://db/app " + "w" * 282 + " tail"  # a space falls right after character 300
+    (hint,) = find_hints([doc("a.md", line)])
+    assert hint.evidence[0].quote == line[:300]
