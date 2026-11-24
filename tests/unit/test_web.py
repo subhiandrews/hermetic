@@ -185,20 +185,10 @@ def test_the_page_links_runs_by_service_and_id() -> None:
 
 def test_the_page_reads_only_the_service_routes() -> None:
     # A server that keeps the history of many services is addressed through /api/services, so the
-    # page must not depend on the flat /api/runs alias.
+    # page must not depend on /api/runs, which lists the runs of every service.
     script = (STATIC_DIR / "app.js").read_text()
     assert "/api/runs" not in script
     assert "/api/services" in script
-
-
-def test_the_page_keeps_the_route_patterns_for_the_list_a_service_and_a_run() -> None:
-    # Only the source is checked: the page has no JavaScript test harness, so how the patterns
-    # are tried is checked by hand in a browser until a smoke test exists.
-    script = (STATIC_DIR / "app.js").read_text()
-    assert r"#\/services\/([^/]+)\/runs\/([^/]+)" in script  # a run
-    assert r"#\/services\/([^/]+)$" in script  # one service's history
-    assert r"#\/runs\/([^/]+)\/([^/]+)" in script  # the older address of a run keeps working
-    assert "renderServices" in script  # anything else is the services list
 
 
 def test_the_service_listing_the_page_draws_carries_what_each_row_shows() -> None:

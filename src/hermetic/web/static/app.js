@@ -345,8 +345,7 @@ const decoded = (segment) => decodeURIComponent(segment);
 const apiSegment = (segment) => encodeURIComponent(decoded(segment));
 
 async function load(hash) {
-  // `#/runs/<service>/<id>` is the older form of a run's address; old links keep working.
-  const run = /^#\/services\/([^/]+)\/runs\/([^/]+)$/.exec(hash) ?? /^#\/runs\/([^/]+)\/([^/]+)$/.exec(hash);
+  const run = /^#\/services\/([^/]+)\/runs\/([^/]+)$/.exec(hash);
   if (run) {
     return renderRun(await getJson(`/api/services/${apiSegment(run[1])}/runs/${apiSegment(run[2])}`));
   }
