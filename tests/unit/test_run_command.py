@@ -529,3 +529,18 @@ def test_a_malformed_history_server_is_reported_as_an_error_line(
     )
     assert result.exit_code == 2 and "error: not a server address" in result.output
     assert "Traceback" not in result.output
+
+
+def test_a_token_that_cannot_be_sent_is_an_error_line_not_a_traceback(
+    server: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HERMETIC_API_TOKEN", "tök3n-with-an-accent")
+    result = runner.invoke(
+        app,
+        [
+            *["run", str(write_suite(tmp_path, "== 200")), "--target", server],
+            *["--service", "svc", "--history-dir", "https://hist.example"],
+        ],
+    )
+    assert result.exit_code == 2 and "cannot be sent" in result.output
+    assert "tök3n" not in result.output and "Traceback" not in result.output

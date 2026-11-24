@@ -169,6 +169,13 @@ def test_a_proxy_in_the_environment_never_sees_the_token(
     assert store._client._mounts == {}  # ours does not, so loopback is not sent through one
 
 
+@pytest.mark.parametrize("token", ["tök3n", "tok en", "tok\nen", "tok\x00en", "tok\ten", "日本語"])
+def test_a_token_that_cannot_be_sent_in_a_header_is_refused_without_quoting_it(token: str) -> None:
+    with pytest.raises(RunStoreError, match="cannot be sent") as caught:
+        HttpRunStore("https://hist.example", token=token)
+    assert token not in str(caught.value)
+
+
 def test_every_loopback_name_may_receive_the_token_in_the_clear() -> None:
     for name in ("localhost", "127.0.0.1", "[::1]"):  # as written in an address
         HttpRunStore(f"http://{name}:8000", token=TOKEN)

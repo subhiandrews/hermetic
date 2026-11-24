@@ -225,6 +225,17 @@ def test_serve_accepts_runs_only_when_a_token_is_set(
     assert post_status(calls[1][0], STRONG) == 201
 
 
+@pytest.mark.parametrize("token", ["é" * 40, "a b" * 20, "x" * 39 + "\n"])
+def test_serve_refuses_a_token_no_client_could_send(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, token: str
+) -> None:
+    calls = fake_uvicorn(monkeypatch)
+    monkeypatch.setenv("HERMETIC_API_TOKEN", token)
+    result = runner.invoke(app, ["serve", "--history-dir", str(tmp_path)])
+    assert result.exit_code == 2 and "printable ASCII" in result.output
+    assert token.strip() not in result.output and calls == []
+
+
 @pytest.mark.parametrize("token", ["s3cret", "x" * 31])
 def test_serve_refuses_a_token_too_short_to_guard_writes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, token: str

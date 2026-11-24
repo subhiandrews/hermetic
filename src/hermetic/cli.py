@@ -24,7 +24,7 @@ from hermetic.history import (
 )
 from hermetic.ingest import IngestError, ServiceModel
 from hermetic.ingest import ingest as run_ingest
-from hermetic.net import LOOPBACK_NAMES
+from hermetic.net import LOOPBACK_NAMES, is_header_token
 from hermetic.report import SinkContext, SinkError, load_sinks
 from hermetic.runner import run_suite
 from hermetic.service import InvalidServiceError, resolve_service
@@ -242,6 +242,13 @@ def serve(
             err=True,
         )
     token = os.environ.get(API_TOKEN_ENV) or None
+    if token and not is_header_token(token):  # no client could send it
+        typer.echo(
+            f"error: {API_TOKEN_ENV} must be printable ASCII without spaces, so clients can send "
+            "it",
+            err=True,
+        )
+        raise typer.Exit(code=2)
     if token and len(token) < MIN_TOKEN_LENGTH:  # the only guard on writes, and not rate limited
         typer.echo(
             f"error: {API_TOKEN_ENV} must be at least {MIN_TOKEN_LENGTH} characters; make one with "

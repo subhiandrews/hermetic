@@ -9,7 +9,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from hermetic.history.models import RunRecord, RunSummary, ServiceSummary
 from hermetic.history.store import RunNotFoundError, RunStoreError, is_valid_run_id
-from hermetic.net import LOOPBACK_NAMES
+from hermetic.net import LOOPBACK_NAMES, is_header_token
 from hermetic.redact import redact_url
 from hermetic.service import is_valid_service
 
@@ -46,6 +46,9 @@ class HttpRunStore:
             raise RunStoreError(f"not a server address: {redact_url(base_url)}") from exc
         if parts.scheme not in ("http", "https") or not hostname:
             raise RunStoreError(f"not a server address: {redact_url(base_url)}")
+        # Checked here because httpx would fail when sending, with a message that quotes the token.
+        if token and not is_header_token(token):
+            raise RunStoreError("the API token cannot be sent: use printable ASCII, no spaces")
         # Credentials in the address are sent too (as Basic auth), so they count like the token.
         carries_secret = token or parts.username or parts.password
         if carries_secret and parts.scheme == "http" and hostname not in LOOPBACK_NAMES:
