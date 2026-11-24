@@ -12,7 +12,15 @@ from typing import Annotated
 import typer
 
 from hermetic import __version__
-from hermetic.agent import ClaudeAuthor
+from hermetic.agent import ClaudeAuthor, ClaudeInferrer
+from hermetic.discover import (
+    DependenciesError,
+    DependencyInferrer,
+    DiscoverError,
+    load_dependencies,
+    write_dependencies,
+)
+from hermetic.discover import discover as run_discovery
 from hermetic.execute import ExecuteError, check_target
 from hermetic.generate import GenerateError, ManifestError, SuiteAuthor, generate_suite
 from hermetic.history import (
@@ -74,6 +82,52 @@ def ingest(
 def make_author() -> SuiteAuthor:
     """The author `generate` and `run --generate` use. Tests replace this with a fake."""
     return ClaudeAuthor()  # pragma: no cover  (needs the real API)
+
+
+def make_inferrer() -> DependencyInferrer:
+    """The inferrer `discover` uses. Tests replace this with a fake."""
+    return ClaudeInferrer()  # pragma: no cover  (needs the real API)
+
+
+@app.command()
+def discover(
+    spec: Annotated[Path, typer.Argument(help="OpenAPI 3.x file (JSON or YAML).")],
+    docs: Annotated[Path, typer.Option(help="Directory of design/architecture documents to read.")],
+    suite: Annotated[
+        Path | None,
+        typer.Option(help="Where dependencies.json is kept; default tests/<service>."),
+    ] = None,
+    service: Annotated[
+        str | None,
+        typer.Option(help="The microservice to find dependencies for; default: the spec's title."),
+    ] = None,
+) -> None:
+    """Find the databases, caches and HTTP services a service depends on, and save them.
+
+    The result is tests/<service>/.hermetic/dependencies.json: commit it and edit it. An entry
+    whose origin you change to "manual" is kept as it is whenever this runs again.
+    """
+    try:
+        model = run_ingest(spec, docs)
+        service_id = resolve_service(model.title, service)
+        suite_dir = suite or _default_suite(service_id)
+        found = run_discovery(model, service_id, make_inferrer(), load_dependencies(suite_dir))
+        path = write_dependencies(suite_dir, found.dependencies)
+    except (
+        IngestError,
+        InvalidServiceError,
+        DiscoverError,
+        DependenciesError,
+        OSError,
+    ) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    for kind, name in found.changes:
+        typer.echo(f"{kind}: {name}")
+    for note in found.notes:
+        typer.echo(f"note: {note}")
+    count = len(found.dependencies.dependencies)
+    typer.echo(f"wrote {path} ({count} dependencies)")
 
 
 @app.command()
