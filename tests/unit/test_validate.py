@@ -9,8 +9,7 @@ from tests.fakes import good_source
 def test_a_marked_test_is_accepted() -> None:
     validate_source(good_source("op"), "op")
     validate_source(
-        "import json\nimport pytest\nfrom typing import Any\n\n"
-        '@pytest.mark.operation("op")\nasync def test_a(): ...\n',
+        'import json\nimport pytest\n\n@pytest.mark.operation("op")\nasync def test_a(): ...\n',
         "op",
     )
 
@@ -28,13 +27,15 @@ def test_attribute_names_that_match_forbidden_builtins_are_accepted() -> None:
 def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
     validate_source(
         "import json\nimport pytest\nimport re\nimport uuid\n"
-        "from pytest import approx\nfrom typing import Any\n\n"
+        "from pytest import approx\n\n"
         '@pytest.mark.operation("op")\n'
-        "@pytest.mark.skipif(False, reason='not on this server')\n"
+        "@pytest.mark.filterwarnings('ignore')\n"
         "def test_a(hermetic_client):\n"
         "    system, main, operator, types = 1, 2, 3, 4  # ordinary variables are fine\n"
         "    assert 1.0 == approx(1.0) and '{:.2f} {name!r} {{x}}'.format(1.5, name=1)\n"
-        "    assert json.loads('1') == 1 and re.compile('x') and uuid.uuid4() and Any\n"
+        "    assert json.loads('1') == 1 and re.compile('x') and uuid.uuid4()\n"
+        "    if not hermetic_client:\n"
+        "        pytest.skip('not on this server')  # skipping happens in the body\n"
         "    body = '{\"__proto__\": 1}'  # plain JSON-looking text is not a format string\n"
         "    with pytest.raises(ValueError):\n"
         "        '{'.format()  # not a valid format string: fails at run time, not here\n"
@@ -56,11 +57,13 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
         ("\x00", "not valid Python"),
         ("import os\n", "importing `os`"),
         ("import httpx\n", "importing `httpx`"),
-        ("from typing import sys\n", "importing `sys`"),
+        ("from json import sys\n", "importing `sys`"),
+        ("import typing\n", "importing `typing`"),
+        ("from typing import evaluate_forward_ref\n", "importing `typing`"),
         ("from pytest import importorskip\n", "importing `importorskip`"),
         ("__builtins__['x']\n", "`__builtins__` is not allowed"),
         ("getattr(1, 'x')\n", "`getattr` is not allowed"),
-        ("import typing\ntyping.sys.modules\n", "attribute `(sys|modules)`"),
+        ("import json\njson.sys.modules\n", "attribute `(sys|modules)`"),
         ("import pytest\npytest.importorskip('os')\n", "attribute `importorskip`"),
         ("def test_a(tmp_path): ...\n", "fixture `tmp_path`"),
         ("from subprocess import run\n", "importing `subprocess`"),
@@ -75,35 +78,44 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
         ("def test_a(c):\n    c.timeout = 1\n", "assigning to or deleting `.timeout`"),
         ("def test_a(c):\n    c.timeout += 1\n", "assigning to or deleting `.timeout`"),
         ("def test_a(c):\n    del c.timeout\n", "assigning to or deleting `.timeout`"),
-        ("import typing\ntyping.get_type_hints(1)\n", "attribute `get_type_hints`"),
-        ("import typing\ntyping.ForwardRef('os')\n", "attribute `ForwardRef`"),
+        ("import json\njson.get_type_hints(1)\n", "attribute `get_type_hints`"),
+        ("import json\njson.ForwardRef('os')\n", "attribute `ForwardRef`"),
         ("import string\nstring.Formatter()\n", "attribute `Formatter`"),
         ("from string import Formatter\n", "importing `Formatter`"),
         (
             "import pytest\n@pytest.mark.skipif(\"os.system('x')\")\ndef test_a(): ...\n",
-            "may only take a constant condition",
+            "attribute `skipif`",
         ),
         (
             "import pytest\n@pytest.mark.xfail(condition='1')\ndef test_a(): ...\n",
-            "may only take a constant condition",
+            "attribute `xfail`",
+        ),
+        (  # bound to a name first, then called with a string condition
+            "import pytest\nm = pytest.mark.skipif(False, reason='r')\n"
+            "@m(\"os.system('id')\")\ndef test_a(): ...\n",
+            "attribute `skipif`",
+        ),
+        (
+            "import pytest\n@pytest.mark.skipif(False, reason='r')\ndef test_a(): ...\n",
+            "attribute `skipif`",
         ),
         ("x = '{0.__class__}'.format(1)\n", "format field may not use attribute or index"),
         ("(x for x in []).gi_frame.f_globals\n", "attribute `f_globals`"),
         ("def f(g):\n    return g.gi_frame\n", "attribute `gi_frame`"),
         ("pytest_plugins = ['pytester']\n", "`pytest_plugins` is not allowed"),
         ("def test_a(pytester): ...\n", "fixture `pytester`"),
-        ("from typing import *\n", "importing `*`"),
-        ("from pytest import mark\n@mark.skipif('1')\ndef test_a(): ...\n", "constant condition"),
+        ("from json import *\n", "importing `*`"),
+        ("from pytest import mark\n@mark.skipif('1')\ndef test_a(): ...\n", "attribute `skipif`"),
         ("import pytest\nm = pytest.mark.skipif\n", "attribute `skipif`"),
         (
             "import pytest\nc = '1'\n@pytest.mark.skipif(c)\ndef test_a(): ...\n",
-            "constant condition",
+            "attribute `skipif`",
         ),
         ("from pytest.mark import skipif\n", "importing `pytest.mark`"),
         ("from pytest import mark\nmark.skipif('1')\n", "skipif"),
         (
             "import pytest\n@pytest.mark.skipif(False)(\"os.system('id')\")\ndef test_a(): ...\n",
-            "called a second time",
+            "attribute `skipif`",
         ),
         (
             "import pytest\nm = pytest.mark.skipif(False).with_args('x')\n",
@@ -119,7 +131,7 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
         ("skipif\n", "`skipif` is not allowed"),
         ("import uuid\nuuid._get_command_stdout('sh')\n", "attribute `_get_command_stdout`"),
         ("from uuid import _get_command_stdout\n", "importing `_get_command_stdout`"),
-        ("import typing\ntyping.operator.attrgetter('x')\n", "attribute `(operator|attrgetter)`"),
+        ("import json\njson.operator.attrgetter('x')\n", "attribute `(operator|attrgetter)`"),
         (
             "def f(x):\n    match x:\n        case object(__globals__=g): ...\n",
             "private attributes",
@@ -130,7 +142,7 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
         ("import pytest\n@pytest.mark.usefixtures('tmp_path')\ndef test_a(): ...\n", "usefixtures"),
         ("from pytest import usefixtures\n", "importing `usefixtures`"),
         ("@usefixtures('tmp_path')\ndef test_a(): ...\n", "`usefixtures` is not allowed"),
-        ("import typing\ntyping.operator\n", "attribute `operator`"),
+        ("import json\njson.operator\n", "attribute `operator`"),
         ("import pytest\npytest.MonkeyPatch()\n", "attribute `MonkeyPatch`"),
         ("import pytest\npytest.main([])\n", "attribute `main`"),
         ("import pytest\npytest.console_main()\n", "attribute `console_main`"),
@@ -168,7 +180,7 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
             "import pytest\n"
             "@pytest.mark.skipif(**{'condition': \"os.system('id')\"})\n"
             "def test_a(): ...\n",
-            "may only take a constant condition",
+            "attribute `skipif`",
         ),
         ("x = ('{0._' + '_g}').format(1)\n", "`.format` may only be called on a single string"),
         ("fmt = '{}'\nx = fmt.format(1)\n", "`.format` may only be called on a single string"),
@@ -205,6 +217,17 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
 def test_bad_source_is_rejected(source: str, message: str) -> None:
     with pytest.raises(SourceRejected, match=message):
         validate_source(source, "op")
+
+
+def test_validation_never_imports_a_module_the_test_merely_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asked: list[str] = []
+    monkeypatch.setattr("importlib.util.find_spec", lambda name, *args: asked.append(name))
+    # The attribute is reached before the (nested) import that would reject `os`.
+    with pytest.raises(SourceRejected, match="importing `os`"):
+        validate_source("x = os.path\ndef f():\n    import os\n", "op")
+    assert asked == []
 
 
 def test_oversized_source_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:

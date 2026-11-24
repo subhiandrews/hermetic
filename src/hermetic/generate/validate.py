@@ -22,17 +22,16 @@ ALLOWED_IMPORTS = frozenset(
         "re",
         "string",
         "time",
-        "typing",
         "uuid",
     }
-)
+)  # not `typing`: on 3.14+ its public API (`evaluate_forward_ref`, ...) evals strings
 FORBIDDEN_NAMES = frozenset(
     {
         "breakpoint", "compile", "delattr", "eval", "exec", "getattr", "globals", "help",
         "importorskip", "locals", "open", "setattr", "type", "usefixtures", "vars",
     }
 )  # fmt: skip
-# Attributes that reach the interpreter or the system from an allowed module (`typing.sys`).
+# Attributes that reach the interpreter or the system from an allowed module (`json.codecs`).
 FORBIDDEN_ATTRIBUTES = frozenset(
     {
         "builtins", "import_module", "importorskip", "modules", "os", "popen", "subprocess",
@@ -56,8 +55,9 @@ FORBIDDEN_ATTRIBUTES = frozenset(
         "eval", "exec", "frame", "traceback", "tb", "getrepr", "with_args",
     }
 )  # fmt: skip
-# `pytest.mark.skipif("...")` and `xfail("...")` eval() a string condition at collection.
-# They are only allowed as a direct call whose arguments are all non-string constants.
+# pytest eval()s a string condition of `skipif` and `xfail` at collection, and a mark can be
+# bound to a name, called twice or built from `**kwargs`, so they are refused outright: a test
+# that needs to skip calls `pytest.skip(...)` in its body.
 EVALUATING_MARKS = frozenset({"skipif", "xfail"})
 FORMAT_METHODS = frozenset({"format", "format_map"})
 # The only `pytest` attributes a test may use. The rest of its public API starts plugins,
@@ -83,7 +83,6 @@ def validate_source(source: str, operation_id: str) -> None:
         tree = ast.parse(source)
     except (SyntaxError, ValueError) as exc:
         raise SourceRejected(f"the test is not valid Python: {exc}") from exc
-    safe_marks: set[int] = set()  # skipif/xfail nodes used as the callee of a harmless call
     safe_formats: set[int] = set()  # `.format` nodes called directly on a string literal
     modules = {  # local name -> module, for `import json` and `import json as j`
         (alias.asname or alias.name): alias.name
@@ -140,30 +139,12 @@ def validate_source(source: str, operation_id: str) -> None:
         elif isinstance(node, ast.Attribute) and (
             node.attr in FORBIDDEN_ATTRIBUTES
             or node.attr.startswith("_")  # private and dunder attributes alike
-            or (node.attr in EVALUATING_MARKS and id(node) not in safe_marks)
+            or node.attr in EVALUATING_MARKS
             or (node.attr in FORMAT_METHODS and id(node) not in safe_formats)
         ):
             raise SourceRejected(f"attribute `{node.attr}` is not allowed in a test")
         elif isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load):
             raise SourceRejected(f"assigning to or deleting `.{node.attr}` is not allowed")
-        elif (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Call)
-            and _mark_name(node.func.func) in EVALUATING_MARKS
-        ):
-            # `skipif(False)("os.system('id')")` adds a string condition after the checked call.
-            raise SourceRejected("a skipif/xfail mark may not be called a second time")
-        elif isinstance(node, ast.Call) and _mark_name(node.func) in EVALUATING_MARKS:
-            # `**{...}` has no keyword name; its value is a dict, which is not a constant either.
-            conditions = [
-                *node.args,
-                *(k.value for k in node.keywords if k.arg in (None, "condition")),
-            ]
-            if any(not _is_plain_constant(condition) for condition in conditions):
-                raise SourceRejected(
-                    f"`{_mark_name(node.func)}` may only take a constant condition"
-                )
-            safe_marks.add(id(node.func))
         elif (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
@@ -202,12 +183,6 @@ def validate_source(source: str, operation_id: str) -> None:
             raise SourceRejected(f"{function.name} lacks @pytest.mark.operation({operation_id!r})")
 
 
-def _mark_name(func: ast.expr) -> str | None:
-    if isinstance(func, ast.Attribute):
-        return func.attr
-    return func.id if isinstance(func, ast.Name) else None
-
-
 def _has_field_access(template: str) -> bool:
     """True if a replacement field, or a field nested in a format spec, uses `.` or `[`.
 
@@ -226,17 +201,19 @@ def _has_field_access(template: str) -> bool:
     return False
 
 
-def _is_plain_constant(node: ast.expr) -> bool:
-    return isinstance(node, ast.Constant) and not isinstance(node.value, str)
-
-
 def _check_module(name: str) -> None:
     if name not in ALLOWED_IMPORTS:  # exact names: `json.tool` is not `json`
         raise SourceRejected(f"importing `{name}` is not allowed in a test")
 
 
 def _is_submodule(module: str, name: str) -> bool:
-    """True if `module.name` is a module itself, not an attribute: `json.tool`, not `json.loads`."""
+    """True if `module.name` is a module itself, not an attribute: `json.tool`, not `json.loads`.
+
+    `find_spec` imports the parent package, so it is only asked about modules the test is
+    allowed to import; a name the test merely mentions is never imported by validation.
+    """
+    if module not in ALLOWED_IMPORTS:
+        return False
     try:
         return importlib.util.find_spec(f"{module}.{name}") is not None
     except (ImportError, ValueError, AttributeError):  # `uuid` is not a package, for one
