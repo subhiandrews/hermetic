@@ -20,7 +20,9 @@ uv run mypy                                      # strict, covers src and tests
 docker build -f docker/Dockerfile -t hermetic:dev . && docker run --rm hermetic:dev version
 ```
 
-CI (`.github/workflows/ci.yml`) runs the lint, mypy and pytest-with-coverage steps above on Python 3.12 and 3.13, plus a Docker build (without pushing). `release.yml` reuses it as a gate before publishing.
+**Commit checks.** `scripts/check.sh` runs `ruff check`, `ruff format --check` and `mypy` (no tests). `.githooks/pre-commit` calls it; `scripts/install-git-hooks.sh` sets `core.hooksPath`, which is repository-level config shared by every worktree, so it is a deliberate user step that nothing here runs. The Claude hook in `.claude/settings.json` runs `scripts/check.sh --if-no-git-hook` before any `git commit` Claude makes, and that flag exits at once when the git hook is installed so a commit is not checked twice.
+
+CI (`.github/workflows/ci.yml`) runs the lint, mypy and pytest-with-coverage steps above on Python 3.12 and 3.13, plus a Docker build (without pushing). `release.yml` reuses it as a gate before publishing. `security.yml` runs CodeQL (python, actions), dependency review on PRs, `pip-audit` on the lockfile (push and weekly only) and `zizmor` on the workflows; keep `zizmor --min-severity medium .github/workflows` clean (checkouts set `persist-credentials: false`).
 
 ## Architecture decisions that span files
 

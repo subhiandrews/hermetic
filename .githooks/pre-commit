@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Lint, format and type-check before every commit (scripts/check.sh).
+# Install with scripts/install-git-hooks.sh.
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/check.sh"

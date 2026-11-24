@@ -13,7 +13,11 @@ Thanks for helping. Hermetic is MIT-licensed; by contributing you agree your con
    uv run mypy
    uv run pytest --cov
    ```
-4. Open a pull request. CI runs lint, type checks, tests, and a Docker build.
+4. Optional: install the pre-commit hook, which runs `ruff check`, `ruff format --check` and `mypy` (not the test suite) before each commit:
+   ```bash
+   scripts/install-git-hooks.sh
+   ```
+5. Open a pull request. CI runs lint, type checks, tests, and a Docker build. A separate `security` workflow runs CodeQL, a dependency review, `pip-audit` on the lockfile and `zizmor` on the workflows.
 
 ## Standards
 
