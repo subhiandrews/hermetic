@@ -241,6 +241,13 @@ def serve(
             err=True,
         )
     token = os.environ.get(API_TOKEN_ENV) or None
+    if token and len(token) < MIN_TOKEN_LENGTH:  # the only guard on writes, and not rate limited
+        typer.echo(
+            f"error: {API_TOKEN_ENV} must be at least {MIN_TOKEN_LENGTH} characters; make one with "
+            "python -c 'import secrets; print(secrets.token_urlsafe(32))'",
+            err=True,
+        )
+        raise typer.Exit(code=2)
     if token:
         typer.echo(
             "ingest is on: runs are accepted at /api/services/<service>/runs with the "
@@ -261,6 +268,7 @@ def serve(
     uvicorn.run(create_app(store, hosts, token), host=host, port=port)
 
 
+MIN_TOKEN_LENGTH = 32
 _LOOPBACK_ADDRESSES = ("127.0.0.1", "localhost", "::1")
 
 

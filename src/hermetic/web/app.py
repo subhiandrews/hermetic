@@ -18,12 +18,15 @@ from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from hermetic.history import (
+    Exchange,
     RunNotFoundError,
     RunRecord,
     RunStore,
     RunStoreError,
     RunSummary,
     ServiceSummary,
+    SuiteChange,
+    TestResult,
     is_valid_run_id,
     summarize,
 )
@@ -51,6 +54,16 @@ def _harden(response: Response, path: str) -> None:
     response.headers.update(_SECURITY_HEADERS)
     if path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
+
+
+_FIELD_NAMES = frozenset(
+    name for model in (RunRecord, TestResult, Exchange, SuiteChange) for name in model.model_fields
+)
+
+
+def _known(part: str | int) -> str | int:
+    """A location element as the client may see it: a declared field or position, else "*"."""
+    return part if isinstance(part, int) or part in _FIELD_NAMES else "*"
 
 
 def _where(exc: BaseException) -> str:
@@ -174,9 +187,11 @@ def create_app(
         try:
             record = RunRecord.model_validate_json(body)
         except ValidationError as exc:
-            # Only where and what, never the input: it is untrusted and may hold secrets.
+            # Only where and what, never the input: it is untrusted and may hold secrets. A dict
+            # key is input too, and pydantic puts it in the location, so only names the model
+            # declares (and list positions) are kept.
             problems = [
-                {"loc": e["loc"], "msg": e["msg"]}
+                {"loc": [_known(part) for part in e["loc"]], "msg": e["msg"]}
                 for e in exc.errors(include_input=False, include_url=False, include_context=False)
             ]
             raise HTTPException(422, problems) from exc

@@ -482,6 +482,20 @@ def test_a_value_the_model_rejects_is_not_quoted_back() -> None:
     assert response.status_code == 422 and SECRET not in response.text
 
 
+def test_a_dict_key_in_the_body_is_not_echoed_in_the_error_location() -> None:
+    client = ingesting()
+    record = make_record("r1", results=[make_result("passed")]).model_dump(mode="json")
+    record["doc_hashes"] = {SECRET: 1}  # invalid value under a client-chosen key
+    record["results"][0]["exchanges"] = [
+        {"method": "GET", "url": "u", "request_headers": {SECRET + "2": 1}}
+    ]
+    response = client.post("/api/services/default/runs", content=json.dumps(record), headers=BEARER)
+    assert response.status_code == 422 and SECRET not in response.text
+    locations = [problem["loc"] for problem in response.json()["detail"]]
+    assert ["doc_hashes", "*"] in locations  # where, without the key
+    assert ["results", 0, "exchanges", 0, "request_headers", "*"] in locations  # positions stay
+
+
 def test_a_body_over_the_limit_is_refused_by_its_declared_length() -> None:
     client = ingesting()
     big = b"x" * (MAX_INGEST_BYTES + 1)

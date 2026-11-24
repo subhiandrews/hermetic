@@ -55,15 +55,18 @@ def test_no_token_means_no_authorization_header() -> None:
     assert "authorization" not in seen[0].headers
 
 
-def test_a_name_is_escaped_into_one_path_segment() -> None:
-    seen: list[str] = []
+@pytest.mark.parametrize("service", ["a/b", "../x", "", "Alpha"])
+def test_a_listing_of_a_name_no_service_can_have_is_empty_without_asking(service: str) -> None:
+    def never(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no request should be made")
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(request.url.raw_path.decode())
-        return httpx.Response(404)
+    assert store_over(httpx.MockTransport(never)).list(service) == []
 
-    assert store_over(httpx.MockTransport(handler)).list("a/b") == []
-    assert seen == ["/api/services/a%2Fb/runs?limit=10000"]
+
+def test_a_404_for_a_real_service_name_is_an_error_not_an_empty_history() -> None:
+    # A wrong path, a proxy prefix or a server without these routes must not look like "no runs".
+    with pytest.raises(RunStoreError, match="answered HTTP 404"):
+        store_over(answer(404)).list("alpha")
 
 
 @pytest.mark.parametrize(("service", "run_id"), [("a/b", "r1"), ("alpha", "../x"), ("alpha", "")])
@@ -106,10 +109,6 @@ def test_a_reply_that_is_not_valid_is_a_store_error(body: str) -> None:
         store_over(answer(200, body)).list()
     with pytest.raises(RunStoreError, match="not valid"):
         store_over(answer(200, body)).get("alpha", "r1")
-
-
-def test_a_listing_of_an_unknown_service_is_empty() -> None:
-    assert store_over(answer(404)).list("nope") == []
 
 
 @pytest.mark.parametrize("status", [200, 204, 301, 302, 307, 399])

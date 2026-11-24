@@ -34,6 +34,9 @@ def status_with_host(served: Any, host: str) -> int:
     return int(client.get("/api/runs", headers={"host": host}).status_code)
 
 
+STRONG = "t" * 40  # a token long enough for serve to accept
+
+
 def post_status(served: Any, token: str) -> int:
     from tests.factories import make_record
 
@@ -214,22 +217,35 @@ def test_serve_accepts_runs_only_when_a_token_is_set(
     assert "ingest" not in off.output
     assert post_status(calls[0][0], "anything") == 403
 
-    monkeypatch.setenv("HERMETIC_API_TOKEN", "s3cret")
+    monkeypatch.setenv("HERMETIC_API_TOKEN", STRONG)
     on = runner.invoke(app, ["serve", "--history-dir", str(tmp_path)])
-    assert "ingest is on" in on.output and "s3cret" not in on.output
+    assert "ingest is on" in on.output and STRONG not in on.output
     assert "unencrypted" not in on.output  # loopback: nothing crosses the network
     assert post_status(calls[1][0], "wrong") == 401
-    assert post_status(calls[1][0], "s3cret") == 201
+    assert post_status(calls[1][0], STRONG) == 201
+
+
+@pytest.mark.parametrize("token", ["s3cret", "x" * 31])
+def test_serve_refuses_a_token_too_short_to_guard_writes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, token: str
+) -> None:
+    calls = fake_uvicorn(monkeypatch)
+    monkeypatch.setenv("HERMETIC_API_TOKEN", token)
+    result = runner.invoke(app, ["serve", "--history-dir", str(tmp_path)])
+    assert result.exit_code == 2 and "at least 32 characters" in result.output
+    assert "token_urlsafe" in result.output and token not in result.output and calls == []
+    monkeypatch.setenv("HERMETIC_API_TOKEN", "x" * 32)  # exactly the minimum is fine
+    assert runner.invoke(app, ["serve", "--history-dir", str(tmp_path)]).exit_code == 0
 
 
 def test_serve_beyond_loopback_with_ingest_says_the_token_is_not_encrypted(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     fake_uvicorn(monkeypatch)
-    monkeypatch.setenv("HERMETIC_API_TOKEN", "s3cret")
+    monkeypatch.setenv("HERMETIC_API_TOKEN", STRONG)
     result = runner.invoke(app, ["serve", "--history-dir", str(tmp_path), "--host", "192.168.1.5"])
     assert "ingest is on" in result.output and "unencrypted unless a TLS proxy" in result.output
-    assert "s3cret" not in result.output
+    assert STRONG not in result.output
 
 
 @pytest.mark.parametrize("address", ["http://[bad", "http://", "http://host:notaport"])

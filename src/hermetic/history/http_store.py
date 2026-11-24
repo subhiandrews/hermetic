@@ -27,10 +27,7 @@ def _segment(value: str) -> str:
 class HttpRunStore:
     """Talks to `hermetic serve`: `POST /api/services/<service>/runs` to save, `GET` to read.
 
-    The token is sent as a bearer token and only over https, or to a host on this machine, so it
-    cannot cross the network in the clear. Redirects are not followed, so it cannot be handed to
-    another host. Error messages name the server without its credentials and never carry the
-    response body.
+    How the token is kept safe is described under "Central history" in docs/architecture.md.
     """
 
     def __init__(
@@ -85,10 +82,10 @@ class HttpRunStore:
             raise RunStoreError(f"{self._where} sent a run that is not valid") from exc
 
     def list(self, service: str | None = None) -> Summaries:
+        if service is not None and not is_valid_service(service):  # nothing can be filed there
+            return []
         path = "/api/runs" if service is None else f"/api/services/{_segment(service)}/runs"
         response = self._send("GET", path, limit=LIST_LIMIT)
-        if service is not None and response.status_code == 404:  # a name no service can have
-            return []
         self._check(response)
         return self._parse(_SUMMARIES, response)
 
