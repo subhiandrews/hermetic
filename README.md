@@ -21,6 +21,7 @@ hermetic generate openapi.yaml --docs docs/      # writes tests/<service>/ from 
 hermetic run --target http://localhost:8080 --spec openapi.yaml   # runs it and records the run
 hermetic serve                                   # the web UI, at http://127.0.0.1:8000
 hermetic export --service <service>              # packs the tests into hermetic-tests-<service>.zip
+hermetic publish --service <service>             # hands the tests to a publisher (default: leaves them in place)
 ```
 
 `<service>` is a slug of the spec's title unless you pass `--service`. Each command has `--help`.

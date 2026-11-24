@@ -180,6 +180,23 @@ def test_a_file_swapped_for_a_fifo_is_refused_without_blocking(
         write_suite_zip("svc", suite, tmp_path / "out.zip")
 
 
+def test_a_manifest_directory_swapped_for_a_symlink_after_listing_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    suite = make_suite(tmp_path / "suite", "test_a.py")
+    real = suite_files(suite)
+    assert MANIFEST.as_posix() in {name for name, _ in real}
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere).mkdir()
+    (elsewhere / "manifest.json").write_text("{}")
+    (suite / ".hermetic" / "manifest.json").unlink()
+    (suite / ".hermetic").rmdir()
+    (suite / ".hermetic").symlink_to(elsewhere)
+    monkeypatch.setattr("hermetic.publish.archive.suite_files", lambda _: real)
+    with pytest.raises(OSError):
+        write_suite_zip("svc", suite, tmp_path / "out.zip")
+
+
 def test_a_manifest_larger_than_the_generator_reads_is_refused(tmp_path: Path) -> None:
     suite = make_suite(tmp_path / "suite", "test_a.py")
     (suite / MANIFEST).write_bytes(b" " * (MAX_MANIFEST_BYTES + 1))
@@ -303,7 +320,7 @@ def test_export_takes_a_suite_directory_and_an_output_path(tmp_path: Path) -> No
     suite = make_suite(tmp_path / "elsewhere", "test_a.py")
     out = tmp_path / "bundle.zip"
     arguments = ["--service", "svc", "--suite", str(suite), "--output", str(out)]
-    result = runner.invoke(app, ["export", *arguments, "--format", "zip"])
+    result = runner.invoke(app, ["export", *arguments])
     assert result.exit_code == 0, result.output
     assert out.is_file()
 
@@ -330,12 +347,6 @@ def test_export_reports_failures_as_exit_2(tmp_path: Path, extra: list[str], mes
     assert result.exit_code == 2 and message in result.output
 
 
-def test_export_refuses_a_format_it_does_not_know(tmp_path: Path) -> None:
-    suite = make_suite(tmp_path / "suite", "test_a.py")
-    arguments = ["--service", "svc", "--suite", str(suite), "--format", "tar"]
-    assert runner.invoke(app, ["export", *arguments]).exit_code == 2
-
-
 def test_publish_with_the_local_publisher_says_where_the_suite_is(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -360,6 +371,17 @@ def test_publish_refuses_a_suite_with_no_generated_tests(tmp_path: Path) -> None
     (tmp_path / "empty").mkdir()
     result = runner.invoke(app, ["publish", "--service", "svc", "--suite", str(tmp_path / "empty")])
     assert result.exit_code == 2 and "no generated tests" in result.output
+
+
+def test_publish_reports_an_unreadable_suite_instead_of_crashing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def deny(_: Path) -> None:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr("hermetic.cli.require_tests", deny)
+    result = runner.invoke(app, ["publish", "--service", "svc", "--suite", str(tmp_path)])
+    assert result.exit_code == 2 and "denied" in result.output
 
 
 class FailingPublisher:

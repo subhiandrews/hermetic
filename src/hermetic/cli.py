@@ -6,7 +6,6 @@ import ipaddress
 import os
 import socket
 from collections.abc import Sequence
-from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
@@ -117,19 +116,12 @@ def _echo_changes(changes: list[SuiteChange]) -> None:
         typer.echo(f"{change.kind}: {change.test_id} ({change.reason})")
 
 
-class ExportFormat(StrEnum):
-    ZIP = "zip"
-
-
 @app.command()
 def export(
     service: Annotated[str, typer.Option(help="The microservice whose tests to export.")],
     suite: Annotated[
         Path | None, typer.Option(help="The suite directory; default tests/<service>.")
     ] = None,
-    archive_format: Annotated[
-        ExportFormat, typer.Option("--format", help="Archive format (zip is the only one).")
-    ] = ExportFormat.ZIP,
     output: Annotated[
         Path | None,
         typer.Option(help="Where to write the archive; default hermetic-tests-<service>.zip."),
@@ -171,7 +163,7 @@ def publish(
             where = chosen.publish(service_id, suite_dir)
         except Exception as exc:  # a third-party publisher can fail in any way
             raise PublisherError(f"publisher {publisher!r} failed: {exc}") from exc
-    except (InvalidServiceError, ExportError, PublisherError) as exc:
+    except (InvalidServiceError, ExportError, PublisherError, OSError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
     typer.echo(f"published {service_id} to {where}")

@@ -51,19 +51,40 @@ def require_tests(suite_dir: Path) -> list[tuple[str, int]]:
     return files
 
 
-def _read_limited(path: Path, name: str, limit: int) -> bytes:
-    """Read a regular file of at most `limit` bytes without following a symlink.
+def _open_beneath(suite_dir: Path, name: str) -> int:
+    """Open `name` inside `suite_dir` for reading, following no symlink below `suite_dir`.
 
-    The checks run on the open handle, so a file swapped for a link or a huge file after
-    `suite_files` listed it is refused, and at most `limit + 1` bytes are ever read.
+    Each directory on the way is opened relative to the one before it, so a folder swapped for
+    a link after `suite_files` listed it is refused as surely as the file itself. Non-blocking,
+    so a FIFO swapped in does not hang the open before the caller can look at what it got.
     """
-    # O_NONBLOCK: a FIFO swapped in after listing must not block the open before the check below.
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-    fd = os.open(path, flags)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    *folders, leaf = Path(name).parts
+    current = os.open(suite_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        for folder in folders:
+            below = os.open(
+                folder, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | nofollow, dir_fd=current
+            )
+            os.close(current)
+            current = below
+        return os.open(leaf, os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0), dir_fd=current)
+    finally:
+        os.close(current)
+
+
+def _read_limited(suite_dir: Path, name: str, limit: int) -> bytes:
+    """Read a regular file of at most `limit` bytes from the suite, following no symlink.
+
+    The checks run on the open handle, so a file or folder swapped for a link, or a file
+    swapped for something else, after `suite_files` listed it is refused, and at most
+    `limit + 1` bytes are ever read.
+    """
+    fd = _open_beneath(suite_dir, name)
     if not stat.S_ISREG(os.fstat(fd).st_mode):
         os.close(fd)
         raise ExportError(f"{name} is not a regular file")
-    with os.fdopen(fd, "rb", closefd=True) as handle:
+    with os.fdopen(fd, "rb") as handle:
         data = handle.read(limit + 1)
     if len(data) > limit:
         raise ExportError(f"{name} is larger than {limit} bytes; it was not generated")
@@ -80,7 +101,7 @@ def write_suite_zip(service: str, suite_dir: Path, destination: Path) -> list[st
     files = require_tests(suite_dir)
     contents: list[tuple[str, bytes]] = []
     for name, limit in files:
-        contents.append((name, _read_limited(suite_dir / name, name, limit)))
+        contents.append((name, _read_limited(suite_dir, name, limit)))
 
     fd, tmp = tempfile.mkstemp(dir=destination.parent, prefix=".export-", suffix=".tmp")
     try:
