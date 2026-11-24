@@ -234,6 +234,10 @@ def up(
     except (InvalidServiceError, StackError, ProvisionError, ComposeError, OSError) as exc:
         typer.echo(f"error: {printable(str(exc))}", err=True)
         raise typer.Exit(code=2) from exc
+    except KeyboardInterrupt as interrupt:  # Typer would print only "Aborted!" and drop the notes
+        for note in getattr(interrupt, "__notes__", []):
+            typer.echo(f"error: {printable(note)}", err=True)
+        raise
     for endpoint in endpoints:
         typer.echo(f"{endpoint.variable}={endpoint.url}")
 

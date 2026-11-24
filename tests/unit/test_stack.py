@@ -473,6 +473,25 @@ def test_up_command_prints_errors_without_control_characters(
     assert "bad" in result.output
 
 
+def test_up_command_prints_the_cleanup_hint_after_an_interrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    def start(service: str, path: Path, text: str) -> list[Endpoint]:
+        interrupt = KeyboardInterrupt()
+        interrupt.add_note("cleaning up also failed; run `hermetic down --service shop` \x1b[2J")
+        raise interrupt
+
+    monkeypatch.setattr(cli, "start_stack", start)
+    file = tmp_path / COMPOSE_NAME
+    file.write_text("x")
+    result = cli_runner.invoke(app, ["up", "--service", "shop", "--file", str(file)])
+    assert result.exit_code != 0
+    assert "hermetic down --service shop" in result.output
+    assert "\x1b" not in result.output
+
+
 def test_down_command_prints_errors_without_control_characters(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
