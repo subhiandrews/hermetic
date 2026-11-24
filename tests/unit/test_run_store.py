@@ -19,7 +19,7 @@ from hermetic.history import (
     SuiteChange,
     summarize,
 )
-from hermetic.history.file_store import _ServiceDir
+from hermetic.history.file_store import _same_file, _ServiceDir
 from tests.factories import make_record, make_result
 
 StoreFactory = Callable[[Path], RunStore]
@@ -175,7 +175,7 @@ def test_a_run_the_default_service_already_has_is_set_aside_once_not_overwritten
     write_flat(root, "same")
     with caplog.at_level(logging.WARNING, logger="hermetic.history"):
         assert FileRunStore(root).get("default", "same").target == "http://kept"
-    assert not (root / "same.json").exists() and (root / "legacy" / "same.json").exists()
+    assert not (root / "same.json").exists() and (root / "_legacy" / "same.json").exists()
     assert "moved same.json to" in caplog.text
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="hermetic.history"):
@@ -242,16 +242,20 @@ def test_the_rename_fallback_does_not_overwrite_a_run_the_default_service_has(
     monkeypatch.setattr("hermetic.history.file_store.os.link", no_links)
     store = FileRunStore(root)
     assert store.get("default", "same").target == "http://kept"
-    assert (root / "legacy" / "same.json").exists()  # set aside by rename, not overwritten
+    assert (root / "_legacy" / "same.json").exists()  # set aside by rename, not overwritten
 
 
-def test_a_set_aside_file_is_never_overwritten_in_legacy(tmp_path: Path) -> None:
+def test_a_set_aside_file_is_never_overwritten_in_legacy(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     root = tmp_path / "runs"
-    (root / "legacy").mkdir(parents=True)
-    (root / "legacy" / ".odd.json").write_text("first")
+    (root / "_legacy").mkdir(parents=True)
+    (root / "_legacy" / ".odd.json").write_text("first")
     (root / ".odd.json").write_text("second")
-    FileRunStore(root).list()
-    assert (root / "legacy" / ".odd.json").read_text() == "first"
+    with caplog.at_level(logging.WARNING, logger="hermetic.history"):
+        FileRunStore(root).list()
+    assert ".odd.json stays in" in caplog.text
+    assert (root / "_legacy" / ".odd.json").read_text() == "first"
     assert (root / ".odd.json").read_text() == "second"  # nowhere to go, so it stays
 
 
@@ -269,6 +273,39 @@ def test_a_file_another_process_already_moved_is_skipped_quietly(
     assert FileRunStore(root).list() == []  # nothing was readable, and nothing raised
 
 
+def test_the_set_aside_directory_is_not_a_service_and_a_service_may_be_named_legacy(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "runs"
+    (root / ".hidden.json").parent.mkdir(parents=True)
+    (root / ".hidden.json").write_text("{}")
+    store = FileRunStore(root)
+    store.save(make_record("r1", service="legacy"))
+    assert (root / "_legacy" / ".hidden.json").exists()
+    assert [s.service for s in store.services()] == ["legacy"]  # only the real one
+    assert [s.run_id for s in store.list("legacy")] == ["r1"]
+
+
+def test_two_paths_are_the_same_file_only_while_both_exist(tmp_path: Path) -> None:
+    first = tmp_path / "a.json"
+    first.write_text("{}")
+    linked = tmp_path / "b.json"
+    os.link(first, linked)
+    assert _same_file(first, linked)
+    assert not _same_file(first, tmp_path / "missing.json")
+
+
+def test_a_run_another_process_already_linked_is_not_also_set_aside(tmp_path: Path) -> None:
+    # Process A linked r1 into default/ and has not yet removed the root file when B starts.
+    root = tmp_path / "runs"
+    write_flat(root, "r1")
+    (root / "default").mkdir()
+    os.link(root / "r1.json", root / "default" / "r1.json")
+    store = FileRunStore(root)
+    assert [s.run_id for s in store.list("default")] == ["r1"]
+    assert not (root / "r1.json").exists() and not (root / "_legacy").exists()
+
+
 def test_a_json_file_that_is_not_a_run_is_set_aside(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -277,7 +314,7 @@ def test_a_json_file_that_is_not_a_run_is_set_aside(
     (root / ".hidden.json").write_text("{}")
     with caplog.at_level(logging.WARNING, logger="hermetic.history"):
         assert FileRunStore(root).list() == []
-    assert (root / "legacy" / ".hidden.json").exists() and "moved .hidden.json" in caplog.text
+    assert (root / "_legacy" / ".hidden.json").exists() and "moved .hidden.json" in caplog.text
 
 
 def test_the_history_directory_may_not_exist_yet(tmp_path: Path) -> None:

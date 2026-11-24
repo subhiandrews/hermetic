@@ -18,7 +18,7 @@ from hermetic.service import DEFAULT_SERVICE, is_valid_service
 
 _logger = logging.getLogger("hermetic.history")
 INDEX_NAME = "index.json"
-LEGACY_DIR = "legacy"  # where earlier files that fit no service are kept, not deleted
+LEGACY_DIR = "_legacy"  # earlier files that fit no service; not a valid service id, so never listed
 # run_id becomes a file name, so it must not be able to name a path.
 _RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 RunIds = list[str]  # aliases: `list` is shadowed by the method inside the class
@@ -201,7 +201,8 @@ class FileRunStore:
         """Once per store, move `<root>/<run_id>.json` files from before services existed under
         the default service and drop the old `<root>/index.json`. A file that cannot go there (a
         run the default service already has, or a `.json` that is not a run) is moved to
-        `<root>/legacy/` instead, so the root is left with none and nothing is overwritten.
+        `<root>/_legacy/` instead. Nothing is overwritten, so a name already in `_legacy/` stays
+        in the root (and is logged).
         Where that is not possible (a read-only directory) it logs once and carries on: the
         store still serves what it can read, and the next process tries again."""
         if self._migrated:
@@ -218,11 +219,21 @@ class FileRunStore:
             _logger.warning("earlier run history could not be moved under 'default': %s", exc)
 
 
+def _same_file(first: Path, second: Path) -> bool:
+    try:
+        return os.path.samefile(first, second)
+    except OSError:  # one of them has gone
+        return False
+
+
 def _relocate(source: Path, destination: Path) -> bool:
     """Move `source` to `destination` without overwriting. False if `destination` exists."""
     try:
         os.link(source, destination)  # fails, rather than overwrites, if it exists
     except FileExistsError:
+        if _same_file(source, destination):  # another process linked it first and is mid-move
+            source.unlink(missing_ok=True)
+            return True
         return False
     except FileNotFoundError:  # moved by another process
         return True
@@ -250,6 +261,13 @@ def _move_flat_run(path: Path, default_dir: Path, legacy_dir: Path) -> None:
         _logger.warning(
             "earlier run history: moved %s to %s (not a run the default service can take)",
             path.name,
+            legacy_dir,
+        )
+    else:
+        _logger.warning(
+            "earlier run history: %s stays in %s, because %s already has a file by that name",
+            path.name,
+            path.parent,
             legacy_dir,
         )
 
