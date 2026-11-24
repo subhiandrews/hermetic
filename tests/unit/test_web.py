@@ -98,6 +98,19 @@ def test_the_run_list_is_capped_and_the_cap_can_be_set() -> None:
     assert client.get(f"/api/runs?limit={MAX_RUN_LIMIT + 1}").status_code == 422
 
 
+def test_the_page_sets_its_title_once_and_only_for_the_response_it_is_showing() -> None:
+    # A superseded fetch that resolves last must not rename the tab, so the title is set next to
+    # the check that drops stale responses, not inside the render functions.
+    script = (STATIC_DIR / "app.js").read_text()
+    assert script.count("document.title =") == 1
+    assert script.index("document.title =") > script.index("current === navigation")
+
+
+def test_the_pass_rate_never_reads_one_hundred_for_a_run_with_a_failure() -> None:
+    script = (STATIC_DIR / "app.js").read_text()
+    assert "Math.round(rate" not in script  # 1999 of 2000 rounds to 100 beside a red bar
+
+
 def test_the_page_asks_for_the_same_limit_the_server_defaults_to() -> None:
     script = (STATIC_DIR / "app.js").read_text()
     match = re.search(r"const RUN_LIMIT = (\d+);", script)
@@ -180,6 +193,9 @@ def test_the_accepted_hosts_can_be_set_or_opened_up() -> None:
     store = MemoryStore()
     named = TestClient(create_app(store, ["example.test"]))
     assert named.get("/api/runs", headers={"host": "example.test:8080"}).status_code == 200
+    with_port = TestClient(create_app(store, ["Example.Test:8080"]))  # the port is not compared
+    assert with_port.get("/api/runs", headers={"host": "example.test:9999"}).status_code == 200
+    assert with_port.get("/api/runs", headers={"host": "evil.example:8080"}).status_code == 421
     assert named.get("/api/runs", headers={"host": "localhost"}).status_code == 421
     anything = TestClient(create_app(store, ["*"]))
     assert anything.get("/api/runs", headers={"host": "whatever.example"}).status_code == 200

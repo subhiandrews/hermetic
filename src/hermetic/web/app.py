@@ -41,7 +41,8 @@ def hostname(host_header: str) -> str:
 
 def create_app(store: RunStore, allowed_hosts: Sequence[str] = LOOPBACK_HOSTS) -> FastAPI:
     """The app over `store`. `allowed_hosts` are the host names it answers to; "*" allows any."""
-    allowed = frozenset(host.lower() for host in allowed_hosts)
+    # Entries are compared like a `Host` header, by name: "example.test:8080" is "example.test".
+    allowed = frozenset(hostname(host) for host in allowed_hosts)
     # The interactive docs load script from a CDN, which the policy above does not allow.
     app = FastAPI(title="Hermetic", docs_url=None, redoc_url=None, openapi_url="/api/openapi.json")
 

@@ -67,7 +67,9 @@ function trend(runs) {
   const bars = recent.map((run) => {
     const rate = passRate(run);
     const kind = rate === null ? "none" : rate === 1 ? "ok" : "bad";
-    const label = rate === null ? "no results" : `${Math.round(rate * 100)}% passed`;
+    // Round down: a run with any failure must not read "100% passed" beside its red bar.
+    const percent = rate === 1 ? 100 : Math.floor((rate ?? 0) * 100);
+    const label = rate === null ? "no results" : `${percent}% passed`;
     const bar = el("a", {
       class: `bar ${kind}`,
       href: runLink(run.run_id),
@@ -95,12 +97,14 @@ function historyRow(run) {
   );
 }
 
+// The render functions return the page's title with its view, so the caller sets both together,
+// and only if the response is still the one being waited for.
 function renderHistory(runs) {
-  document.title = "Hermetic runs";
+  const title = "Hermetic runs";
   const view = el("section", {}, el("h1", {}, "Runs"));
   if (runs.length === 0) {
     view.append(el("p", { class: "empty" }, "No runs yet. `hermetic run` records one."));
-    return view;
+    return { title, view };
   }
   const heads = ["Run", "Started", "Target", "Passed", "Failed", "Errors", "Skipped", "Changes"];
   const header = el(
@@ -115,7 +119,7 @@ function renderHistory(runs) {
   if (runs.length >= RUN_LIMIT) {
     view.append(el("p", { class: "empty" }, `Showing the newest ${RUN_LIMIT} runs.`));
   }
-  return view;
+  return { title, view };
 }
 
 // ---- run detail view ------------------------------------------------------------------------
@@ -212,7 +216,6 @@ function panelFor(tab, items) {
 }
 
 function renderRun(run) {
-  document.title = `Run ${run.run_id} · Hermetic`;
   const failing = run.results.filter((r) => r.status === "failed" || r.status === "error");
   const items = {
     failed: failing,
@@ -256,7 +259,7 @@ function renderRun(run) {
   }
   select(items.failed.length > 0 ? "failed" : "all");
 
-  return el(
+  const view = el(
     "section",
     {},
     el("p", {}, el("a", { href: "#/" }, "← All runs")),
@@ -265,6 +268,7 @@ function renderRun(run) {
     tablist,
     panel,
   );
+  return { title: `Run ${run.run_id} · Hermetic`, view };
 }
 
 // ---- routing --------------------------------------------------------------------------------
@@ -274,17 +278,22 @@ let navigation = 0;
 async function route() {
   const current = ++navigation;
   app.replaceChildren("Loading…");
-  let view;
+  let page;
   try {
     const match = /^#\/runs\/(.+)$/.exec(location.hash);
-    view = match
+    page = match
       ? renderRun(await getJson(`/api/runs/${encodeURIComponent(decodeURIComponent(match[1]))}`))
       : renderHistory(await getJson(`/api/runs?limit=${RUN_LIMIT}`));
   } catch (error) {
-    document.title = "Not available · Hermetic";
-    view = el("p", { class: "error" }, `Could not load this page: ${error.message}`);
+    page = {
+      title: "Not available · Hermetic",
+      view: el("p", { class: "error" }, `Could not load this page: ${error.message}`),
+    };
   }
-  if (current === navigation) app.replaceChildren(view);
+  if (current === navigation) {
+    document.title = page.title;
+    app.replaceChildren(page.view);
+  }
 }
 
 addEventListener("hashchange", route);

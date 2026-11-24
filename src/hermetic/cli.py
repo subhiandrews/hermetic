@@ -174,7 +174,8 @@ def serve(
             "--allowed-host",
             help=(
                 "A host name the UI answers to, besides loopback and this machine's own names "
-                "(repeatable). '*' answers to any, which leaves it open to DNS rebinding."
+                "(repeatable; a port is ignored). '*' answers to any, which leaves it open to "
+                "DNS rebinding."
             ),
         ),
     ] = None,
@@ -226,7 +227,7 @@ def _machine_hosts() -> list[str]:
     name = socket.gethostname()
     try:
         addresses = socket.gethostbyname_ex(name)[2]
-    except OSError:  # the name does not resolve; the name itself still counts
+    except (OSError, UnicodeError):  # unresolvable or unencodable name; the name still counts
         addresses = []
     return [name, *addresses]
 

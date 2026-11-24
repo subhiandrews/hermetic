@@ -62,12 +62,12 @@ def test_serve_warns_when_asked_to_listen_beyond_loopback(
     assert status_with_host(served, "evil.example") == 421
 
 
-def fake_machine(monkeypatch: pytest.MonkeyPatch, *, resolves: bool = True) -> None:
+def fake_machine(monkeypatch: pytest.MonkeyPatch, *, fails_with: Exception | None = None) -> None:
     monkeypatch.setattr("socket.gethostname", lambda: "box.example")
 
     def resolve(name: str) -> tuple[str, list[str], list[str]]:
-        if not resolves:
-            raise socket.gaierror("no such host")
+        if fails_with is not None:
+            raise fails_with
         return (name, [], ["10.0.0.7"])
 
     monkeypatch.setattr("socket.gethostbyname_ex", resolve)
@@ -92,12 +92,18 @@ def test_serve_on_every_interface_still_checks_the_host_header(
     assert status_with_host(served, "evil.example") == 421
 
 
-def test_serve_on_every_interface_keeps_this_machines_name_when_it_does_not_resolve(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize(
+    "failure",
+    [socket.gaierror("no such host"), UnicodeError("label empty or too long")],
+    ids=["unresolvable", "unencodable"],
+)
+def test_serve_on_every_interface_keeps_this_machines_name_when_it_cannot_be_looked_up(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: Exception
 ) -> None:
     calls = fake_uvicorn(monkeypatch)
-    fake_machine(monkeypatch, resolves=False)
-    runner.invoke(app, ["serve", "--history-dir", str(tmp_path), "--host", "0.0.0.0"])
+    fake_machine(monkeypatch, fails_with=failure)
+    result = runner.invoke(app, ["serve", "--history-dir", str(tmp_path), "--host", "0.0.0.0"])
+    assert result.exit_code == 0 and len(calls) == 1  # no traceback at startup
     assert status_with_host(calls[0][0], "box.example") == 200
     assert status_with_host(calls[0][0], "10.0.0.7") == 421
 
@@ -107,7 +113,8 @@ def test_serve_answers_to_the_names_it_is_given(
 ) -> None:
     calls = fake_uvicorn(monkeypatch)
     fake_machine(monkeypatch)
-    names = ["--allowed-host", "hermetic.internal", "--allowed-host", "other.test"]
+    # A port in the value is ignored, as it is in the `Host` header it is compared with.
+    names = ["--allowed-host", "hermetic.internal", "--allowed-host", "other.test:8080"]
     result = runner.invoke(
         app, ["serve", "--history-dir", str(tmp_path), "--host", "0.0.0.0", *names]
     )
