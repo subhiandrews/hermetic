@@ -35,15 +35,18 @@ from hermetic.ingest import ingest as run_ingest
 from hermetic.net import LOOPBACK_NAMES, is_header_token
 from hermetic.provision import (
     COMPOSE_NAME,
+    MOCKS_DIR,
     ComposeError,
     ProvisionError,
     StackError,
+    build_stubs,
     check_compose,
     generate_compose,
     project_name,
     read_compose_file,
     refuse_links,
     write_compose,
+    write_stubs,
 )
 from hermetic.provision import down as stop_stack
 from hermetic.provision import up as start_stack
@@ -254,6 +257,46 @@ def down(
         typer.echo(f"error: {printable(str(exc))}", err=True)
         raise typer.Exit(code=2) from exc
     typer.echo(f"stopped {project_name(service_id)}")
+
+
+@app.command()
+def stubs(
+    service: Annotated[str, typer.Option(help="The microservice the mock is for.")],
+    name: Annotated[str, typer.Option(help="The HTTP dependency to write stubs for.")],
+    spec: Annotated[Path, typer.Option(help="The OpenAPI file of that dependency.")],
+    suite: Annotated[
+        Path | None,
+        typer.Option(help="Where dependencies.json is kept; default tests/<service>."),
+    ] = None,
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            help="Where to write the stubs; default .hermetic/provision/<service>/mocks/<name>."
+        ),
+    ] = None,
+) -> None:
+    """Write WireMock stubs for an HTTP dependency from its OpenAPI spec.
+
+    Each operation with a 2xx response gets one stub answering with an example from the spec.
+    Stubs a former run wrote are replaced; files you wrote yourself are left alone.
+    """
+    try:
+        service_id = resolve_service(None, service)
+        found = load_dependencies(suite or _default_suite(service_id))
+        if found is None or found.service != service_id:
+            raise ProvisionError(f"no dependencies for {service_id!r}; run `hermetic discover`")
+        match = next((d for d in found.dependencies if d.name == name), None)
+        if match is None or match.kind != "http":
+            raise ProvisionError(f"{name!r} is not an HTTP dependency of {service_id!r}")
+        built, skipped = build_stubs(run_ingest(spec, None))
+        folder = output or Path(".hermetic") / "provision" / service_id / MOCKS_DIR / name
+        write_stubs(folder, built)
+    except (InvalidServiceError, DependenciesError, ProvisionError, IngestError, OSError) as exc:
+        typer.echo(f"error: {printable(str(exc))}", err=True)
+        raise typer.Exit(code=2) from exc
+    for line in skipped:
+        typer.echo(f"skipped: {printable(line)}", err=True)
+    typer.echo(f"wrote {len(built)} stubs to {folder}")
 
 
 @app.command()
