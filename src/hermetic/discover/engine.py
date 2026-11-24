@@ -23,9 +23,19 @@ from hermetic.redact import REDACTED, SENSITIVE_KEY_PARTS, redact_url
 
 _URL_IN_TEXT = re.compile(r"[a-z][a-z0-9+.\-]*://\S+", re.IGNORECASE)
 _KEYS = "|".join(re.escape(part) for part in SENSITIVE_KEY_PARTS)
-# key, an optional closing quote, = or :, an optional opening quote, then the value
+# key, an optional closing quote, = or :, then the value: quoted whole, or up to a separator
 _SECRET_PAIR = re.compile(
-    rf"((?:{_KEYS}|access[_-]?key)\w*[\"']?\s*[=:]\s*[\"']?)[^\s,;&\"']+", re.IGNORECASE
+    rf"((?:{_KEYS}|access[_-]?key)\w*[\"']?\s*[=:]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;&\"']+)",
+    re.IGNORECASE,
+)
+# What masking cannot be trusted with, checked on the masked text: a denylist misses forms, so a
+# quote that still looks like it holds a credential is dropped rather than kept.
+_LEFTOVER_CREDENTIAL = re.compile(
+    r"://[^\s/@#?:\[]+:(?!\d+(?:[/?#\s]|$))"  # scheme://user:<not a port> with no @ behind it
+    r"|[\w-]*(?:pass|auth|key|token|secret|pwd)[\w-]*\s*=\s*(?!\[REDACTED\])\S"  # DB_PASS=x
+    r"|(?<!\S)--?[\w-]*(?:pass|auth|key|token|secret)[\w-]*\s+(?!\[REDACTED\]|-)\S"  # --requirepass
+    r"|(?<!\S)-[pa]\S|(?<!\S)-a\s+\S",  # mysql -pX, redis-cli -a X
+    re.IGNORECASE,
 )
 _AUTH_SCHEME = re.compile(r"\b(bearer|basic)(\s+)\S+", re.IGNORECASE)
 _BARE_USERINFO = re.compile(r"(?<![\w/])[^\s/@:]+:[^\s/@]+@(?=[\w.\-])")  # user:pw@host, no scheme
@@ -68,6 +78,10 @@ def _masked(quote: str) -> str:
     return _SECRET_PAIR.sub(r"\1" + REDACTED, clean)[:MAX_QUOTE_CHARS]
 
 
+def _leaks(masked: str) -> bool:
+    return _LEFTOVER_CREDENTIAL.search(masked) is not None
+
+
 def discover(
     model: ServiceModel,
     service: str,
@@ -103,13 +117,21 @@ def discover(
         if dependency.name in manual:
             notes.append(f"{dependency.name}: kept the entry you wrote")
             continue
-        verified = [
-            Evidence(source=e.source, quote=_masked(e.quote))
-            for e in dependency.evidence
-            if _says(texts, e)
-        ]
+        verified: list[Evidence] = []
+        withheld = False
+        for e in dependency.evidence:
+            if not _says(texts, e):
+                continue
+            quote = _masked(e.quote)
+            if _leaks(quote):
+                withheld = True
+            else:
+                verified.append(Evidence(source=e.source, quote=quote))
+        if withheld:
+            notes.append(f"{dependency.name}: a quote that may hold a credential was not saved")
         if not verified:
-            notes.append(f"{dependency.name}: dropped, no document says it")
+            if not withheld:
+                notes.append(f"{dependency.name}: dropped, no document says it")
             continue
         current = found.get(dependency.name)
         if current is None:

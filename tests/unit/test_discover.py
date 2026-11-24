@@ -635,6 +635,34 @@ def test_common_credential_forms_are_masked(quote: str, leaked: str) -> None:
     assert leaked not in kept and "[REDACTED]" in kept
 
 
+@pytest.mark.parametrize(
+    "quote",
+    [
+        "postgres://admin:hunter2",
+        "postgres://u:p/w@h/app",
+        "postgres://u:p#w@h/app",
+        "DB_PASS=hunter2",
+        "redis-server --requirepass hunter2",
+        "mysql -phunter2 -h db",
+        "redis-cli -a hunter2",
+    ],
+)
+def test_a_quote_that_may_still_hold_a_credential_is_not_saved(quote: str) -> None:
+    inferrer = FakeInferrer(dep("cache", "redis", evidence=[("a.md", quote)]))
+    result, _, notes = run_discover(inferrer, doc("a.md", f"x {quote} y"))
+    assert not any("hunter2" in e.quote for d in result.dependencies for e in d.evidence)
+    assert result.dependencies == []
+    assert any("may hold a credential" in n for n in notes)
+
+
+def test_a_quoted_secret_with_spaces_and_commas_is_masked_whole() -> None:
+    quote = 'password="two words, and more" for the cache'
+    inferrer = FakeInferrer(dep("cache", "redis", evidence=[("a.md", quote)]))
+    result, _, _ = run_discover(inferrer, doc("a.md", f"x {quote} y"))
+    (kept,) = [e.quote for d in result.dependencies for e in d.evidence]
+    assert "words" not in kept and "more" not in kept
+
+
 def test_a_long_hint_line_is_cut_between_words_so_a_url_is_never_half_kept() -> None:
     line = "word " * 59 + "postgres://admin:hunter2@db/app"  # the URL starts near the limit
     (hint,) = find_hints([doc("a.md", line)])
