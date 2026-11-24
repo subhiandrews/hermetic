@@ -336,6 +336,30 @@ def test_an_oversized_file_is_not_read(
     assert big.exists()
 
 
+def test_a_deeply_nested_file_is_left_alone(tmp_path: Path) -> None:
+    folder = tmp_path / "m"
+    folder.mkdir()
+    deep = folder / "deep.json"
+    deep.write_text("[" * 50000 + "]" * 50000)
+    write_stubs(folder, {})
+    assert deep.exists()
+
+
+def test_the_body_cap_counts_the_indented_form(
+    model: ServiceModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    compact = len(json.dumps([1, 2, 3]))
+    indented = len(json.dumps([1, 2, 3], indent=2))
+    assert indented > compact
+    op = _operation("GET")
+    monkeypatch.setattr(stubs_module, "sample", lambda _s: [1, 2, 3])
+    monkeypatch.setattr(stubs_module, "MAX_BODY_BYTES", compact)
+    other = model.model_copy(update={"operations": [op]})
+    stubs, skipped = build_stubs(other)
+    assert stubs == {}
+    assert any("example larger than" in line for line in skipped)
+
+
 def test_a_linked_stub_file_is_left_alone(model: ServiceModel, tmp_path: Path) -> None:
     folder = tmp_path / "m"
     folder.mkdir()

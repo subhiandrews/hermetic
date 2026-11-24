@@ -200,7 +200,8 @@ def build_stubs(model: ServiceModel) -> tuple[dict[str, dict[str, Any]], list[st
             response: dict[str, Any] = {"status": 200 if status == "2XX" else int(status)}
             if schema is not None:
                 body = sample(schema)
-                encoded = json.dumps(body, sort_keys=True)
+                # measured as written (indented), so the cap holds on disk
+                encoded = json.dumps(body, indent=2, sort_keys=True)
                 if len(encoded.encode()) > MAX_BODY_BYTES:
                     skipped.append(f"{label}: example larger than {MAX_BODY_BYTES} bytes")
                     continue
@@ -226,7 +227,7 @@ def _ours(path: Path) -> bool:
         if path.stat().st_size > MAX_BODY_BYTES * 2:
             return False
         document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return False
     metadata = document.get("metadata") if isinstance(document, dict) else None
     return isinstance(metadata, dict) and metadata.get(MARKER) is True
