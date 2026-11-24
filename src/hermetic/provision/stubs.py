@@ -16,7 +16,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 from urllib.parse import urlparse
 
 from hermetic.ingest.models import Json, Operation, ServiceModel
@@ -45,16 +45,18 @@ def _is_json(media_type: str) -> bool:
     return base == "application/json" or base.endswith("+json")
 
 
-def _is_number(value: object) -> bool:
+def _is_number(value: object) -> TypeGuard[int | float]:
     return isinstance(value, int | float) and not isinstance(value, bool)
 
 
-def _bound(schema: Json, inclusive: str, exclusive: str) -> tuple[Any, bool]:
+def _bound(schema: Json, inclusive: str, exclusive: str, *, lower: bool) -> tuple[Any, bool]:
     """A bound and whether it excludes its own value, in the 3.0 and the 3.1 spelling."""
     marked = schema.get(exclusive)
-    if _is_number(marked):  # 3.1: the exclusive key holds the number
-        return marked, True
     value = schema.get(inclusive)
+    if _is_number(marked):  # 3.1: the exclusive key holds the number
+        if _is_number(value) and (value > marked if lower else value < marked):
+            return value, False  # the inclusive bound is the stricter one
+        return marked, True
     if _is_number(value):
         return value, marked is True  # 3.0: a flag beside `minimum`
     return None, False
@@ -62,8 +64,8 @@ def _bound(schema: Json, inclusive: str, exclusive: str) -> tuple[Any, bool]:
 
 def _number(schema: Json, *, whole: bool) -> int | float:
     """A number inside the schema's bounds, as near zero as they allow."""
-    low, low_open = _bound(schema, "minimum", "exclusiveMinimum")
-    high, high_open = _bound(schema, "maximum", "exclusiveMaximum")
+    low, low_open = _bound(schema, "minimum", "exclusiveMinimum", lower=True)
+    high, high_open = _bound(schema, "maximum", "exclusiveMaximum", lower=False)
     try:
         if whole:
             first = None if low is None else (math.floor(low) + 1 if low_open else math.ceil(low))
