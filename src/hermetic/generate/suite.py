@@ -8,13 +8,14 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from hermetic.diffing import plan_changes
+from hermetic.diffing import SuitePlan, plan_changes
 from hermetic.diffing.manifest import (
     MAX_MANIFEST_BYTES,
     Manifest,
     ManifestEntry,
     file_name_for,
     load_manifest,
+    manifest_text,
     save_manifest,
 )
 from hermetic.generate.author import AuthoredTest, AuthorRequest, SuiteAuthor
@@ -49,14 +50,6 @@ def generate_suite(
     """
     manifest_path = suite_dir / MANIFEST_NAME
     manifest = load_manifest(manifest_path)
-    # Every operation's fragment is stored in the manifest, which cannot be read back above a
-    # size limit. Say so before the paid authoring step, not after it (`save_manifest` checks too).
-    stored = sum(len(fragment_text(op).encode("utf-8")) for op in model.operations)
-    if stored > MAX_MANIFEST_BYTES:
-        raise GenerateError(
-            f"the spec's operations need {stored} bytes in the manifest, over its "
-            f"{MAX_MANIFEST_BYTES} byte limit; split the spec"
-        )
     plan = plan_changes(
         model,
         manifest,
@@ -70,6 +63,18 @@ def generate_suite(
     for modification in plan.modified:
         previous = _read_previous(suite_dir, modification.previous)
         work.append((modification.operation, modification.reason, previous))
+
+    # The manifest stores every fragment and cannot be read back above a size limit. Measure the
+    # one this run would write, with the longest note `_reason` allows, so a spec that cannot fit
+    # fails here, before the paid authoring step, and not after the files are written.
+    worst = {op.operation_id: _reason(reason, _WORST_NOTE) for op, reason, _ in work}
+    probe = Manifest(entries=_next_entries(manifest, plan, author.prompt_version, worst))
+    needed = len(manifest_text(probe).encode("utf-8"))
+    if needed > MAX_MANIFEST_BYTES:
+        raise GenerateError(
+            f"the manifest would need up to {needed} bytes, over its {MAX_MANIFEST_BYTES} byte "
+            "limit; split the spec"
+        )
 
     def author_one(item: tuple[Operation, str, str | None]) -> tuple[AuthoredTest, str]:
         operation, reason, previous = item
@@ -138,30 +143,46 @@ def generate_suite(
             )
         )
 
-    entries = dict(manifest.entries)
     suite_dir.mkdir(parents=True, exist_ok=True)
     for operation in [*plan.added, *(m.operation for m in plan.modified)]:
-        result, reason = authored[operation.operation_id]
-        file_name = file_name_for(operation.operation_id)
-        _write_text(suite_dir / file_name, result.source)
-        entries[operation.operation_id] = ManifestEntry(
-            operation_id=operation.operation_id,
-            test_file=file_name,
-            fragment_hash=operation.fragment_hash,
-            fragment=fragment_text(operation),
-            prompt_version=author.prompt_version,
-            reason=_reason(reason, result.note),
-        )
+        source = authored[operation.operation_id][0].source
+        _write_text(suite_dir / file_name_for(operation.operation_id), source)
     for entry in plan.dropped:
         (suite_dir / entry.test_file).unlink(missing_ok=True)
-        del entries[entry.operation_id]
+    reasons = {key: _reason(reason, result.note) for key, (result, reason) in authored.items()}
+    entries = _next_entries(manifest, plan, author.prompt_version, reasons)
     save_manifest(manifest_path, Manifest(entries=entries))
     return changes
 
 
+# The agent's note goes into the manifest and the run record, so its length is bounded: the
+# manifest's size can then be checked, in the worst case, before any model call is paid for.
+MAX_NOTE_CHARS = 300
+_WORST_NOTE = "\U0001f600" * MAX_NOTE_CHARS  # four bytes a character in UTF-8
+
+
 def _reason(reason: str, note: str) -> str:
-    note = " ".join(note.split())
+    note = " ".join(note.split())[:MAX_NOTE_CHARS]
     return f"{reason}: {note}" if note else reason
+
+
+def _next_entries(
+    manifest: Manifest, plan: SuitePlan, prompt_version: str, reasons: dict[str, str]
+) -> dict[str, ManifestEntry]:
+    """The manifest's entries once `plan` is applied; `reasons` maps operation id to its reason."""
+    entries = dict(manifest.entries)
+    for operation in [*plan.added, *(m.operation for m in plan.modified)]:
+        entries[operation.operation_id] = ManifestEntry(
+            operation_id=operation.operation_id,
+            test_file=file_name_for(operation.operation_id),
+            fragment_hash=operation.fragment_hash,
+            fragment=fragment_text(operation),
+            prompt_version=prompt_version,
+            reason=reasons[operation.operation_id],
+        )
+    for entry in plan.dropped:
+        del entries[entry.operation_id]
+    return entries
 
 
 def _existing_files(suite_dir: Path) -> frozenset[str]:

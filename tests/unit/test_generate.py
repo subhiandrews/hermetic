@@ -320,6 +320,35 @@ def test_an_oversized_spec_fails_before_any_paid_generation(
     assert author.requests == [] and not (tmp_path / "suite").exists()
 
 
+def test_the_size_check_measures_the_manifest_not_the_raw_fragments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = model_from(tmp_path)
+    raw = sum(len(fragment_text(op).encode("utf-8")) for op in model.operations)
+    monkeypatch.setattr("hermetic.generate.suite.MAX_MANIFEST_BYTES", raw + 1)  # raw fits...
+    author = FakeAuthor()
+    with pytest.raises(GenerateError, match="split the spec"):  # ...the real manifest does not
+        generate_suite(model, author, tmp_path / "suite")
+    assert author.requests == []
+
+
+def test_a_spec_that_just_fits_in_the_worst_case_is_generated_and_saved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = model_from(tmp_path)
+    worst = FakeAuthor(note="\U0001f600" * 1000)  # longer than the note cap: it is cut to it
+    (change, *_) = generate_suite(model, worst, tmp_path / "first")
+    assert change.reason.endswith("\U0001f600" * 300)
+    assert not change.reason.endswith("\U0001f600" * 301)
+    exact = (tmp_path / "first" / MANIFEST_NAME).stat().st_size
+    # With the limit at exactly that size the check passes and the save then succeeds: the
+    # estimate is an upper bound that the real manifest meets, not one it can exceed.
+    monkeypatch.setattr("hermetic.generate.suite.MAX_MANIFEST_BYTES", exact)
+    monkeypatch.setattr("hermetic.diffing.manifest.MAX_MANIFEST_BYTES", exact)
+    generate_suite(model, FakeAuthor(note="\U0001f600" * 1000), tmp_path / "second")
+    assert (tmp_path / "second" / MANIFEST_NAME).stat().st_size == exact
+
+
 def test_save_cleans_up_when_the_write_fails(tmp_path: Path) -> None:
     target = tmp_path / "manifest.json"
     target.mkdir()
