@@ -13,6 +13,7 @@ from hermetic.history import (
     RunRecord,
     RunStoreError,
     RunSummary,
+    ServiceSummary,
     SuiteChange,
     summarize,
 )
@@ -23,24 +24,36 @@ from tests.factories import make_record, make_result
 SECRET = "secret-marker"
 
 
+Summaries = list[RunSummary]  # `list` is a method name inside the fake stores
+Services = list[ServiceSummary]
+
+
 class MemoryStore:
     """A RunStore that is not the file store: the web UI must work over the protocol alone."""
 
     def __init__(self, *records: RunRecord) -> None:
-        self._records = {record.run_id: record for record in records}
+        self._records = {(record.service, record.run_id): record for record in records}
 
     def save(self, record: RunRecord) -> None:
-        self._records[record.run_id] = record
+        self._records[(record.service, record.run_id)] = record
 
-    def get(self, run_id: str) -> RunRecord:
-        try:
-            return self._records[run_id]
-        except KeyError:
-            raise RunNotFoundError(run_id) from None
+    def get(self, service: str, run_id: str) -> RunRecord:
+        record = self._records.get((service, run_id))
+        if record is None:
+            raise RunNotFoundError(run_id)
+        return record
 
-    def list(self) -> list[RunSummary]:
+    def list(self, service: str | None = None) -> Summaries:
         summaries = [summarize(record) for record in self._records.values()]
         return sorted(summaries, key=lambda summary: summary.started_at, reverse=True)
+
+    def services(self) -> Services:
+        found: dict[str, list[RunSummary]] = {}
+        for summary in self.list():
+            found.setdefault(summary.service, []).append(summary)
+        return [
+            ServiceSummary(service=n, runs=len(r), latest=r[0]) for n, r in sorted(found.items())
+        ]
 
 
 class BrokenStore:
@@ -49,10 +62,13 @@ class BrokenStore:
     def save(self, record: RunRecord) -> None:
         raise RunStoreError(SECRET)
 
-    def get(self, run_id: str) -> RunRecord:
+    def get(self, service: str, run_id: str) -> RunRecord:
         raise RunStoreError(f"run {run_id} is corrupt: {SECRET}")
 
-    def list(self) -> list[RunSummary]:
+    def list(self, service: str | None = None) -> Summaries:
+        raise RunStoreError(f"index is corrupt: {SECRET}")
+
+    def services(self) -> Services:
         raise RunStoreError(f"index is corrupt: {SECRET}")
 
 
@@ -118,11 +134,32 @@ def test_the_page_asks_for_the_same_limit_the_server_defaults_to() -> None:
 
 
 def test_a_run_comes_back_with_its_results_and_changes(client: TestClient) -> None:
-    response = client.get("/api/runs/new")
+    response = client.get("/api/services/default/runs/new")
     assert response.status_code == 200
     body = response.json()
     assert [result["status"] for result in body["results"]] == ["failed", "passed"]
     assert body["changes"][0]["reason"] == "a new operation in the spec"
+
+
+def test_a_run_is_addressed_by_its_service_and_the_same_id_can_repeat() -> None:
+    first = make_record("run-1", service="alpha", started_at="2026-01-01T00:00:00+00:00")
+    second = make_record("run-1", service="beta", started_at="2026-01-02T00:00:00+00:00")
+    client = TestClient(create_app(MemoryStore(first, second)), base_url="http://localhost")
+    assert client.get("/api/services/alpha/runs/run-1").json()["service"] == "alpha"
+    assert client.get("/api/services/gamma/runs/run-1").status_code == 404
+    assert client.get("/api/services/Bad%20Name/runs/run-1").status_code == 404
+
+
+def test_the_runs_of_every_service_are_listed_with_their_service() -> None:
+    first = make_record("a-run", service="alpha", started_at="2026-01-01T00:00:00+00:00")
+    second = make_record("b-run", service="beta", started_at="2026-01-02T00:00:00+00:00")
+    client = TestClient(create_app(MemoryStore(first, second)), base_url="http://localhost")
+    assert [r["service"] for r in client.get("/api/runs").json()] == ["beta", "alpha"]
+
+
+def test_the_page_links_runs_by_service_and_id() -> None:
+    script = (STATIC_DIR / "app.js").read_text()
+    assert "/api/services/" in script and "run.service" in script
 
 
 def test_the_file_store_serves_the_same_api(tmp_path: Path) -> None:
@@ -131,13 +168,13 @@ def test_the_file_store_serves_the_same_api(tmp_path: Path) -> None:
     store.save(NEW)
     client = TestClient(create_app(store), base_url="http://localhost")
     assert [run["run_id"] for run in client.get("/api/runs").json()] == ["new", "old"]
-    assert client.get("/api/runs/old").json()["run_id"] == "old"
+    assert client.get("/api/services/default/runs/old").json()["run_id"] == "old"
 
 
 @pytest.mark.parametrize("run_id", ["nope", "index", ".hidden"])
 def test_an_unknown_or_malformed_run_id_is_not_found(tmp_path: Path, run_id: str) -> None:
     client = TestClient(create_app(FileRunStore(tmp_path / "runs")), base_url="http://localhost")
-    response = client.get(f"/api/runs/{run_id}")
+    response = client.get(f"/api/services/default/runs/{run_id}")
     assert response.status_code == 404
     assert response.json() == {"detail": "run not found"}
 
@@ -147,14 +184,14 @@ def test_an_id_that_names_a_path_never_reaches_the_store(tmp_path: Path, run_id:
     # The router decodes `%2F` to a slash, so no route matches and the id is never used.
     (tmp_path / "secret.json").write_text("{}")
     client = TestClient(create_app(FileRunStore(tmp_path / "runs")), base_url="http://localhost")
-    assert client.get(f"/api/runs/{run_id}").status_code == 404
+    assert client.get(f"/api/services/default/runs/{run_id}").status_code == 404
 
 
 def test_an_unreadable_store_is_a_500_that_leaks_nothing(caplog: pytest.LogCaptureFixture) -> None:
     client = TestClient(create_app(BrokenStore()), base_url="http://localhost")
     with caplog.at_level(logging.WARNING, logger="hermetic.web"):
         listing = client.get("/api/runs")
-        detail = client.get("/api/runs/any")
+        detail = client.get("/api/services/default/runs/any")
     for response in (listing, detail):
         assert response.status_code == 500
         assert response.json() == {"detail": "the run history could not be read"}
@@ -166,7 +203,7 @@ def test_an_unreadable_store_is_a_500_that_leaks_nothing(caplog: pytest.LogCaptu
 
 def test_an_unexpected_error_is_a_500_that_still_carries_the_security_headers() -> None:
     class Crashing(MemoryStore):
-        def list(self) -> list[RunSummary]:
+        def list(self, service: str | None = None) -> Summaries:
             raise RuntimeError(SECRET)
 
     client = TestClient(
@@ -181,10 +218,10 @@ def test_an_unexpected_error_is_a_500_that_still_carries_the_security_headers() 
 
 def test_a_corrupt_run_file_is_a_500_without_its_content(tmp_path: Path) -> None:
     root = tmp_path / "runs"
-    root.mkdir()
-    (root / "bad.json").write_text(f'{{"{SECRET}": 1}}')
+    (root / "default").mkdir(parents=True)
+    (root / "default" / "bad.json").write_text(f'{{"{SECRET}": 1}}')
     client = TestClient(create_app(FileRunStore(root)), base_url="http://localhost")
-    response = client.get("/api/runs/bad")
+    response = client.get("/api/services/default/runs/bad")
     assert response.status_code == 500
     assert SECRET not in response.text
 
@@ -230,7 +267,9 @@ def test_hostname_drops_the_port_and_keeps_ipv6_brackets(header: str, expected: 
     assert hostname(header) == expected
 
 
-@pytest.mark.parametrize("path", ["/", "/api/runs", "/api/runs/new", "/static/app.js"])
+@pytest.mark.parametrize(
+    "path", ["/", "/api/runs", "/api/services/default/runs/new", "/static/app.js"]
+)
 def test_every_response_carries_the_security_headers(client: TestClient, path: str) -> None:
     headers = client.get(path).headers
     policy = headers["Content-Security-Policy"]

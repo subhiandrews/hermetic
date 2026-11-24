@@ -1,9 +1,10 @@
-"""Flat-file RunStore: `<root>/<run_id>.json` per run plus `<root>/index.json`."""
+"""Flat-file RunStore: `<root>/<service>/<run_id>.json` per run, plus an `index.json` each."""
 
 from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import re
 import tempfile
@@ -11,14 +12,18 @@ from pathlib import Path
 
 from pydantic import TypeAdapter, ValidationError
 
-from hermetic.history.models import RunRecord, RunSummary, summarize
+from hermetic.history.models import RunRecord, RunSummary, ServiceSummary, summarize
 from hermetic.history.store import RunNotFoundError, RunStoreError
+from hermetic.service import DEFAULT_SERVICE, is_valid_service
 
+_logger = logging.getLogger("hermetic.history")
 INDEX_NAME = "index.json"
 # run_id becomes a file name, so it must not be able to name a path.
 _RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 RunIds = list[str]  # aliases: `list` is shadowed by the method inside the class
 Summaries = list[RunSummary]
+Services = list[ServiceSummary]
+Names = list[str]
 _INDEX = TypeAdapter(Summaries)
 
 
@@ -46,7 +51,9 @@ def _write_atomic(path: Path, text: str) -> None:
         raise
 
 
-class FileRunStore:
+class _ServiceDir:
+    """The runs of one service: the directory `<root>/<service>`."""
+
     def __init__(self, root: Path) -> None:
         self._root = root
         # run id -> mtime of a run file that failed to parse, so a long-lived store (the web UI)
@@ -144,6 +151,110 @@ class FileRunStore:
 
     def _write_index(self, summaries: Summaries) -> None:
         _write_atomic(self._root / INDEX_NAME, json.dumps(_INDEX.dump_python(summaries), indent=2))
+
+
+class FileRunStore:
+    def __init__(self, root: Path) -> None:
+        self._root = root
+        self._dirs: dict[str, _ServiceDir] = {}  # keeps each directory's unreadable-file memory
+        self._migrated = False
+
+    def save(self, record: RunRecord) -> None:
+        self._migrate_flat_history()
+        self._dir(record.service).save(record)
+
+    def get(self, service: str, run_id: str) -> RunRecord:
+        if not is_valid_service(service):  # no run can be filed under it, so it is not found
+            raise RunNotFoundError(f"no run {run_id!r} for service {service!r}")
+        self._migrate_flat_history()
+        return self._dir(service).get(run_id)
+
+    def list(self, service: str | None = None) -> Summaries:
+        self._migrate_flat_history()
+        if service is not None:
+            return self._dir(service).list() if is_valid_service(service) else []
+        return _newest_first([s for name in self._service_names() for s in self._dir(name).list()])
+
+    def services(self) -> Services:
+        self._migrate_flat_history()
+        found: Services = []
+        for name in self._service_names():
+            summaries = self._dir(name).list()
+            if summaries:
+                found.append(ServiceSummary(service=name, runs=len(summaries), latest=summaries[0]))
+        return found
+
+    def _dir(self, service: str) -> _ServiceDir:
+        if service not in self._dirs:
+            self._dirs[service] = _ServiceDir(self._root / service)
+        return self._dirs[service]
+
+    def _service_names(self) -> Names:
+        try:
+            entries = list(self._root.iterdir())
+        except OSError:  # no history yet
+            return []
+        return sorted(p.name for p in entries if p.is_dir() and is_valid_service(p.name))
+
+    def _migrate_flat_history(self) -> None:
+        """Once per store, move run files from before services existed (`<root>/<run_id>.json`)
+        under the default service. Only a file that parses as a run record is moved, and only an
+        `index.json` that parses as the old index is dropped; anything else in the directory is
+        not ours and stays. Nothing is overwritten. Where the move is not possible (a read-only
+        directory) it logs once and carries on, and the next process tries again."""
+        if self._migrated:
+            return
+        self._migrated = True
+        try:
+            earlier = [p for p in sorted(self._root.glob("*.json")) if _is_earlier_history(p)]
+            if earlier:
+                default_dir = self._root / DEFAULT_SERVICE
+                default_dir.mkdir(exist_ok=True)
+                for path in earlier:
+                    _move_earlier_history(path, default_dir)
+        except OSError as exc:
+            _logger.warning("earlier run history could not be moved under 'default': %s", exc)
+
+
+def _is_earlier_history(path: Path) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8")
+        if path.name == INDEX_NAME:
+            _INDEX.validate_json(text)
+        else:
+            RunRecord.model_validate_json(text)
+            return _valid_run_id(path.stem)
+    except (OSError, UnicodeDecodeError, ValidationError):
+        return False
+    return True
+
+
+def _move_earlier_history(path: Path, default_dir: Path) -> None:
+    if path.name == INDEX_NAME:  # each service's index is rebuilt from its run files
+        path.unlink(missing_ok=True)
+        return
+    destination = default_dir / path.name
+    try:
+        os.link(path, destination)  # fails, rather than overwrites, if it exists
+    except FileNotFoundError:  # already moved by another process
+        return
+    except FileExistsError:
+        # Either the default service has a different run with that id, which stays where it is,
+        # or both names are one file (a crash or another process between the link and the
+        # unlink), and the leftover root name is removed.
+        with contextlib.suppress(OSError):
+            if os.path.samefile(path, destination):
+                path.unlink(missing_ok=True)
+        return
+    except OSError:
+        # A filesystem without hard links: rename, unless the run is already there. Unlike the
+        # link, this check and the rename are two steps, so it is best effort against a process
+        # writing the same name at that instant.
+        if not destination.exists():
+            with contextlib.suppress(FileNotFoundError):  # moved by another process
+                os.replace(path, destination)
+        return
+    path.unlink(missing_ok=True)
 
 
 def _newest_first(summaries: Summaries) -> Summaries:

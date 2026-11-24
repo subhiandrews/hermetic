@@ -224,3 +224,6 @@ __marimo__/
 
 # Hermetic run history (local, not committed)
 .hermetic/runs/
+
+# Playwright MCP browser-check output (local, not committed)
+.playwright-mcp/

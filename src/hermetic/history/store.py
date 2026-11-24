@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from hermetic.history.models import RunRecord, RunSummary
+from hermetic.history.models import RunRecord, RunSummary, ServiceSummary
 
 
 class RunStoreError(Exception):
@@ -21,15 +21,26 @@ class RunNotFoundError(RunStoreError):
     """No run with that id exists."""
 
 
+Summaries = list[RunSummary]  # aliases: `list` is shadowed by the method inside the protocol
+Services = list[ServiceSummary]
+
+
 class RunStore(Protocol):
+    """Run history, grouped by service. A run id is unique within its service."""
+
     def save(self, record: RunRecord) -> None:
-        """Persist a run, replacing any earlier record with the same id."""
+        """Persist a run under `record.service`, replacing any earlier record with that id."""
         ...
 
-    def get(self, run_id: str) -> RunRecord:
+    def get(self, service: str, run_id: str) -> RunRecord:
         """Return the run, or raise RunNotFoundError."""
         ...
 
-    def list(self) -> list[RunSummary]:
-        """Return every run's summary, newest first."""
+    def list(self, service: str | None = None) -> Summaries:
+        """Return the summaries of one service's runs, or of every service's when `service`
+        is None, newest first."""
+        ...
+
+    def services(self) -> Services:
+        """Return each service that has runs, with its latest run, sorted by service id."""
         ...
