@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import traceback
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Annotated
@@ -37,6 +38,12 @@ def _harden(response: Response, path: str) -> None:
         response.headers["Cache-Control"] = "no-store"
 
 
+def _where(exc: BaseException) -> str:
+    """Where an exception was raised, without its message, which can quote stored data."""
+    innermost = traceback.extract_tb(exc.__traceback__)[-1:]
+    return ", ".join(f"{Path(f.filename).name}:{f.lineno} in {f.name}" for f in innermost) or "?"
+
+
 def hostname(host_header: str) -> str:
     """The host in a `Host` header without its port; an IPv6 address keeps its brackets."""
     host = host_header.strip().lower()
@@ -69,7 +76,11 @@ def create_app(store: RunStore, allowed_hosts: Sequence[str] = LOOPBACK_HOSTS) -
                 # Starlette would answer outside this middleware, without the headers, and the
                 # server would log the traceback with the exception's message, which can quote
                 # stored data. Answer here and log only the kind of failure, as for the store.
-                _logger.error("unexpected error serving the request (%s)", type(exc).__name__)
+                _logger.error(
+                    "unexpected error serving the request (%s at %s)",
+                    type(exc).__name__,
+                    _where(exc),
+                )
                 response = JSONResponse({"detail": "internal server error"}, status_code=500)
         _harden(response, request.url.path)
         return response

@@ -214,7 +214,8 @@ def test_an_unexpected_error_is_a_500_that_still_carries_the_security_headers(
     with caplog.at_level(logging.WARNING, logger="hermetic.web"):
         response = client.get("/api/runs")
     assert response.status_code == 500 and SECRET not in response.text
-    assert SECRET not in caplog.text and "(RuntimeError)" in caplog.text
+    assert SECRET not in caplog.text and "RuntimeError at test_web.py:" in caplog.text
+    assert "in list" in caplog.text  # the function it was raised in
     assert response.headers["Content-Security-Policy"].startswith("default-src 'self'")
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert response.headers["Cache-Control"] == "no-store"
