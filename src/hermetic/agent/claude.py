@@ -13,7 +13,7 @@ import json
 import re
 
 from hermetic.generate.author import AuthoredTest, AuthorRequest
-from hermetic.generate.validate import ALLOWED_IMPORTS, FORBIDDEN_NAMES, PYTEST_API
+from hermetic.generate.validate import ALLOWED_IMPORTS, FORBIDDEN_NAMES, MARK_NAMES, PYTEST_API
 
 # Bump when SYSTEM_PROMPT or build_prompt changes in a way that should rewrite every test.
 # SYSTEM_PROMPT is built from the validator's lists, so an edit there changes it too: a test
@@ -24,6 +24,7 @@ PROMPT_VERSION = "2"
 _BANNED_NAMES = ", ".join(sorted(FORBIDDEN_NAMES))
 _ALLOWED_IMPORTS = ", ".join(sorted(ALLOWED_IMPORTS))
 _PYTEST_NAMES = ", ".join(f"pytest.{name}" for name in sorted(PYTEST_API))
+_MARK_NAMES = ", ".join(f"pytest.mark.{name}" for name in sorted(MARK_NAMES))
 
 SYSTEM_PROMPT = f"""\
 You write pytest tests for one operation of a REST API, using httpx.
@@ -42,7 +43,8 @@ Rules for the module:
   and a request that breaks a documented constraint. Assert on status code and on the
   response shape the spec describes. Do not assert on values the spec does not promise.
 - Never read files, spawn processes or use the network except through hermetic_client.
-- From pytest use only: {_PYTEST_NAMES}. Do not rename the pytest module or pass it around.
+- From pytest use only: {_PYTEST_NAMES}. Of the marks use only: {_MARK_NAMES}. Do not rename
+  the pytest module or pass it around, and always write pytest.mark.<name> in full.
 - Use each imported module only as module.name, through what it defines itself (json.loads,
   re.compile), never through a module it imports (re.enum) and never by assigning it to a variable.
 - The tests are rejected if they use any of these names, even as variable names: {_BANNED_NAMES}.

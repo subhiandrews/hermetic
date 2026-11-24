@@ -29,7 +29,8 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
         "import json\nimport pytest\nimport re\nimport uuid\n"
         "from pytest import approx\n\n"
         '@pytest.mark.operation("op")\n'
-        "@pytest.mark.filterwarnings('ignore')\n"
+        "@pytest.mark.parametrize('n', [1, 2])\n"
+        "@pytest.mark.skip(reason='r')\n"
         "def test_a(hermetic_client):\n"
         "    system, main, operator, types = 1, 2, 3, 4  # ordinary variables are fine\n"
         "    assert 1.0 == approx(1.0) and '{:.2f} {name!r} {{x}}'.format(1.5, name=1)\n"
@@ -105,14 +106,29 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
         ("pytest_plugins = ['pytester']\n", "`pytest_plugins` is not allowed"),
         ("def test_a(pytester): ...\n", "fixture `pytester`"),
         ("from json import *\n", "importing `*`"),
-        ("from pytest import mark\n@mark.skipif('1')\ndef test_a(): ...\n", "attribute `skipif`"),
+        ("from pytest import mark\n@mark.skipif('1')\ndef test_a(): ...\n", "importing `mark`"),
         ("import pytest\nm = pytest.mark.skipif\n", "attribute `skipif`"),
         (
             "import pytest\nc = '1'\n@pytest.mark.skipif(c)\ndef test_a(): ...\n",
             "attribute `skipif`",
         ),
         ("from pytest.mark import skipif\n", "importing `pytest.mark`"),
-        ("from pytest import mark\nmark.skipif('1')\n", "skipif"),
+        ("from pytest import mark\nmark.skipif('1')\n", "importing `mark`"),
+        # Every route to a mark nobody allowed: `filterwarnings` imports the module it names.
+        (
+            "import pytest\n@pytest.mark.filterwarnings('ignore::antigravity.X')\n"
+            "def test_a(): ...\n",
+            "attribute `filterwarnings`",
+        ),
+        ("import pytest\nm = pytest.mark\nm.filterwarnings('x')\n", "`pytest.mark` may only be"),
+        ("import pytest\nf(pytest.mark)\n", "`pytest.mark` may only be"),
+        ("import pytest as p\n@p.mark.filterwarnings('x')\ndef test_a(): ...\n", "another name"),
+        # Two modules under one local name leave the module-reach check looking at the wrong one.
+        ("import re as m\ndef f():\n    import json as m\n", "`m` is bound to two different"),
+        ("import json\nd = json.decoder\nimport re as json\n", "`json` is bound to two different"),
+        ("x.getattr\n", "attribute `getattr`"),
+        ("x.bltns\n", "attribute `bltns`"),
+        ("x.vars\n", "attribute `vars`"),
         (
             "import pytest\n@pytest.mark.skipif(False)(\"os.system('id')\")\ndef test_a(): ...\n",
             "attribute `skipif`",
@@ -159,7 +175,8 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
         ("import json\njson.tool\n", "module `tool`"),
         ("import json as j\nj.tool.argparse\n", "module `tool`"),
         # Every route to a module an allowed module imported: `re.enum.bltns` is the builtins.
-        ("import re\nre.enum.bltns.vars(re.enum.bltns)\n", "module `enum`"),
+        ("import re\nx = re.enum\n", "module `enum`"),
+        ("import re\nre.enum.bltns.vars(re.enum.bltns)\n", "attribute `vars`"),
         ("import re as r\nr.enum\n", "module `enum`"),
         ("from re import enum\n", "importing `enum`"),
         ("import re\nx = re\nx.enum\n", "`re` is not allowed"),
@@ -216,7 +233,7 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
             "lacks @pytest.mark.operation",
         ),
         (
-            "import pytest\n@pytest.mark.slow\ndef test_a(): ...\n",
+            "import pytest\n@pytest.mark.parametrize('n', [1])\ndef test_a(n): ...\n",
             "lacks @pytest.mark.operation",
         ),
     ],

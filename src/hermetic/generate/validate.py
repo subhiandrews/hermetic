@@ -55,6 +55,8 @@ FORBIDDEN_ATTRIBUTES = frozenset(
         # `pytest.raises(...) as e` gives `e.traceback[0].frame.eval(...)`, which evals with the
         # frame's real globals; `with_args` adds a string condition to a skipif/xfail mark.
         "eval", "exec", "frame", "traceback", "tb", "getrepr", "with_args",
+        # The builtins' accessors, as attributes of anything that imported `builtins as bltns`.
+        "bltns", "delattr", "getattr", "globals", "locals", "setattr", "vars",
     }
 )  # fmt: skip
 # pytest eval()s a string condition of `skipif` and `xfail` at collection, and a mark can be
@@ -65,6 +67,9 @@ FORMAT_METHODS = frozenset({"format", "format_map"})
 # The only `pytest` attributes a test may use. The rest of its public API starts plugins,
 # builds fixtures by hand or runs a nested session, so it is refused rather than listed.
 PYTEST_API = frozenset({"approx", "fail", "mark", "param", "raises", "skip"})
+# `pytest.mark.<anything>` is a valid mark, and `filterwarnings("ignore::pkg.Cls")` imports the
+# module it names when the mark is applied, so only these may follow `pytest.mark`.
+MARK_NAMES = frozenset({"operation", "parametrize", "skip"})
 # Fixtures that give a test the file system or the environment; only `hermetic_client` is meant.
 FORBIDDEN_FIXTURES = frozenset(
     {"cache", "capfd", "capsys", "monkeypatch", "pytestconfig", "pytester", "request", "testdir",
@@ -86,13 +91,16 @@ def validate_source(source: str, operation_id: str) -> None:
     except (SyntaxError, ValueError) as exc:
         raise SourceRejected(f"the test is not valid Python: {exc}") from exc
     safe_formats: set[int] = set()  # `.format` nodes called directly on a string literal
-    modules = {  # local name -> module, for `import json` and `import json as j`
-        (alias.asname or alias.name): alias.name
-        for found in ast.walk(tree)
-        if isinstance(found, ast.Import)
-        for alias in found.names
-    }
+    modules: dict[str, str] = {}  # local name -> module, for `import json` and `import json as j`
+    for found in ast.walk(tree):
+        if isinstance(found, ast.Import):
+            for alias in found.names:
+                local = alias.asname or alias.name
+                if modules.setdefault(local, alias.name) != alias.name:
+                    # `import re as m` and `import json as m` would leave `m` meaning either
+                    raise SourceRejected(f"`{local}` is bound to two different imports")
     attributed: set[int] = set()  # module names that are the base of an attribute access
+    mark_bases: set[int] = set()  # `pytest.mark` nodes that are the base of `pytest.mark.<name>`
     for node in ast.walk(tree):  # parents come before their children, so `attributed` fills first
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
             base = node.value.id
@@ -102,6 +110,21 @@ def validate_source(source: str, operation_id: str) -> None:
                 allowed = ", ".join(sorted(PYTEST_API))
                 raise SourceRejected(
                     f"attribute `{node.attr}` is not allowed in a test (from pytest: {allowed})"
+                )
+            if base == "pytest" and node.attr == "mark" and id(node) not in mark_bases:
+                raise SourceRejected("`pytest.mark` may only be used as `pytest.mark.<name>`")
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "mark"
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "pytest"
+        ):
+            mark_bases.add(id(node.value))
+            if node.attr not in MARK_NAMES:
+                allowed = ", ".join(sorted(MARK_NAMES))
+                raise SourceRejected(
+                    f"attribute `{node.attr}` is not allowed in a test (pytest.mark: {allowed})"
                 )
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -117,7 +140,7 @@ def validate_source(source: str, operation_id: str) -> None:
                     alias.name == "*"
                     or alias.name.startswith("_")  # private helpers: `uuid._get_command_stdout`
                     or alias.name in FORBIDDEN_NAMES | FORBIDDEN_ATTRIBUTES | EVALUATING_MARKS
-                    or (node.module == "pytest" and alias.name not in PYTEST_API)
+                    or (node.module == "pytest" and alias.name not in PYTEST_API - {"mark"})
                     or _is_module(node.module, alias.name)  # `from re import enum`
                 ):
                     raise SourceRejected(f"importing `{alias.name}` is not allowed in a test")
