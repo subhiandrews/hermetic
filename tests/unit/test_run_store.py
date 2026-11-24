@@ -207,6 +207,23 @@ def test_migration_falls_back_to_a_rename_where_hard_links_are_not_allowed(
     assert not (root / "old1.json").exists()
 
 
+def test_the_rename_fallback_tolerates_a_file_another_process_moved_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "runs"
+    write_flat(root, "old1")
+
+    def no_links(src: object, dst: object) -> None:
+        raise PermissionError("hard links are not supported here")
+
+    def gone(src: object, dst: object) -> None:
+        raise FileNotFoundError
+
+    monkeypatch.setattr("hermetic.history.file_store.os.link", no_links)
+    monkeypatch.setattr("hermetic.history.file_store.os.replace", gone)
+    assert FileRunStore(root).list() == []  # no error: the other process has the run
+
+
 def test_the_rename_fallback_does_not_overwrite_a_run_the_default_service_has(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

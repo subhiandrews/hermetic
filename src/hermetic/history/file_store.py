@@ -199,8 +199,8 @@ class FileRunStore:
     def _migrate_flat_history(self) -> None:
         """Once per store, move `<root>/<run_id>.json` files from before services existed under
         the default service and drop the old `<root>/index.json`. A run the default service
-        already has is left where it is, never overwritten. A failure is raised, not hidden, and
-        is retried on the next call."""
+        already has is left where it is, never overwritten (best effort where hard links are
+        refused). A failure is raised, not hidden, and is retried on the next call."""
         if self._migrated:
             return
         try:
@@ -236,11 +236,15 @@ def _move_flat_run(path: Path, target: Path) -> None:
         return
     except FileNotFoundError:  # moved by another process
         return
-    except OSError:  # a filesystem without hard links: rename, unless the run is already there
+    except OSError:
+        # A filesystem without hard links: rename, unless the run is already there. Unlike the
+        # link, this check and the rename are two steps, so it is best effort against a process
+        # saving the same id at that instant.
         if destination.exists():
             _left_in_place(path.name, "the default service already has a run with that id")
         else:
-            os.replace(path, destination)
+            with contextlib.suppress(FileNotFoundError):  # moved by another process
+                os.replace(path, destination)
         return
     path.unlink(missing_ok=True)
 
