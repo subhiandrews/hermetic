@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -26,6 +27,15 @@ from hermetic.provision import (
 pytestmark = pytest.mark.integration
 
 
+def require_docker() -> None:
+    """Skip without Docker on a developer machine; fail in CI, where a green skip tests nothing."""
+    if _docker_ready():
+        return
+    if os.environ.get("CI"):
+        pytest.fail("Docker is not available on this CI runner")
+    pytest.skip("Docker is not running")
+
+
 def _docker_ready() -> bool:
     if shutil.which("docker") is None:
         return False
@@ -34,8 +44,7 @@ def _docker_ready() -> bool:
 
 
 def test_every_kind_comes_up_healthy_answers_and_goes_away(tmp_path: Path) -> None:
-    if not _docker_ready():
-        pytest.skip("Docker is not running")
+    require_docker()
     deps = DependencySet(
         service="hermetic-it",
         prompt_version="1",

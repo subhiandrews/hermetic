@@ -10,5 +10,5 @@ The rest is written for Hermetic's tests:
 - `docs/architecture.md` is a design note for a Conduit backend that names its dependencies,
   the way a team's own documents would.
 - `mail-openapi.yml` is the OpenAPI file of the one HTTP service that note says Conduit calls.
-- `expected/` holds the files the pipeline must produce from the three inputs above. Change them
+- `expected/` holds the files the pipeline must produce from `openapi.yml`, `docs/` and `mail-openapi.yml`. Change them
   only on purpose: run the tests with `HERMETIC_UPDATE_GOLDEN=1` to rewrite them, then read the diff.

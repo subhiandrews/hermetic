@@ -16,7 +16,7 @@ import pytest
 from typer.testing import CliRunner
 
 from hermetic.cli import app
-from tests.integration.test_stack_docker import _docker_ready
+from tests.integration.test_stack_docker import require_docker
 from tests.unit.test_conduit import FIXTURE, MailInferrer
 
 pytestmark = pytest.mark.integration
@@ -32,8 +32,7 @@ def _run(*args: str) -> str:
 def test_conduit_stack_comes_up_from_its_documents(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    if not _docker_ready():
-        pytest.skip("Docker is not running")
+    require_docker()
     for name in ("docs", "openapi.yml", "mail-openapi.yml"):
         source = FIXTURE / name
         if source.is_dir():
@@ -65,4 +64,5 @@ def test_conduit_stack_comes_up_from_its_documents(
             body = json.load(response)
         assert body["status"] == "sent"
     finally:
-        _run("down", "--service", "conduit")
+        # not `_run`: a failing `down` must not hide the failure that brought us here
+        cli_runner.invoke(app, ["down", "--service", "conduit"])
