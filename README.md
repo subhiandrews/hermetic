@@ -14,6 +14,33 @@ pip install hermetic          # once published
 docker run --rm ghcr.io/subhiandrews/hermetic --help
 ```
 
+## Use
+
+```bash
+hermetic generate openapi.yaml --docs docs/      # writes tests/<service>/ from the spec
+hermetic run --target http://localhost:8080 --spec openapi.yaml   # runs it and records the run
+hermetic serve                                   # the web UI, at http://127.0.0.1:8000
+hermetic export --service <service>              # packs the tests into hermetic-tests-<service>.zip
+hermetic publish --service <service>             # hands the tests to a publisher (default: leaves them in place)
+```
+
+`<service>` is a slug of the spec's title unless you pass `--service`. Each command has `--help`.
+
+### Web UI
+
+`hermetic serve` lists the services, each service's runs with a pass-rate trend, and every run's failures (with a `curl` to reproduce) and added, modified and dropped tests. It listens on loopback only and refuses a `Host` header it was not started for.
+
+In a container the server has to listen on every interface for the published port to reach it. Publish that port on loopback only, and mount the history so it outlives the container:
+
+```bash
+docker run --rm -p 127.0.0.1:8000:8000 -v "$PWD/.hermetic:/work/.hermetic" \
+  ghcr.io/subhiandrews/hermetic serve --host 0.0.0.0
+```
+
+It then answers to `localhost`. For any other name (a reverse proxy, a team hostname) add `--allowed-host <name>`; without it that name gets a `421`. `--host 0.0.0.0` prints a warning because anyone who can reach the port can read the history.
+
+To keep one history for many machines, set `HERMETIC_API_TOKEN` (32 or more characters) on the server and `hermetic run --history-dir https://your-server` on each client, which reads the same variable. Put a TLS proxy in front of it. See `docs/architecture.md` (Central history).
+
 ## Develop
 
 Requires [uv](https://docs.astral.sh/uv/) and Python 3.12+.
