@@ -199,9 +199,9 @@ def run(
 
 @app.command()
 def serve(
-    history_dir: Annotated[str, typer.Option(help="Where run history is read from.")] = (
-        ".hermetic/runs"
-    ),
+    history_dir: Annotated[
+        str, typer.Option(help="Where run history is kept, and accepted runs are saved to.")
+    ] = ".hermetic/runs",
     host: Annotated[
         str, typer.Option(help="Address to listen on; loopback keeps it on this machine.")
     ] = "127.0.0.1",
@@ -218,7 +218,7 @@ def serve(
         ),
     ] = None,
 ) -> None:
-    """Serve a read-only web UI over the run history."""
+    """Serve the web UI over the run history; with HERMETIC_API_TOKEN set, also accept runs."""
     import uvicorn  # only `serve` needs the server, so the other commands skip its import cost
 
     from hermetic.web import WILDCARD, create_app, hostname
@@ -253,7 +253,12 @@ def serve(
                 "this server",
                 err=True,
             )
-    uvicorn.run(create_app(open_store(history_dir), hosts, token), host=host, port=port)
+    try:
+        store = open_store(history_dir)
+    except RunStoreError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    uvicorn.run(create_app(store, hosts, token), host=host, port=port)
 
 
 _LOOPBACK_ADDRESSES = ("127.0.0.1", "localhost", "::1")

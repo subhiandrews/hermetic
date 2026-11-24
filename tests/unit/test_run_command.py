@@ -514,3 +514,18 @@ def test_the_token_is_not_sent_in_the_clear_to_another_machine_from_the_cli(
         ],
     )
     assert result.exit_code == 2 and "over plain http" in result.output
+
+
+@pytest.mark.parametrize("address", ["http://[bad", "http://host:notaport"])
+def test_a_malformed_history_server_is_reported_as_an_error_line(
+    server: str, tmp_path: Path, address: str
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            *["run", str(write_suite(tmp_path, "== 200")), "--target", server],
+            *["--service", "svc", "--history-dir", address],
+        ],
+    )
+    assert result.exit_code == 2 and "error: not a server address" in result.output
+    assert "Traceback" not in result.output

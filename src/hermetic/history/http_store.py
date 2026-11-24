@@ -41,18 +41,30 @@ class HttpRunStore:
         timeout: float = 30.0,
         client: httpx.Client | None = None,
     ) -> None:
-        parts = urlsplit(base_url)
-        if parts.scheme not in ("http", "https") or not parts.hostname:
+        try:
+            parts = urlsplit(base_url)
+            hostname = parts.hostname
+            parts.port  # noqa: B018  (reading it validates the port; it raises for a bad one)
+        except ValueError as exc:
+            raise RunStoreError(f"not a server address: {redact_url(base_url)}") from exc
+        if parts.scheme not in ("http", "https") or not hostname:
             raise RunStoreError(f"not a server address: {redact_url(base_url)}")
-        if token and parts.scheme == "http" and parts.hostname not in LOOPBACK:
+        # Credentials in the address are sent too (as Basic auth), so they count like the token.
+        carries_secret = token or parts.username or parts.password
+        if carries_secret and parts.scheme == "http" and hostname not in LOOPBACK:
             raise RunStoreError(
-                f"refusing to send the API token to {parts.hostname} over plain http; use https"
+                f"refusing to send credentials to {hostname} over plain http; use https"
             )
-        self._where = parts.hostname
+        self._where = hostname
         self._token = token
-        self._client = client or httpx.Client(
-            base_url=base_url, timeout=timeout, follow_redirects=False
-        )
+        try:
+            # trust_env=False: a proxy named in the environment must not see the token, and
+            # loopback is not exempt from it.
+            self._client = client or httpx.Client(
+                base_url=base_url, timeout=timeout, follow_redirects=False, trust_env=False
+            )
+        except httpx.InvalidURL as exc:
+            raise RunStoreError(f"not a server address: {redact_url(base_url)}") from exc
 
     def save(self, record: RunRecord) -> None:
         response = self._send(
@@ -103,7 +115,7 @@ class HttpRunStore:
             raise RunStoreError(
                 f"{self._where} refused the request (HTTP {status}): check the token"
             )
-        if status >= 400:
+        if not 200 <= status < 300:  # redirects are not followed, so a 3xx stored nothing
             raise RunStoreError(f"{self._where} answered HTTP {status}")
 
     def _parse[T](self, adapter: TypeAdapter[T], response: httpx.Response) -> T:

@@ -23,7 +23,7 @@ def open_store(location: Path | str) -> RunStore:
     """The run store at `location`: a Hermetic server's address (http:// or https://) or a
     history directory. Callers depend on RunStore, not the class. A server's API token comes
     from the HERMETIC_API_TOKEN environment variable."""
-    if str(location).startswith(("http://", "https://")):
+    if str(location).lower().startswith(("http://", "https://")):
         return HttpRunStore(str(location), token=os.environ.get(API_TOKEN_ENV) or None)
     return FileRunStore(Path(location))
 

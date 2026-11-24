@@ -20,9 +20,9 @@ from tests.factories import make_record
 TOKEN = "tok-3f9a"
 
 
-def store_over(handler: httpx.MockTransport | None, **kwargs: object) -> HttpRunStore:
+def store_over(handler: httpx.MockTransport, token: str | None = None) -> HttpRunStore:
     client = httpx.Client(base_url="https://hist.test", transport=handler)
-    return HttpRunStore("https://hist.test", client=client, **kwargs)  # type: ignore[arg-type]
+    return HttpRunStore("https://hist.test", token=token, client=client)
 
 
 def answer(status: int, body: str = "[]") -> httpx.MockTransport:
@@ -112,6 +112,50 @@ def test_a_listing_of_an_unknown_service_is_empty() -> None:
     assert store_over(answer(404)).list("nope") == []
 
 
+@pytest.mark.parametrize("status", [200, 204, 301, 302, 307, 399])
+def test_a_save_is_only_recorded_on_a_2xx_answer(status: int) -> None:
+    store = store_over(answer(status, ""))
+    if 200 <= status < 300:
+        store.save(make_record("r1"))
+    else:
+        with pytest.raises(RunStoreError, match=f"answered HTTP {status}"):
+            store.save(make_record("r1"))  # a proxy's redirect stored nothing
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "http://[hist",
+        "http://hist.example:notaport",
+        "http://hist.example:99999",
+        "http://hist.example/\x00",  # passes urlsplit; the HTTP client refuses it
+        "http://hist\x7f.example",
+    ],
+)
+def test_a_malformed_address_is_a_store_error_not_a_traceback(address: str) -> None:
+    with pytest.raises(RunStoreError, match="not a server address"):
+        HttpRunStore(address)
+
+
+@pytest.mark.parametrize("address", ["http://user:pw@hist.example", "http://:pw@hist.example"])
+def test_credentials_in_the_address_are_not_sent_in_the_clear_either(address: str) -> None:
+    with pytest.raises(RunStoreError, match="over plain http") as caught:
+        HttpRunStore(address)
+    assert "pw" not in str(caught.value)
+    HttpRunStore(address.replace("http://", "https://"))  # encrypted: fine
+    HttpRunStore(address.replace("hist.example", "127.0.0.1"))  # this machine: fine
+
+
+def test_a_proxy_in_the_environment_never_sees_the_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:3128")
+    monkeypatch.setenv("ALL_PROXY", "http://proxy.invalid:3128")
+    assert httpx.Client()._mounts  # the default client would route through the proxy
+    store = HttpRunStore("http://127.0.0.1:8000", token=TOKEN)
+    assert store._client._mounts == {}  # ours does not, so loopback is not sent through one
+
+
 def test_the_token_is_not_sent_in_the_clear_to_another_machine() -> None:
     with pytest.raises(RunStoreError, match="over plain http"):
         HttpRunStore("http://hist.example", token=TOKEN)
@@ -144,6 +188,7 @@ def test_open_store_picks_the_store_from_the_location(
     assert isinstance(open_store(tmp_path / "runs"), FileRunStore)
     assert isinstance(open_store(str(tmp_path)), FileRunStore)
     assert isinstance(open_store("http://127.0.0.1:8000"), HttpRunStore)
+    assert isinstance(open_store("HTTPS://hist.example"), HttpRunStore)  # not a local directory
     with pytest.raises(RunStoreError, match="over plain http"):
         open_store("http://hist.example")  # the token from the environment is not sent in clear
     monkeypatch.setenv(API_TOKEN_ENV, "")

@@ -232,6 +232,21 @@ def test_serve_beyond_loopback_with_ingest_says_the_token_is_not_encrypted(
     assert "s3cret" not in result.output
 
 
+@pytest.mark.parametrize("address", ["http://[bad", "http://", "http://host:notaport"])
+def test_serve_with_a_bad_server_address_is_an_error_line_not_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, address: str
+) -> None:
+    calls = fake_uvicorn(monkeypatch)
+    result = runner.invoke(app, ["serve", "--history-dir", address])
+    assert result.exit_code == 2 and "error: not a server address" in result.output
+    assert calls == [] and "Traceback" not in result.output
+
+
+def test_serve_help_says_it_can_accept_runs() -> None:
+    result = runner.invoke(app, ["serve", "--help"])
+    assert "HERMETIC_API_TOKEN" in result.output and "read-only" not in result.output
+
+
 @pytest.mark.parametrize("port", ["0", "70000"])
 def test_serve_rejects_a_port_that_cannot_exist(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, port: str

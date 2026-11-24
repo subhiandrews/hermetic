@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -524,7 +526,29 @@ def test_a_store_that_cannot_save_is_a_500_that_leaks_nothing(
     with caplog.at_level(logging.WARNING, logger="hermetic.web"):
         response = post_run(client, make_record("r1"), headers=BEARER)
     assert response.status_code == 500 and SECRET not in response.text
-    assert SECRET not in caplog.text
+    assert "could not be saved" in response.text  # not "could not be read"
+    assert "run could not be saved (RunStoreError)" in caplog.text and SECRET not in caplog.text
+
+
+def test_concurrent_ingests_are_saved_one_at_a_time() -> None:
+    class SlowStore(MemoryStore):
+        active = 0
+        most = 0
+
+        def save(self, record: RunRecord) -> None:
+            SlowStore.active += 1
+            SlowStore.most = max(SlowStore.most, SlowStore.active)
+            time.sleep(0.03)  # long enough for the other requests to arrive
+            super().save(record)
+            SlowStore.active -= 1
+
+    store = SlowStore()
+    client = ingesting(store)
+    records = [make_record(f"r{i}") for i in range(6)]
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        replies = list(pool.map(lambda record: post_run(client, record, headers=BEARER), records))
+    assert [reply.status_code for reply in replies] == [201] * 6
+    assert SlowStore.most == 1 and len(store.list()) == 6
 
 
 def test_ingest_replies_carry_the_security_headers_and_the_host_check_applies() -> None:

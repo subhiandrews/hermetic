@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+import threading
 import traceback
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
@@ -132,6 +133,13 @@ def create_app(
         _logger.warning("run history could not be read (%s)", type(exc).__name__)
         return JSONResponse({"detail": "the run history could not be read"}, status_code=500)
 
+    save_lock = threading.Lock()
+
+    def save_run(record: RunRecord) -> None:
+        # A file store reads its index, then writes it: two saves at once would drop an entry.
+        with save_lock:
+            store.save(record)
+
     def authorize(request: Request) -> None:
         if not ingest_token:
             raise HTTPException(403, "ingest is off: start the server with HERMETIC_API_TOKEN set")
@@ -176,7 +184,11 @@ def create_app(
             raise HTTPException(422, "the run's service does not match the address")
         if not is_valid_run_id(record.run_id):
             raise HTTPException(422, "the run id is not valid")
-        await run_in_threadpool(store.save, record)  # file I/O must not block the event loop
+        try:
+            await run_in_threadpool(save_run, record)  # file I/O must not block the event loop
+        except RunStoreError as exc:  # the message can quote stored data: log only the kind
+            _logger.warning("run could not be saved (%s)", type(exc).__name__)
+            raise HTTPException(500, "the run could not be saved") from exc
         return summarize(record)
 
     @app.get("/api/services/{service}/runs/{run_id}")
