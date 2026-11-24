@@ -44,8 +44,12 @@ function formatTime(iso) {
   return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
 }
 
+function countResults(run) {
+  return run.passed + run.failed + run.errors;
+}
+
 function passRate(run) {
-  const total = run.passed + run.failed + run.errors;
+  const total = countResults(run);
   return total === 0 ? null : run.passed / total;
 }
 
@@ -68,7 +72,8 @@ function trend(runs) {
     const rate = passRate(run);
     const kind = rate === null ? "none" : rate === 1 ? "ok" : "bad";
     // Round down: a run with any failure must not read "100% passed" beside its red bar.
-    const percent = rate === 1 ? 100 : Math.floor((rate ?? 0) * 100);
+    // Integer arithmetic: 29 of 100 is 0.29 * 100 = 28.999..., which would read 28%.
+    const percent = rate === 1 ? 100 : Math.floor((run.passed * 100) / countResults(run) || 0);
     const label = rate === null ? "no results" : `${percent}% passed`;
     const bar = el("a", {
       class: `bar ${kind}`,

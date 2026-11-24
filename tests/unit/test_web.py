@@ -164,6 +164,21 @@ def test_an_unreadable_store_is_a_500_that_leaks_nothing(caplog: pytest.LogCaptu
     assert SECRET not in caplog.text
 
 
+def test_an_unexpected_error_is_a_500_that_still_carries_the_security_headers() -> None:
+    class Crashing(MemoryStore):
+        def list(self) -> list[RunSummary]:
+            raise RuntimeError(SECRET)
+
+    client = TestClient(
+        create_app(Crashing()), base_url="http://localhost", raise_server_exceptions=False
+    )
+    response = client.get("/api/runs")
+    assert response.status_code == 500 and SECRET not in response.text
+    assert response.headers["Content-Security-Policy"].startswith("default-src 'self'")
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["Cache-Control"] == "no-store"
+
+
 def test_a_corrupt_run_file_is_a_500_without_its_content(tmp_path: Path) -> None:
     root = tmp_path / "runs"
     root.mkdir()

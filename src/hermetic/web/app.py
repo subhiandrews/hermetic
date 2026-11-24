@@ -31,6 +31,12 @@ _SECURITY_HEADERS = {
 }
 
 
+def _harden(response: Response, path: str) -> None:
+    response.headers.update(_SECURITY_HEADERS)
+    if path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+
+
 def hostname(host_header: str) -> str:
     """The host in a `Host` header without its port; an IPv6 address keeps its brackets."""
     host = host_header.strip().lower()
@@ -54,9 +60,7 @@ def create_app(store: RunStore, allowed_hosts: Sequence[str] = LOOPBACK_HOSTS) -
             response: Response = PlainTextResponse("unexpected Host header", status_code=421)
         else:
             response = await call_next(request)
-        response.headers.update(_SECURITY_HEADERS)
-        if request.url.path.startswith("/api/"):
-            response.headers["Cache-Control"] = "no-store"
+        _harden(response, request.url.path)
         return response
 
     @app.exception_handler(RunNotFoundError)
@@ -69,6 +73,14 @@ def create_app(store: RunStore, allowed_hosts: Sequence[str] = LOOPBACK_HOSTS) -
         # neither the client nor the log gets it: only what kind of failure it was.
         _logger.warning("run history could not be read (%s)", type(exc).__name__)
         return JSONResponse({"detail": "the run history could not be read"}, status_code=500)
+
+    @app.exception_handler(Exception)
+    async def crashed(request: Request, exc: Exception) -> JSONResponse:
+        # Starlette answers an unhandled error outside the middleware above, so the headers are
+        # added here too; the traceback is still logged by the server.
+        response = JSONResponse({"detail": "internal server error"}, status_code=500)
+        _harden(response, request.url.path)
+        return response
 
     @app.get("/api/runs")
     def list_runs(
