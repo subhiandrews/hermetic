@@ -162,6 +162,7 @@ _WORST_NOTE = "\U0001f600" * MAX_NOTE_CHARS  # four bytes a character in UTF-8
 
 
 def _reason(reason: str, note: str) -> str:
+    note = "".join(c for c in note if c.isprintable() or c.isspace())
     note = " ".join(note.split())[:MAX_NOTE_CHARS]
     return f"{reason}: {note}" if note else reason
 

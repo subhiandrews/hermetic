@@ -303,3 +303,17 @@ def test_write_errors_are_reported_not_raised(
         app, ["run", str(blocker / "s"), "--target", server, "--spec", str(SPEC), "--generate"]
     )
     assert run.exit_code == 2 and "error:" in run.output
+
+
+def test_a_bad_target_fails_before_any_paid_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    author = FakeAuthor()
+    use_fake_author(monkeypatch, author)
+    suite = tmp_path / "suite"
+    result = runner.invoke(
+        app,
+        ["run", str(suite), "--target", "ftp://x", "--spec", str(SPEC), "--generate"],
+    )
+    assert result.exit_code == 2 and "invalid --target" in result.output
+    assert author.requests == [] and not suite.exists()

@@ -9,7 +9,7 @@ import typer
 
 from hermetic import __version__
 from hermetic.agent import ClaudeAuthor
-from hermetic.execute import ExecuteError
+from hermetic.execute import ExecuteError, check_target
 from hermetic.generate import GenerateError, ManifestError, SuiteAuthor, generate_suite
 from hermetic.history import RunRecord, RunStoreError, SuiteChange, open_store
 from hermetic.ingest import IngestError, ServiceModel
@@ -119,6 +119,7 @@ def run(
         author = make_author() if generate_first else None
         # What a typo can break is checked before the step that pays for model calls and
         # rewrites the suite, so a bad `--report` does not cost a generation.
+        check_target(target)
         sinks = load_sinks(report or ["stdout"], SinkContext(output_dir=report_dir))
         store = open_store(history_dir)
         if model is not None and author is not None:

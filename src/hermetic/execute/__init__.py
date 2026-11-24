@@ -12,7 +12,7 @@ from hermetic.execute.plugin import HermeticPlugin, OriginError
 from hermetic.history.models import TestResult
 from hermetic.redact import redact_url
 
-__all__ = ["ExecuteError", "OriginError", "execute_suite"]
+__all__ = ["ExecuteError", "OriginError", "check_target", "execute_suite"]
 
 
 class ExecuteError(Exception):
@@ -26,7 +26,7 @@ def execute_suite(suite: Path, target: str, *, timeout: float = 30.0) -> list[Te
     request to another origin. Failing tests are results, not errors; ExecuteError means
     the run itself broke (bad path, no tests, internal pytest error).
     """
-    _check_target(target)
+    check_target(target)
     if not suite.exists():
         raise ExecuteError(f"suite not found: {suite}")
     plugin = HermeticPlugin(target, timeout=timeout)
@@ -56,7 +56,7 @@ def execute_suite(suite: Path, target: str, *, timeout: float = 30.0) -> list[Te
     return plugin.results
 
 
-def _check_target(target: str) -> None:
+def check_target(target: str) -> None:
     try:
         parts = urlsplit(target)
         parts.port  # noqa: B018  (raises ValueError on a bad port)

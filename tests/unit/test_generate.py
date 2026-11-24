@@ -362,3 +362,10 @@ def test_a_deeply_nested_manifest_is_rejected_not_a_traceback(tmp_path: Path) ->
     path.write_text("[" * 100_000)
     with pytest.raises(ManifestError, match="not valid"):
         load_manifest(path)
+
+
+def test_control_characters_in_the_note_are_dropped(tmp_path: Path) -> None:
+    note = "ok\x1b]0;pwn\x07 \x9b31m done"
+    changes = generate_suite(model_from(tmp_path), FakeAuthor(note=note), tmp_path / "s")
+    assert all(c.isprintable() for c in changes[0].reason)
+    assert "\x1b" not in changes[0].reason and "\x9b" not in changes[0].reason
