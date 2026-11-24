@@ -140,6 +140,33 @@ def test_a_test_larger_than_any_generated_one_is_refused(tmp_path: Path) -> None
         write_suite_zip("svc", suite, tmp_path / "out.zip")
 
 
+def test_a_file_that_becomes_a_symlink_after_listing_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    suite = make_suite(tmp_path / "suite", "test_a.py")
+    outside = tmp_path / "secret.txt"
+    outside.write_text("secret")
+    real = suite_files(suite)
+    (suite / "test_a.py").unlink()
+    (suite / "test_a.py").symlink_to(outside)
+    monkeypatch.setattr("hermetic.publish.archive.suite_files", lambda _: real)
+    with pytest.raises(OSError):
+        write_suite_zip("svc", suite, tmp_path / "out.zip")
+    assert not (tmp_path / "out.zip").exists()
+
+
+def test_a_file_that_is_not_regular_after_listing_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    suite = make_suite(tmp_path / "suite", "test_a.py")
+    real = suite_files(suite)
+    (suite / "test_a.py").unlink()
+    (suite / "test_a.py").mkdir()
+    monkeypatch.setattr("hermetic.publish.archive.suite_files", lambda _: real)
+    with pytest.raises(ExportError, match="not a regular file"):
+        write_suite_zip("svc", suite, tmp_path / "out.zip")
+
+
 def test_a_manifest_larger_than_the_generator_reads_is_refused(tmp_path: Path) -> None:
     suite = make_suite(tmp_path / "suite", "test_a.py")
     (suite / MANIFEST).write_bytes(b" " * (MAX_MANIFEST_BYTES + 1))
@@ -207,6 +234,7 @@ def test_third_party_publishers_load_through_entry_points(
 ) -> None:
     ep = EntryPoint("custom", f"{__name__}:RecordingPublisher", "hermetic.publishers")
     monkeypatch.setattr("hermetic.publish.publishers.entry_points", _entry_points(ep))
+    monkeypatch.setattr(RecordingPublisher, "published", [])
     publisher = load_publisher("custom")
     assert publisher.publish("svc", tmp_path) == "recorded:svc"
     assert RecordingPublisher.published == [("svc", tmp_path)]
@@ -315,6 +343,12 @@ def test_publish_uses_the_publisher_it_is_asked_for(
     assert result.exit_code == 0 and "published svc to recorded:svc" in result.output
 
 
+def test_publish_refuses_a_suite_with_no_generated_tests(tmp_path: Path) -> None:
+    (tmp_path / "empty").mkdir()
+    result = runner.invoke(app, ["publish", "--service", "svc", "--suite", str(tmp_path / "empty")])
+    assert result.exit_code == 2 and "no generated tests" in result.output
+
+
 class FailingPublisher:
     def publish(self, service: str, suite_dir: Path) -> str:
         raise RuntimeError("remote said no")
@@ -335,7 +369,7 @@ def test_a_publisher_that_fails_is_reported_as_exit_2(
     ("args", "message"),
     [
         (["--service", "Bad Name"], "invalid service"),
-        (["--service", "svc", "--suite", "MISSING"], "no suite in"),
+        (["--service", "svc", "--suite", "MISSING"], "no generated tests in"),
         (["--service", "svc", "--suite", "SUITE", "--publisher", "nope"], "unknown publisher"),
     ],
 )

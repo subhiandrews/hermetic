@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from hermetic.publish.archive import ExportError, write_suite_zip
+from hermetic.publish.archive import ExportError, suite_files, write_suite_zip
 from hermetic.publish.publishers import (
     BUILTIN_PUBLISHERS,
     LocalPublisher,
@@ -20,5 +20,6 @@ __all__ = [
     "PublisherFactory",
     "SuitePublisher",
     "load_publisher",
+    "suite_files",
     "write_suite_zip",
 ]

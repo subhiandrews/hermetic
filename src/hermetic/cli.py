@@ -26,7 +26,13 @@ from hermetic.history import (
 from hermetic.ingest import IngestError, ServiceModel
 from hermetic.ingest import ingest as run_ingest
 from hermetic.net import LOOPBACK_NAMES, is_header_token
-from hermetic.publish import ExportError, PublisherError, load_publisher, write_suite_zip
+from hermetic.publish import (
+    ExportError,
+    PublisherError,
+    load_publisher,
+    suite_files,
+    write_suite_zip,
+)
 from hermetic.report import SinkContext, SinkError, load_sinks
 from hermetic.runner import run_suite
 from hermetic.service import InvalidServiceError, resolve_service
@@ -159,8 +165,10 @@ def publish(
     try:
         service_id = resolve_service(None, service)
         suite_dir = suite or _default_suite(service_id)
-        if not suite_dir.is_dir():
-            raise PublisherError(f"no suite in {suite_dir}; run `hermetic generate` first")
+        if not any(name.startswith("test_") for name, _ in suite_files(suite_dir)):
+            raise PublisherError(
+                f"no generated tests in {suite_dir}; run `hermetic generate` first"
+            )
         chosen = load_publisher(publisher)
         try:
             where = chosen.publish(service_id, suite_dir)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import tempfile
 import zipfile
 from pathlib import Path
@@ -42,6 +43,23 @@ def suite_files(suite_dir: Path) -> list[tuple[str, int]]:
     return sorted(found)
 
 
+def _read_limited(path: Path, name: str, limit: int) -> bytes:
+    """Read a regular file of at most `limit` bytes without following a symlink.
+
+    The checks run on the open handle, so a file swapped for a link or a huge file after
+    `suite_files` listed it is refused, and at most `limit + 1` bytes are ever read.
+    """
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise ExportError(f"{name} is not a regular file")
+    with os.fdopen(fd, "rb", closefd=True) as handle:
+        data = handle.read(limit + 1)
+    if len(data) > limit:
+        raise ExportError(f"{name} is larger than {limit} bytes; it was not generated")
+    return data
+
+
 def write_suite_zip(service: str, suite_dir: Path, destination: Path) -> list[str]:
     """Write the suite to `destination` and return the names packed, in archive order.
 
@@ -54,10 +72,7 @@ def write_suite_zip(service: str, suite_dir: Path, destination: Path) -> list[st
         raise ExportError(f"no generated tests in {suite_dir}; run `hermetic generate` first")
     contents: list[tuple[str, bytes]] = []
     for name, limit in files:
-        data = (suite_dir / name).read_bytes()
-        if len(data) > limit:
-            raise ExportError(f"{name} is larger than {limit} bytes; it was not generated")
-        contents.append((name, data))
+        contents.append((name, _read_limited(suite_dir / name, name, limit)))
 
     fd, tmp = tempfile.mkstemp(dir=destination.parent, prefix=".export-", suffix=".tmp")
     try:
