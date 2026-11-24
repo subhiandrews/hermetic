@@ -7,9 +7,10 @@ import pytest
 from typer.testing import CliRunner
 
 from hermetic.cli import app
-from hermetic.history import FileRunStore
+from hermetic.history import FileRunStore, SuiteChange
 from hermetic.report import SinkError
 from hermetic.runner import new_run_id, run_suite
+from tests.fakes import FakeAuthor
 
 runner = CliRunner()
 SPEC = Path(__file__).parent.parent / "fixtures" / "petstore" / "openapi.json"
@@ -200,3 +201,119 @@ def test_store_failure_after_the_run_still_exits_1_when_tests_failed(
         ],
     )  # fmt: skip
     assert failing.exit_code == 1 and "cannot write run" in failing.output
+
+
+def use_fake_author(monkeypatch: pytest.MonkeyPatch, author: object) -> None:
+    monkeypatch.setattr("hermetic.cli.make_author", lambda: author)
+
+
+def test_generate_command_writes_the_suite_and_lists_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    use_fake_author(monkeypatch, FakeAuthor())
+    suite = tmp_path / "suite"
+    result = runner.invoke(app, ["generate", str(SPEC), "--suite", str(suite)])
+    assert result.exit_code == 0, result.output
+    assert "added: test_addPet_" in result.output
+    again = runner.invoke(app, ["generate", str(SPEC), "--suite", str(suite)])
+    assert again.output.strip() == "suite is up to date"
+    forced = runner.invoke(app, ["generate", str(SPEC), "--suite", str(suite), "--force"])
+    assert "modified: test_addPet_" in forced.output
+
+
+def test_generate_command_reports_failures_as_exit_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    author = FakeAuthor()
+    author.fail_on = "addPet"
+    use_fake_author(monkeypatch, author)
+    result = runner.invoke(app, ["generate", str(SPEC), "--suite", str(tmp_path / "s")])
+    assert result.exit_code == 2 and "could not write a test" in result.output
+    missing = runner.invoke(app, ["generate", str(tmp_path / "no.json"), "--suite", str(tmp_path)])
+    assert missing.exit_code == 2
+
+
+def test_a_bad_report_name_fails_before_any_paid_generation(
+    server: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    author = FakeAuthor()
+    use_fake_author(monkeypatch, author)
+    suite = tmp_path / "suite"
+    result = runner.invoke(
+        app,
+        [
+            "run", str(suite), "--target", server, "--spec", str(SPEC),
+            "--generate", "--report", "nope",
+        ],
+    )  # fmt: skip
+    assert result.exit_code == 2 and "unknown sink" in result.output
+    assert author.requests == [] and not suite.exists()
+
+
+def test_run_generate_records_the_changes(
+    server: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    use_fake_author(monkeypatch, FakeAuthor("7"))
+    history = tmp_path / "h"
+    result = runner.invoke(
+        app,
+        [
+            "run", str(tmp_path / "suite"), "--target", server, "--spec", str(SPEC),
+            "--generate", "--history-dir", str(history),
+        ],
+    )  # fmt: skip
+    assert result.exit_code == 0, result.output
+    (summary,) = FileRunStore(history).list()
+    assert summary.added == 19 and summary.passed == 19
+    assert FileRunStore(history).get(summary.run_id).prompt_version == "7"
+
+
+def test_run_generate_needs_a_spec_and_a_working_author(
+    server: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    no_spec = runner.invoke(app, ["run", str(tmp_path), "--target", server, "--generate"])
+    assert no_spec.exit_code == 2 and "--generate needs --spec" in no_spec.output
+    author = FakeAuthor()
+    author.fail_on = "addPet"
+    use_fake_author(monkeypatch, author)
+    broken = runner.invoke(
+        app, ["run", str(tmp_path / "s"), "--target", server, "--spec", str(SPEC), "--generate"]
+    )
+    assert broken.exit_code == 2 and "could not write a test" in broken.output
+
+
+def test_run_records_given_changes_and_prompt_version(server: str, tmp_path: Path) -> None:
+    change = SuiteChange(kind="added", test_id="t", reason="r")
+    store = FileRunStore(tmp_path / "h")
+    record = run_suite(
+        write_suite(tmp_path, "== 200"), server, store, [], changes=[change], prompt_version="3"
+    )
+    assert record.changes == [change] and record.prompt_version == "3"
+
+
+def test_write_errors_are_reported_not_raised(
+    server: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    use_fake_author(monkeypatch, FakeAuthor())
+    blocker = tmp_path / "plain-file"
+    blocker.write_text("x")
+    gen = runner.invoke(app, ["generate", str(SPEC), "--suite", str(blocker / "suite")])
+    assert gen.exit_code == 2 and "error:" in gen.output
+    run = runner.invoke(
+        app, ["run", str(blocker / "s"), "--target", server, "--spec", str(SPEC), "--generate"]
+    )
+    assert run.exit_code == 2 and "error:" in run.output
+
+
+def test_a_bad_target_fails_before_any_paid_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    author = FakeAuthor()
+    use_fake_author(monkeypatch, author)
+    suite = tmp_path / "suite"
+    result = runner.invoke(
+        app,
+        ["run", str(suite), "--target", "ftp://x", "--spec", str(SPEC), "--generate"],
+    )
+    assert result.exit_code == 2 and "invalid --target" in result.output
+    assert author.requests == [] and not suite.exists()

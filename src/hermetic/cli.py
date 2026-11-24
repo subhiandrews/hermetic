@@ -8,8 +8,10 @@ from typing import Annotated
 import typer
 
 from hermetic import __version__
-from hermetic.execute import ExecuteError
-from hermetic.history import RunRecord, RunStoreError, open_store
+from hermetic.agent import ClaudeAuthor
+from hermetic.execute import ExecuteError, check_target
+from hermetic.generate import GenerateError, ManifestError, SuiteAuthor, generate_suite
+from hermetic.history import RunRecord, RunStoreError, SuiteChange, open_store
 from hermetic.ingest import IngestError, ServiceModel
 from hermetic.ingest import ingest as run_ingest
 from hermetic.report import SinkContext, SinkError, load_sinks
@@ -50,6 +52,36 @@ def ingest(
     typer.echo(model.model_dump_json(indent=2))
 
 
+def make_author() -> SuiteAuthor:
+    """The author `generate` and `run --generate` use. Tests replace this with a fake."""
+    return ClaudeAuthor()  # pragma: no cover  (needs the real API)
+
+
+@app.command()
+def generate(
+    spec: Annotated[Path, typer.Argument(help="OpenAPI 3.x file (JSON or YAML).")],
+    suite: Annotated[Path, typer.Option(help="Directory the test suite is written to.")],
+    docs: Annotated[
+        Path | None, typer.Option(help="Directory of design/architecture documents.")
+    ] = None,
+    force: Annotated[bool, typer.Option(help="Rewrite every test, not only changed ones.")] = False,
+) -> None:
+    """Write or update the test suite for the spec; only changed operations are rewritten."""
+    try:
+        changes = generate_suite(run_ingest(spec, docs), make_author(), suite, force=force)
+    except (IngestError, GenerateError, ManifestError, OSError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    _echo_changes(changes)
+
+
+def _echo_changes(changes: list[SuiteChange]) -> None:
+    if not changes:
+        typer.echo("suite is up to date")
+    for change in changes:
+        typer.echo(f"{change.kind}: {change.test_id} ({change.reason})")
+
+
 @app.command()
 def run(
     suite: Annotated[Path, typer.Argument(help="A pytest suite: a directory or a test file.")],
@@ -68,20 +100,50 @@ def run(
         list[str] | None,
         typer.Option(help="Sink to publish to (repeatable): markdown, html, json, stdout."),
     ] = None,
+    generate_first: Annotated[
+        bool, typer.Option("--generate", help="Update the suite from --spec before running it.")
+    ] = False,
     timeout: Annotated[float, typer.Option(help="Per-request timeout in seconds.")] = 30.0,
 ) -> None:
-    """Run a hand-written suite against a target, record the run and publish reports."""
+    """Run a suite against a target, record the run and publish reports."""
     if docs is not None and spec is None:
         typer.echo("error: --docs needs --spec: the docs are read together with it", err=True)
+        raise typer.Exit(code=2)
+    if generate_first and spec is None:
+        typer.echo("error: --generate needs --spec: the tests are written from it", err=True)
         raise typer.Exit(code=2)
     record: RunRecord | None = None
     try:
         model: ServiceModel | None = run_ingest(spec, docs) if spec is not None else None
+        changes: list[SuiteChange] = []
+        author = make_author() if generate_first else None
+        # What a typo can break is checked before the step that pays for model calls and
+        # rewrites the suite, so a bad `--report` does not cost a generation.
+        check_target(target)
         sinks = load_sinks(report or ["stdout"], SinkContext(output_dir=report_dir))
+        store = open_store(history_dir)
+        if model is not None and author is not None:
+            changes = generate_suite(model, author, suite)
+            _echo_changes(changes)
         record = run_suite(
-            suite, target, open_store(history_dir), sinks, model=model, timeout=timeout
+            suite,
+            target,
+            store,
+            sinks,
+            model=model,
+            changes=changes,
+            prompt_version=author.prompt_version if author else None,
+            timeout=timeout,
         )
-    except (IngestError, ExecuteError, RunStoreError, SinkError) as exc:
+    except (
+        IngestError,
+        GenerateError,
+        ManifestError,
+        ExecuteError,
+        RunStoreError,
+        SinkError,
+        OSError,
+    ) as exc:
         typer.echo(f"error: {exc}", err=True)
         # A sink or store failure comes after the run happened: tests that failed still exit 1.
         record = exc.record if isinstance(exc, SinkError | RunStoreError) else None
