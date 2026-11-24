@@ -17,6 +17,7 @@ docker run --rm ghcr.io/subhiandrews/hermetic --help
 ## Use
 
 ```bash
+hermetic discover openapi.yaml --docs docs/       # finds the databases, caches and services it depends on
 hermetic generate openapi.yaml --docs docs/      # writes tests/<service>/ from the spec
 hermetic run --target http://localhost:8080 --spec openapi.yaml   # runs it and records the run
 hermetic serve                                   # the web UI, at http://127.0.0.1:8000
