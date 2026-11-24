@@ -6,6 +6,7 @@ import ipaddress
 import os
 import socket
 from collections.abc import Sequence
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
@@ -25,6 +26,7 @@ from hermetic.history import (
 from hermetic.ingest import IngestError, ServiceModel
 from hermetic.ingest import ingest as run_ingest
 from hermetic.net import LOOPBACK_NAMES, is_header_token
+from hermetic.publish import ExportError, PublisherError, load_publisher, write_suite_zip
 from hermetic.report import SinkContext, SinkError, load_sinks
 from hermetic.runner import run_suite
 from hermetic.service import InvalidServiceError, resolve_service
@@ -107,6 +109,67 @@ def _echo_changes(changes: list[SuiteChange]) -> None:
         typer.echo("suite is up to date")
     for change in changes:
         typer.echo(f"{change.kind}: {change.test_id} ({change.reason})")
+
+
+class ExportFormat(StrEnum):
+    ZIP = "zip"
+
+
+@app.command()
+def export(
+    service: Annotated[str, typer.Option(help="The microservice whose tests to export.")],
+    suite: Annotated[
+        Path | None, typer.Option(help="The suite directory; default tests/<service>.")
+    ] = None,
+    archive_format: Annotated[
+        ExportFormat, typer.Option("--format", help="Archive format (zip is the only one).")
+    ] = ExportFormat.ZIP,
+    output: Annotated[
+        Path | None,
+        typer.Option(help="Where to write the archive; default hermetic-tests-<service>.zip."),
+    ] = None,
+) -> None:
+    """Pack a service's generated tests and manifest into one archive."""
+    try:
+        service_id = resolve_service(None, service)
+        suite_dir = suite or _default_suite(service_id)
+        destination = output or Path(f"hermetic-tests-{service_id}.zip")
+        packed = write_suite_zip(service_id, suite_dir, destination)
+    except (InvalidServiceError, ExportError, OSError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(f"wrote {destination} ({len(packed)} files)")
+
+
+@app.command()
+def publish(
+    service: Annotated[str, typer.Option(help="The microservice whose tests to publish.")],
+    suite: Annotated[
+        Path | None, typer.Option(help="The suite directory; default tests/<service>.")
+    ] = None,
+    publisher: Annotated[
+        str,
+        typer.Option(
+            help="Where to deliver the suite: 'local' leaves it where it is; other names come "
+            "from plugins in the hermetic.publishers entry-point group."
+        ),
+    ] = "local",
+) -> None:
+    """Deliver a service's generated tests with a publisher."""
+    try:
+        service_id = resolve_service(None, service)
+        suite_dir = suite or _default_suite(service_id)
+        if not suite_dir.is_dir():
+            raise PublisherError(f"no suite in {suite_dir}; run `hermetic generate` first")
+        chosen = load_publisher(publisher)
+        try:
+            where = chosen.publish(service_id, suite_dir)
+        except Exception as exc:  # a third-party publisher can fail in any way
+            raise PublisherError(f"publisher {publisher!r} failed: {exc}") from exc
+    except (InvalidServiceError, PublisherError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(f"published {service_id} to {where}")
 
 
 @app.command()
