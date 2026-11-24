@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -37,7 +38,7 @@ class FakeGitHub:
 
     def __init__(self) -> None:
         self.requests: list[httpx.Request] = []
-        self.open_prs: list[dict[str, str]] = []
+        self.open_prs: list[dict[str, Any]] = []
         self.branch_exists = False
         self.replies: dict[str, httpx.Response] = {}  # "METHOD path" -> a forced reply
         self.created: dict[str, list[dict[str, object]]] = {}
@@ -113,7 +114,7 @@ def test_nothing_is_written_to_the_base_branch_and_nothing_is_forced(tmp_path: P
 
 def test_publishing_the_same_suite_again_returns_the_open_pull_request(tmp_path: Path) -> None:
     github = FakeGitHub()
-    github.open_prs = [{"html_url": PR_URL}]
+    github.open_prs = [{"html_url": PR_URL, "base": {"ref": "main"}}]
     assert github.publisher().publish("petstore", make_suite(tmp_path / "s")) == PR_URL
     assert not [path for path in github.paths() if path.startswith("POST")]
 
@@ -127,6 +128,59 @@ def test_an_existing_branch_with_no_open_pull_request_gets_only_a_pull_request(
     assert [path for path in github.paths() if path.startswith("POST")] == [
         f"POST repos/{REPO}/pulls"
     ]
+
+
+def test_an_open_pull_request_aimed_at_another_branch_is_not_returned_as_the_result(
+    tmp_path: Path,
+) -> None:
+    github = FakeGitHub()
+    github.open_prs = [{"html_url": PR_URL, "base": {"ref": "release"}}]
+    with pytest.raises(PublisherError, match="targets another branch"):
+        github.publisher().publish("petstore", make_suite(tmp_path / "s"))
+
+
+def test_a_suite_whose_pull_request_was_merged_says_the_base_already_has_it(
+    tmp_path: Path,
+) -> None:
+    github = FakeGitHub()
+    github.branch_exists = True
+    github.replies[f"POST repos/{REPO}/pulls"] = httpx.Response(
+        422,
+        json={
+            "message": "Validation Failed",
+            "errors": [{"message": "No commits between a and b"}],
+        },
+    )
+    with pytest.raises(PublisherError, match=r"main already has this suite \(branch hermetic/"):
+        github.publisher().publish("petstore", make_suite(tmp_path / "s"))
+
+
+def test_any_other_refusal_to_open_the_pull_request_is_reported_with_its_reasons(
+    tmp_path: Path,
+) -> None:
+    github = FakeGitHub()
+    github.replies[f"POST repos/{REPO}/pulls"] = httpx.Response(
+        422, json={"message": "Validation Failed", "errors": [{"message": "head is bad"}, 3]}
+    )
+    with pytest.raises(PublisherError, match="Validation Failed; head is bad"):
+        github.publisher().publish("petstore", make_suite(tmp_path / "s"))
+
+
+def test_a_pull_request_reply_that_is_not_json_is_refused(tmp_path: Path) -> None:
+    github = FakeGitHub()
+    github.replies[f"POST repos/{REPO}/pulls"] = httpx.Response(201, text="not json")
+    with pytest.raises(PublisherError, match="not valid"):
+        github.publisher().publish("petstore", make_suite(tmp_path / "s"))
+
+
+@pytest.mark.parametrize("url", ["https://x/\x1b[2Jpull/1", "https://x/pull 1", "https://x/\npull"])
+def test_a_pull_request_address_a_terminal_would_act_on_is_refused(
+    tmp_path: Path, url: str
+) -> None:
+    github = FakeGitHub()
+    github.replies[f"POST repos/{REPO}/pulls"] = httpx.Response(201, json={"html_url": url})
+    with pytest.raises(PublisherError, match="address that is not valid"):
+        github.publisher().publish("petstore", make_suite(tmp_path / "s"))
 
 
 def test_a_changed_suite_gets_another_branch(tmp_path: Path) -> None:
@@ -185,6 +239,14 @@ def test_a_refusal_says_what_happened(
     with pytest.raises(PublisherError) as raised:
         github.publisher().publish("petstore", make_suite(tmp_path / "s"))
     assert expected in str(raised.value)
+
+
+def test_a_failure_message_has_its_control_characters_removed(tmp_path: Path) -> None:
+    github = FakeGitHub()
+    refuse_blobs(github, httpx.Response(422, json={"message": "bad\x1b[2J\nnews"}))
+    with pytest.raises(PublisherError) as raised:
+        github.publisher().publish("petstore", make_suite(tmp_path / "s"))
+    assert "\x1b" not in str(raised.value) and "\n" not in str(raised.value)
 
 
 def test_no_failure_message_carries_the_token(tmp_path: Path) -> None:
@@ -267,9 +329,23 @@ def test_it_is_configured_from_the_environment() -> None:
 
 def test_inside_actions_the_workflow_token_is_the_fallback() -> None:
     publisher = GitHubPRPublisher.from_environment(
-        {"HERMETIC_GITHUB_REPO": REPO, "GITHUB_TOKEN": TOKEN}
+        {"HERMETIC_GITHUB_REPO": REPO, "GITHUB_TOKEN": TOKEN, "GITHUB_ACTIONS": "true"}
     )
     assert publisher._token_source() == TOKEN
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {},  # a developer machine: GITHUB_TOKEN belongs to some other tool
+        {"GITHUB_ACTIONS": "false"},
+        {"GITHUB_ACTIONS": "true", "HERMETIC_GITHUB_API": "https://ghe.example.com/api/v3"},
+    ],
+)
+def test_the_workflow_token_is_not_used_anywhere_else(extra: dict[str, str]) -> None:
+    values = {"HERMETIC_GITHUB_REPO": REPO, "GITHUB_TOKEN": TOKEN, **extra}
+    with pytest.raises(PublisherError, match="HERMETIC_GITHUB_TOKEN"):
+        GitHubPRPublisher.from_environment(values)
 
 
 def test_the_process_environment_is_used_by_default(monkeypatch: pytest.MonkeyPatch) -> None:

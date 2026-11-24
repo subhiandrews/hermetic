@@ -34,7 +34,7 @@ class LocalPublisher:
 
 
 def _github_pr() -> SuitePublisher:
-    from hermetic.publish.github_pr import GitHubPRPublisher  # only a github-pr user needs httpx
+    from hermetic.publish.github_pr import GitHubPRPublisher  # loaded only when github-pr is chosen
 
     return GitHubPRPublisher.from_environment()
 

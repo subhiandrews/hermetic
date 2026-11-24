@@ -49,6 +49,14 @@ def _text(data: object, *path: str) -> str:
     return node
 
 
+def _address(pull: object) -> str:
+    """The `html_url` of a pull request, refused when it holds anything a terminal would act on."""
+    url = _text(pull, "html_url")
+    if not url.isprintable() or any(c.isspace() for c in url):
+        raise PublisherError("GitHub sent a pull request address that is not valid")
+    return url
+
+
 class GitHubPRPublisher:
     """Puts the suite on a new branch of `repo` and opens a pull request for it.
 
@@ -92,7 +100,11 @@ class GitHubPRPublisher:
     def from_environment(cls, env: Mapping[str, str] | None = None) -> GitHubPRPublisher:
         env = os.environ if env is None else env
         repo = env.get(REPO_VARIABLE)
-        token = env.get(TOKEN_VARIABLE) or env.get("GITHUB_TOKEN")  # the latter inside Actions
+        api_url = env.get(API_VARIABLE) or DEFAULT_API_URL
+        # The workflow's token is a fallback only inside Actions and only for github.com: anywhere
+        # else GITHUB_TOKEN is whatever another tool put there, and it must not travel here.
+        in_actions = env.get("GITHUB_ACTIONS") == "true" and api_url == DEFAULT_API_URL
+        token = env.get(TOKEN_VARIABLE) or (env.get("GITHUB_TOKEN") if in_actions else None)
         if not repo:
             raise PublisherError(f"set {REPO_VARIABLE} to the repository, as owner/name")
         if not token:
@@ -101,7 +113,7 @@ class GitHubPRPublisher:
             repo,
             lambda: token,
             base=env.get(BASE_VARIABLE) or None,
-            api_url=env.get(API_VARIABLE) or DEFAULT_API_URL,
+            api_url=api_url,
         )
 
     def publish(self, service: str, suite_dir: Path) -> str:
@@ -113,14 +125,16 @@ class GitHubPRPublisher:
         repo = f"repos/{self._repo}"
         head = quote(branch, safe="/")
 
+        base = self._base or _text(self._json(token, "GET", repo), "default_branch")
         owner = self._repo.split("/")[0]
         open_prs = self._json(
             token, "GET", f"{repo}/pulls", params={"state": "open", "head": f"{owner}:{branch}"}
         )
         if isinstance(open_prs, list) and open_prs:
-            return _text(open_prs[0], "html_url")
-
-        base = self._base or _text(self._json(token, "GET", repo), "default_branch")
+            found = _address(open_prs[0])
+            if _text(open_prs[0], "base", "ref") != base:
+                raise PublisherError(f"{found} is open for this suite but targets another branch")
+            return found
         base_ref = quote(base, safe="/")
         base_sha = _text(
             self._json(token, "GET", f"{repo}/git/ref/heads/{base_ref}"), "object", "sha"
@@ -128,10 +142,11 @@ class GitHubPRPublisher:
         existing = self._call(token, "GET", f"{repo}/git/ref/heads/{head}", accept=(404,))
         if existing.status_code == 404:
             self._create_branch(token, service, branch, base_sha, files)
-        pull = self._json(
+        response = self._call(
             token,
             "POST",
             f"{repo}/pulls",
+            accept=(422,),
             body={
                 "title": f"Add Hermetic tests for {service}",
                 "head": branch,
@@ -140,7 +155,16 @@ class GitHubPRPublisher:
                 f"`tests/{service}/`.",
             },
         )
-        return _text(pull, "html_url")
+        if response.status_code == 422:
+            # The branch holds this suite's commit and its pull request was merged: nothing to add.
+            if "No commits between" in self._reasons(response, token):
+                raise PublisherError(f"{base} already has this suite (branch {branch})")
+            raise PublisherError(self._refusal(422, response, token))
+        try:
+            pull = response.json()
+        except ValueError as exc:
+            raise PublisherError(f"{self._where} sent a reply that is not valid") from exc
+        return _address(pull)
 
     def _create_branch(
         self, token: str, service: str, branch: str, base_sha: str, files: list[tuple[str, bytes]]
@@ -237,12 +261,20 @@ class GitHubPRPublisher:
                 f"{self._repo} or a branch in it was not found (HTTP 404), "
                 "or the token cannot see it"
             )
-        try:
-            message = response.json().get("message", "")
-        except (ValueError, AttributeError):
-            message = ""
-        detail = str(message).replace(token, "[REDACTED]")[:_MESSAGE_CHARS]
+        detail = self._reasons(response, token)
         return f"{self._where} answered HTTP {status}" + (f": {detail}" if detail else "")
+
+    @staticmethod
+    def _reasons(response: httpx.Response, token: str) -> str:
+        """What GitHub said was wrong, as one line that is safe to print."""
+        try:
+            data = response.json()
+            parts = [data.get("message", "")]
+            parts += [e.get("message", "") for e in data.get("errors", []) if isinstance(e, dict)]
+        except (ValueError, AttributeError, TypeError):
+            return ""
+        text = "; ".join(str(part) for part in parts if part).replace(token, "[REDACTED]")
+        return "".join(c for c in text if c.isprintable())[:_MESSAGE_CHARS]
 
 
 def _digest(files: list[tuple[str, bytes]]) -> str:
