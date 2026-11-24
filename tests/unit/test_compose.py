@@ -140,6 +140,8 @@ def good_service(**changes: Any) -> dict[str, Any]:
         "image": "redis:7-alpine",
         "ports": ["127.0.0.1::6379"],
         "security_opt": ["no-new-privileges:true"],
+        "mem_limit": "512m",
+        "pids_limit": 512,
         "restart": "no",
     }
     service.update(changes)
@@ -178,17 +180,24 @@ services:
     restart: no
     mem_limit: 1g
     pids_limit: 100
+    security_opt: ["no-new-privileges:true"]
     ports: ["127.0.0.1:5432:5432", "127.0.0.1::5433/tcp"]
     command: [serve, 80]
   api:
     image: wiremock/wiremock:3.9.1
     volumes: ["./stubs:/home/wiremock/mappings:ro"]
+    mem_limit: 256m
+    pids_limit: 64
+    security_opt: ["no-new-privileges:true"]
     depends_on:
       db:
         condition: service_healthy
   other:
     image: redis:7-alpine
     command: redis-server
+    mem_limit: 256m
+    pids_limit: 64
+    security_opt: ["no-new-privileges:true"]
     depends_on: [db, api]
 """
     assert set(check_compose(text, tmp_path)["services"]) == {"db", "api", "other"}
@@ -273,8 +282,11 @@ def test_a_construct_outside_the_allowlist_is_refused(
         ("/var/run/docker.sock:/var/run/docker.sock:ro", "./relative path"),
         ("/etc:/host:ro", "./relative path"),
         ("../outside:/x:ro", "./relative path"),
-        ("./../outside:/x:ro", "outside the working directory"),
-        ("./stubs/../../outside:/x:ro", "outside the working directory"),
+        ("./../outside:/x:ro", "must not hold `..`"),
+        ("./stubs/../../outside:/x:ro", "must not hold `..`"),
+        ("./stubs/../stubs:/x:ro", "must not hold `..`"),
+        ("./a\0b:/x:ro", "NUL character"),
+        ("./hop/../..:/x:ro", "must not hold `..`"),
         ("./stubs:/x:rw", "./source:/destination:ro"),
         ("./stubs:/x", "./source:/destination:ro"),
         ("named-volume:/x:ro", "./relative path"),
@@ -294,6 +306,8 @@ def test_a_mount_may_only_reach_read_only_into_the_working_directory(
     (work / "stubs").mkdir(parents=True)
     (tmp_path / "outside").mkdir()
     (work / "link").symlink_to(tmp_path / "outside")
+    (work / "deep" / "er" / "still").mkdir(parents=True)
+    (work / "hop").symlink_to(work / "deep" / "er" / "still")  # `hop/../..` differs by reading
     (work / "sockdir" / "inner").mkdir(parents=True)
     monkeypatch.chdir(work)
     listeners = [socket.socket(socket.AF_UNIX), socket.socket(socket.AF_UNIX)]
@@ -318,6 +332,39 @@ def test_a_mount_with_too_many_files_to_look_through_is_refused(
     assert any("more than 3 entries" in p for p in problems)
 
 
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0, reason="root reads anything")
+def test_a_folder_under_a_mount_that_cannot_be_listed_is_refused_not_skipped(
+    tmp_path: Path,
+) -> None:
+    hidden = tmp_path / "mocks" / "hidden"
+    hidden.mkdir(parents=True)
+    (hidden / "inner").mkdir()
+    hidden.chmod(0)
+    try:
+        problems = problems_of(document_with(volumes=["./mocks:/m:ro"]), tmp_path)
+    finally:
+        hidden.chmod(0o700)
+    assert any("cannot be checked" in p for p in problems)
+
+
+def test_the_same_mount_is_looked_through_once_per_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "big").mkdir()
+    looked: list[Path] = []
+
+    def count(target: Path) -> str | None:
+        looked.append(target)
+        return None
+
+    monkeypatch.setattr("hermetic.provision.validate._mount_problem", count)
+    volumes = ["./big:/a:ro", "./big:/b:ro", "./big:/c:ro"]
+    services = {name: good_service(volumes=list(volumes)) for name in ("one", "two")}
+    text = yaml.safe_dump({"name": "hermetic-x", "services": services})
+    check_compose(text, tmp_path)
+    assert looked == [(tmp_path / "big").resolve()]
+
+
 def test_a_mount_that_cannot_be_looked_through_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -327,6 +374,12 @@ def test_a_mount_that_cannot_be_looked_through_is_refused(
     monkeypatch.setattr("hermetic.provision.validate._mount_problem", deny)
     problems = problems_of(document_with(volumes=["./x:/m:ro"]), tmp_path)
     assert any("cannot be checked" in p for p in problems)
+
+
+def test_a_symlink_to_a_folder_under_a_mount_is_not_followed(tmp_path: Path) -> None:
+    (tmp_path / "mocks").mkdir()
+    (tmp_path / "mocks" / "loop").symlink_to(tmp_path / "mocks")  # would never end if followed
+    assert check_compose(document_with(volumes=["./mocks:/m:ro"]), tmp_path)
 
 
 def test_a_mount_of_a_plain_file_is_accepted(tmp_path: Path) -> None:
@@ -410,7 +463,7 @@ def test_a_document_nested_past_the_limit_is_refused_even_when_it_parses(tmp_pat
     assert any(f"nested more than {MAX_NESTING} levels" in p for p in problems_of(text, tmp_path))
 
 
-@pytest.mark.parametrize("name", ["hermetic-x\n", "x" * (MAX_PROJECT_CHARS + 1)])
+@pytest.mark.parametrize("name", ["hermetic-x\n", "hermetic-" + "x" * MAX_PROJECT_CHARS])
 def test_a_project_name_with_a_newline_or_over_the_limit_is_refused(
     tmp_path: Path, name: str
 ) -> None:
@@ -456,7 +509,7 @@ def test_too_many_services_are_refused(tmp_path: Path) -> None:
     assert any("more than" in p for p in problems_of(text, tmp_path))
 
 
-@pytest.mark.parametrize("name", ["Upper", "has space", "", 5])
+@pytest.mark.parametrize("name", ["Upper", "has space", "", 5, "other-project", "shop"])
 def test_the_project_name_must_be_a_plain_lowercase_name(tmp_path: Path, name: object) -> None:
     text = yaml.safe_dump({"name": name, "services": {"db": good_service()}})
     assert any(p.startswith("name:") for p in problems_of(text, tmp_path))
@@ -476,6 +529,64 @@ def test_checking_the_same_text_twice_gives_the_same_result(tmp_path: Path) -> N
     text = document_with()
     first = check_compose(text, tmp_path)
     assert check_compose(text, tmp_path) == copy.deepcopy(first)
+
+
+def test_a_file_without_a_name_is_refused(tmp_path: Path) -> None:
+    text = yaml.safe_dump({"services": {"db": good_service()}})
+    assert any(p.startswith("name:") for p in problems_of(text, tmp_path))
+
+
+@pytest.mark.parametrize("missing", ["mem_limit", "pids_limit", "security_opt"])
+def test_the_resource_and_privilege_limits_are_required_not_only_checked_when_present(
+    tmp_path: Path, missing: str
+) -> None:
+    service = good_service()
+    del service[missing]
+    text = yaml.safe_dump({"name": "hermetic-x", "services": {"db": service}})
+    assert any(f"{missing}: required" in p for p in problems_of(text, tmp_path))
+
+
+ESC = "\x1b[2Kfake"
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda: {"name": "hermetic-x", "services": {"db": good_service()}, ESC: 1},
+        lambda: {"name": "hermetic-x", "services": {ESC: good_service()}},
+        lambda: {"name": "hermetic-x", "services": {"db": good_service(**{ESC: 1})}},
+        lambda: {"name": "hermetic-x", "services": {"db": good_service(environment={ESC: "x"})}},
+        lambda: {"name": "hermetic-x", "services": {"db": good_service(depends_on=[ESC])}},
+        lambda: {"name": "hermetic-x", "services": {"db": good_service(volumes=[ESC])}},
+        lambda: {"name": "hermetic-x", "services": {"db": good_service(image=ESC)}},
+        lambda: {"name": ESC, "services": {"db": good_service()}},
+        lambda: {"name": "hermetic-x", "services": {"db": good_service(command=[ESC + "$"])}},
+    ],
+)
+def test_a_control_character_in_the_file_never_reaches_a_printed_problem(
+    tmp_path: Path, build: Any
+) -> None:
+    problems = problems_of(yaml.safe_dump(build()), tmp_path)
+    assert problems
+    for problem in problems:
+        assert "\x1b" not in problem and problem.isprintable()
+
+
+def test_a_problem_that_quotes_a_key_shows_it_escaped(tmp_path: Path) -> None:
+    text = yaml.safe_dump({"name": "hermetic-x", "services": {"db": good_service()}, ESC: 1})
+    assert any("\\x1b[2Kfake" in p for p in problems_of(text, tmp_path))
+
+
+def test_a_hostile_key_cannot_fake_the_refused_lines_on_the_command_line(tmp_path: Path) -> None:
+    key = "x\nok: fake (1 services)\x1b[2K"
+    path = tmp_path / "bad.yml"
+    path.write_text(
+        yaml.safe_dump({"name": "hermetic-x", "services": {"db": good_service()}, key: 1})
+    )
+    result = runner.invoke(app, ["check-compose", str(path)])
+    assert result.exit_code == 1
+    assert "\x1b" not in result.output
+    assert all(line.startswith("refused:") for line in result.output.strip().splitlines())
 
 
 # --- the commands ---
@@ -550,9 +661,48 @@ def test_check_compose_resolves_mounts_against_the_files_own_directory(tmp_path:
     (tmp_path / "a" / "stubs").mkdir()
     (tmp_path / "b" / "stack.yml").write_text(document_with(volumes=["./../a/stubs:/m:ro"]))
     result = runner.invoke(app, ["check-compose", str(tmp_path / "b" / "stack.yml")])
-    assert result.exit_code == 1 and "outside the working directory" in result.output
+    assert result.exit_code == 1 and "must not hold `..`" in result.output
 
 
 def test_check_compose_reports_an_unreadable_file_as_exit_2(tmp_path: Path) -> None:
     result = runner.invoke(app, ["check-compose", str(tmp_path / "missing.yml")])
     assert result.exit_code == 2 and "cannot read" in result.output
+
+
+def test_a_compose_file_is_not_written_through_a_symlinked_folder(
+    project: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    elsewhere = tmp_path_factory.mktemp("elsewhere")
+    (project / ".hermetic").symlink_to(elsewhere)
+    result = runner.invoke(app, ["compose", "--service", "shop"])
+    assert result.exit_code == 2 and "symlink" in result.output
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_a_symlink_further_down_the_path_is_refused_too(
+    project: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    elsewhere = tmp_path_factory.mktemp("elsewhere")
+    (project / ".hermetic").mkdir()
+    (project / ".hermetic" / "provision").symlink_to(elsewhere)
+    result = runner.invoke(app, ["compose", "--service", "shop"])
+    assert result.exit_code == 2 and "symlink" in result.output
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_a_path_outside_the_working_directory_is_checked_at_its_own_folder(
+    project: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    real = tmp_path_factory.mktemp("real")
+    link = tmp_path_factory.mktemp("links") / "link"
+    link.symlink_to(real)
+    with pytest.raises(ProvisionError, match="symlink"):
+        write_compose(link / COMPOSE_NAME, "x\n")
+    write_compose(real / COMPOSE_NAME, "x\n")
+    assert (real / COMPOSE_NAME).read_text() == "x\n"
+
+
+def test_compose_refuses_dependencies_that_belong_to_another_service(project: Path) -> None:
+    write_dependencies(project / "tests" / "other", ALL_KINDS)  # says it is "shop"
+    result = runner.invoke(app, ["compose", "--service", "other"])
+    assert result.exit_code == 2 and "'shop', not 'other'" in result.output

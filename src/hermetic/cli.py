@@ -164,6 +164,10 @@ def compose(
         found = load_dependencies(suite_dir)
         if found is None:
             raise ProvisionError(f"no dependencies in {suite_dir}; run `hermetic discover` first")
+        if found.service != service_id:
+            raise ProvisionError(
+                f"{suite_dir} holds the dependencies of {found.service!r}, not {service_id!r}"
+            )
         destination = output or Path(".hermetic") / "provision" / service_id / COMPOSE_NAME
         text = generate_compose(found, destination.parent)
         write_compose(destination, text)

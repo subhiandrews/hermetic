@@ -57,6 +57,12 @@ _HEALTH_KEYS = frozenset({"test", "interval", "timeout", "retries", "start_perio
 _DEPENDS_CONDITIONS = frozenset({"service_started", "service_healthy"})
 
 
+def _printable(text: str) -> str:
+    return "".join(
+        c if c.isprintable() else c.encode("unicode_escape").decode("ascii") for c in text
+    )
+
+
 class ComposeError(Exception):
     """A compose file that must not run. `problems` lists what is wrong with its content.
 
@@ -65,8 +71,10 @@ class ComposeError(Exception):
     """
 
     def __init__(self, problems: list[str]) -> None:
-        super().__init__("; ".join(problems))
-        self.problems = problems
+        # A problem can quote a key from the file, and a key can hold an escape sequence that
+        # rewrites a terminal, so what is kept and printed is made printable here, once.
+        self.problems = [_printable(problem) for problem in problems]
+        super().__init__("; ".join(self.problems))
 
 
 class _Loader(yaml.SafeLoader):
@@ -118,13 +126,15 @@ def check_compose(text: str, workdir: Path) -> dict[str, Any]:
     except RecursionError as exc:  # brackets nested far deeper than the size cap would suggest
         raise ComposeError(["not valid YAML for a compose file: nested too deeply"]) from exc
     problems: list[str] = []
+    mounts: dict[Path, str | None] = {}  # what was found under each mount source, looked at once
     if not isinstance(document, dict):
         raise ComposeError(["the file must be a mapping with a `services` key"])
     for key in document.keys() - ALLOWED_TOP_LEVEL:
         problems.append(f"{key}: not allowed at the top level (only name and services)")
     name = document.get("name")
-    if name is not None and not (isinstance(name, str) and _PROJECT.fullmatch(name)):
-        problems.append("name: must be a lowercase project name")
+    if not (isinstance(name, str) and _PROJECT.fullmatch(name) and name.startswith(PROJECT_PREFIX)):
+        # Another project's name would make `up` and `down` act on its containers.
+        problems.append(f"name: must be {PROJECT_PREFIX}<service>, a lowercase project name")
     services = document.get("services")
     if not isinstance(services, dict) or not services:
         problems.append("services: must list at least one service")
@@ -132,7 +142,7 @@ def check_compose(text: str, workdir: Path) -> dict[str, Any]:
         problems.append(f"services: more than {MAX_DEPENDENCIES}")
     else:
         for service, body in services.items():
-            _check_service(service, body, set(services), workdir, problems)
+            _check_service(service, body, set(services), workdir, problems, mounts)
     _find_interpolation(document, "", problems)
     if problems:
         raise ComposeError(sorted(set(problems)))
@@ -163,7 +173,12 @@ def _find_interpolation(node: object, where: str, problems: list[str], depth: in
 
 
 def _check_service(
-    service: object, body: object, names: set[Any], workdir: Path, problems: list[str]
+    service: object,
+    body: object,
+    names: set[Any],
+    workdir: Path,
+    problems: list[str],
+    mounts: dict[Path, str | None],
 ) -> None:
     if not (isinstance(service, str) and _SERVICE.fullmatch(service)):
         problems.append(f"services.{service}: the service name must be a lowercase slug")
@@ -179,7 +194,6 @@ def _check_service(
         problems.append(f"{where}.image: {image!r} is not an approved image")
     for key, check in (
         ("ports", _check_ports),
-        ("volumes", _check_volumes),
         ("tmpfs", _check_tmpfs),
         ("environment", _check_environment),
         ("healthcheck", _check_healthcheck),
@@ -187,6 +201,8 @@ def _check_service(
     ):
         if key in body:
             check(f"{where}.{key}", body[key], workdir, problems)
+    if "volumes" in body:
+        _check_volumes(f"{where}.volumes", body["volumes"], workdir, problems, mounts)
     _check_scalars(where, body, names, problems)
 
 
@@ -209,7 +225,13 @@ def _check_ports(where: str, value: object, workdir: Path, problems: list[str]) 
             problems.append(f"{where}: {entry!r} must publish on 127.0.0.1 only, as a valid port")
 
 
-def _check_volumes(where: str, value: object, workdir: Path, problems: list[str]) -> None:
+def _check_volumes(
+    where: str,
+    value: object,
+    workdir: Path,
+    problems: list[str],
+    mounts: dict[Path, str | None],
+) -> None:
     if not isinstance(value, list) or not all(isinstance(e, str) for e in value):
         problems.append(f"{where}: must be a list of ./path:/container/path:ro strings")
         return
@@ -223,6 +245,11 @@ def _check_volumes(where: str, value: object, workdir: Path, problems: list[str]
         if not source.startswith("./") or not destination.startswith("/"):
             problems.append(f"{where}: {entry!r} must mount a ./relative path at an absolute path")
             continue
+        if "\0" in source or ".." in PurePosixPath(source).parts:
+            # Compose joins the path as text and Docker follows links, so a `..` can name two
+            # different folders; and a NUL cannot be a path at all.
+            problems.append(f"{where}: {entry!r} must not hold `..` or a NUL character")
+            continue
         target = (root / source).resolve()
         if not target.is_relative_to(root):
             problems.append(f"{where}: {entry!r} reaches outside the working directory")
@@ -231,10 +258,12 @@ def _check_volumes(where: str, value: object, workdir: Path, problems: list[str]
         elif ".." in PurePosixPath(destination).parts:
             problems.append(f"{where}: {entry!r} has a destination with ..")
         else:
-            try:
-                reason = _mount_problem(target)
-            except OSError:  # something changed or cannot be read while it was looked at
-                reason = "cannot be checked"
+            if target not in mounts:
+                try:
+                    mounts[target] = _mount_problem(target)
+                except OSError:  # something changed or cannot be read while it was looked at
+                    mounts[target] = "cannot be checked"
+            reason = mounts[target]
             if reason:
                 problems.append(f"{where}: {entry!r} {reason}")
 
@@ -242,19 +271,27 @@ def _check_volumes(where: str, value: object, workdir: Path, problems: list[str]
 def _mount_problem(target: Path) -> str | None:
     """Why a mount source must be refused, or None. A read-only mount does not stop a container
     from connecting to a Unix socket, so a socket at or anywhere under the source (the Docker
-    daemon's, an SSH agent's) is refused; so is a source too big to look through."""
+    daemon's, an SSH agent's) is refused; so is a source too big to look through, and a folder
+    that cannot be listed, since it may hold one."""
     if not target.exists():
         return None  # nothing there yet; the provisioner creates it and checks again first
     if stat.S_ISSOCK(target.lstat().st_mode):
         return "is a socket"
+    if not target.is_dir():
+        return None  # a plain file has nothing beneath it
     seen = 0
-    for directory, folders, files in os.walk(target, followlinks=False):
-        for name in [*folders, *files]:
-            seen += 1
-            if seen > MAX_MOUNT_ENTRIES:
-                return f"holds more than {MAX_MOUNT_ENTRIES} entries to look through"
-            if stat.S_ISSOCK(os.lstat(Path(directory, name)).st_mode):
-                return f"holds a socket ({Path(directory, name).relative_to(target)})"
+    folders = [target]
+    while folders:
+        with os.scandir(folders.pop()) as entries:  # lazily, so the cap stops a huge folder early
+            for entry in entries:
+                seen += 1
+                if seen > MAX_MOUNT_ENTRIES:
+                    return f"holds more than {MAX_MOUNT_ENTRIES} entries to look through"
+                mode = entry.stat(follow_symlinks=False).st_mode
+                if stat.S_ISSOCK(mode):
+                    return f"holds a socket ({Path(entry.path).relative_to(target)})"
+                if stat.S_ISDIR(mode):
+                    folders.append(Path(entry.path))
     return None
 
 
@@ -301,14 +338,15 @@ def _check_scalars(where: str, body: dict[Any, Any], names: set[Any], problems: 
         restart = body["restart"]
         if not (restart == "no" or restart is False):  # YAML 1.1 reads an unquoted no as false
             problems.append(f"{where}.restart: only `no` is allowed")
-    if "mem_limit" in body and not _memory_ok(body["mem_limit"]):
-        problems.append(f"{where}.mem_limit: must be a real limit such as 512m or 1g")
-    if "pids_limit" in body:
-        limit = body["pids_limit"]
-        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 4096:
-            problems.append(f"{where}.pids_limit: must be a number from 1 to 4096")
-    if "security_opt" in body and body["security_opt"] != ["no-new-privileges:true"]:
-        problems.append(f"{where}.security_opt: only no-new-privileges:true is allowed")
+    # The caps are required, not only checked when present: a file that leaves them out could
+    # exhaust the host's memory or processes once it runs on the root-equivalent daemon.
+    if not _memory_ok(body.get("mem_limit")):
+        problems.append(f"{where}.mem_limit: required, a real limit such as 512m or 1g")
+    limit = body.get("pids_limit")
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 4096:
+        problems.append(f"{where}.pids_limit: required, a number from 1 to 4096")
+    if body.get("security_opt") != ["no-new-privileges:true"]:
+        problems.append(f"{where}.security_opt: required, and only no-new-privileges:true")
     if "depends_on" in body:
         _check_depends_on(where, body["depends_on"], names, problems)
 
