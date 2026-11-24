@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import ipaddress
+import socket
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated
 
@@ -152,6 +155,91 @@ def run(
         raise typer.Exit(code=1 if _any_failed(record) else 2) from exc
     if _any_failed(record):
         raise typer.Exit(code=1)
+
+
+@app.command()
+def serve(
+    history_dir: Annotated[Path, typer.Option(help="Where run history is read from.")] = Path(
+        ".hermetic/runs"
+    ),
+    host: Annotated[
+        str, typer.Option(help="Address to listen on; loopback keeps it on this machine.")
+    ] = "127.0.0.1",
+    port: Annotated[int, typer.Option(min=1, max=65535, help="Port to listen on.")] = 8000,
+    allowed_host: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--allowed-host",
+            help=(
+                "A host name the UI answers to, besides loopback and this machine's own names "
+                "(repeatable; a port is ignored). '*' answers to any, which leaves it open to "
+                "DNS rebinding."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Serve a read-only web UI over the run history."""
+    import uvicorn  # only `serve` needs the server, so the other commands skip its import cost
+
+    from hermetic.web import WILDCARD, create_app
+    from hermetic.web.app import hostname
+
+    hosts = _allowed_hosts(host, allowed_host or [])
+    if host not in _LOOPBACK_ADDRESSES:
+        typer.echo(
+            f"warning: listening on {host}: anyone who can reach this port can read the run "
+            "history, including request and response bodies (secrets are redacted)",
+            err=True,
+        )
+    # Compared as the app compares them: a port is dropped, so '*:8000' is still the wildcard.
+    if any(hostname(entry) == WILDCARD for entry in hosts):
+        typer.echo(
+            "warning: --allowed-host '*' turns off the Host check, so a web page you open can "
+            "reach this server by rebinding its own domain to it, even if the port is firewalled",
+            err=True,
+        )
+    uvicorn.run(create_app(open_store(history_dir), hosts), host=host, port=port)
+
+
+_LOOPBACK_ADDRESSES = ("127.0.0.1", "localhost", "::1")
+
+
+def _binds_every_interface(listen: str) -> bool:
+    if not listen.strip():  # asyncio treats an empty host as every interface
+        return True
+    try:
+        return ipaddress.ip_address(listen.strip("[]")).is_unspecified
+    except ValueError:  # a host name, not an address
+        return False
+
+
+def _allowed_hosts(listen: str, extra: Sequence[str]) -> list[str]:
+    """The `Host` values the UI answers to; anything else is refused.
+
+    That is loopback, the names given with --allowed-host and the address it is asked to bind.
+    On every interface no client sends the bound address, so this machine's own names stand in
+    for it. A web page that rebinds its own domain to this server is not on the list.
+    """
+    from hermetic.web import LOOPBACK_HOSTS
+
+    hosts = [*LOOPBACK_HOSTS, *extra]
+    if _binds_every_interface(listen):
+        hosts.extend(_machine_hosts())
+    else:
+        hosts.append(f"[{listen}]" if ":" in listen else listen)
+    return hosts
+
+
+def _machine_hosts() -> list[str]:
+    """What a client on this machine's network may call it: its host name and its addresses."""
+    name = socket.gethostname()
+    try:
+        found = socket.getaddrinfo(name, None)
+    except (OSError, UnicodeError):  # unresolvable or unencodable name; the name still counts
+        return [name]
+    # IPv4 and IPv6 alike; an IPv6 address is bracketed and loses its zone, as in a `Host` header.
+    addresses = {str(info[4][0]).partition("%")[0] for info in found}
+    return [name, *sorted(f"[{a}]" if ":" in a else a for a in addresses)]
 
 
 def _any_failed(record: RunRecord) -> bool:

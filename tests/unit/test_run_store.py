@@ -40,6 +40,12 @@ def test_get_unknown_run_raises(store: RunStore) -> None:
         store.get("nope")
 
 
+@pytest.mark.parametrize("run_id", ["../secret", "a/b", "index", "", ".hidden"])
+def test_get_of_an_id_no_run_can_have_is_not_found(store: RunStore, run_id: str) -> None:
+    with pytest.raises(RunNotFoundError):
+        store.get(run_id)
+
+
 def test_list_is_empty_for_a_new_store(store: RunStore) -> None:
     assert store.list() == []
 
