@@ -25,6 +25,7 @@ def run_suite(
     store: RunStore,
     sinks: list[ReportSink],
     *,
+    service: str,
     model: ServiceModel | None = None,
     changes: list[SuiteChange] | None = None,
     prompt_version: str | None = None,
@@ -35,6 +36,7 @@ def run_suite(
     results = execute_suite(suite, target, timeout=timeout)
     finished = datetime.now(UTC)
     record = RunRecord(
+        service=service,
         run_id=new_run_id(started),
         started_at=started.isoformat(),
         finished_at=finished.isoformat(),

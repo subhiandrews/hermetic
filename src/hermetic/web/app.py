@@ -90,7 +90,14 @@ def create_app(store: RunStore, allowed_hosts: Sequence[str] = LOOPBACK_HOSTS) -
 
     @app.get("/api/runs/{run_id}")
     def get_run(run_id: str) -> RunRecord:
-        return store.get(run_id)
+        # Until the API is service-scoped, look in each service for the run. Run ids carry a
+        # timestamp and a random tail, so they do not repeat across services in practice.
+        for entry in store.services():
+            try:
+                return store.get(entry.service, run_id)
+            except RunNotFoundError:
+                continue
+        raise RunNotFoundError(f"no run {run_id!r}")
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:

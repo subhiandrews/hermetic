@@ -1,4 +1,8 @@
-"""Flat-file RunStore: `<root>/<run_id>.json` per run plus `<root>/index.json`."""
+"""Flat-file RunStore: `<root>/<service>/<run_id>.json` per run plus `<root>/<service>/index.json`.
+
+History written before services existed (`<root>/<run_id>.json`) is moved under the default
+service the first time the store is used.
+"""
 
 from __future__ import annotations
 
@@ -11,14 +15,17 @@ from pathlib import Path
 
 from pydantic import TypeAdapter, ValidationError
 
-from hermetic.history.models import RunRecord, RunSummary, summarize
+from hermetic.history.models import RunRecord, RunSummary, ServiceSummary, summarize
 from hermetic.history.store import RunNotFoundError, RunStoreError
+from hermetic.service import DEFAULT_SERVICE, is_valid_service
 
 INDEX_NAME = "index.json"
 # run_id becomes a file name, so it must not be able to name a path.
 _RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 RunIds = list[str]  # aliases: `list` is shadowed by the method inside the class
 Summaries = list[RunSummary]
+Services = list[ServiceSummary]
+Names = list[str]
 _INDEX = TypeAdapter(Summaries)
 
 
@@ -46,7 +53,9 @@ def _write_atomic(path: Path, text: str) -> None:
         raise
 
 
-class FileRunStore:
+class _ServiceDir:
+    """The runs of one service: the directory `<root>/<service>`."""
+
     def __init__(self, root: Path) -> None:
         self._root = root
         # run id -> mtime of a run file that failed to parse, so a long-lived store (the web UI)
@@ -144,6 +153,64 @@ class FileRunStore:
 
     def _write_index(self, summaries: Summaries) -> None:
         _write_atomic(self._root / INDEX_NAME, json.dumps(_INDEX.dump_python(summaries), indent=2))
+
+
+class FileRunStore:
+    def __init__(self, root: Path) -> None:
+        self._root = root
+        self._dirs: dict[str, _ServiceDir] = {}  # keeps each directory's unreadable-file memory
+
+    def save(self, record: RunRecord) -> None:
+        self._migrate_flat_history()
+        self._dir(record.service).save(record)
+
+    def get(self, service: str, run_id: str) -> RunRecord:
+        if not is_valid_service(service):  # no run can be filed under it, so it is not found
+            raise RunNotFoundError(f"no run {run_id!r} for service {service!r}")
+        self._migrate_flat_history()
+        return self._dir(service).get(run_id)
+
+    def list(self, service: str | None = None) -> Summaries:
+        self._migrate_flat_history()
+        if service is not None:
+            return self._dir(service).list() if is_valid_service(service) else []
+        return _newest_first([s for name in self._service_names() for s in self._dir(name).list()])
+
+    def services(self) -> Services:
+        self._migrate_flat_history()
+        found: Services = []
+        for name in self._service_names():
+            summaries = self._dir(name).list()
+            if summaries:
+                found.append(ServiceSummary(service=name, runs=len(summaries), latest=summaries[0]))
+        return found
+
+    def _dir(self, service: str) -> _ServiceDir:
+        if service not in self._dirs:
+            self._dirs[service] = _ServiceDir(self._root / service)
+        return self._dirs[service]
+
+    def _service_names(self) -> Names:
+        try:
+            entries = list(self._root.iterdir())
+        except OSError:  # no history yet
+            return []
+        return sorted(p.name for p in entries if p.is_dir() and is_valid_service(p.name))
+
+    def _migrate_flat_history(self) -> None:
+        """Move `<root>/<run_id>.json` files, and drop the old `<root>/index.json`, into the
+        default service. A file the default service already has is left where it is."""
+        with contextlib.suppress(OSError):
+            flat = sorted(self._root.glob("*.json"))
+            if not flat:
+                return
+            target = self._root / DEFAULT_SERVICE
+            target.mkdir(exist_ok=True)
+            for path in flat:
+                if path.name == INDEX_NAME:
+                    path.unlink(missing_ok=True)
+                elif _valid_run_id(path.stem) and not (target / path.name).exists():
+                    os.replace(path, target / path.name)
 
 
 def _newest_first(summaries: Summaries) -> Summaries:

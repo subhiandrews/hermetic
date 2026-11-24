@@ -30,7 +30,8 @@ def test_run_passes_records_and_prints_a_report(server: str, tmp_path: Path) -> 
     suite = write_suite(tmp_path, "== 200")
     history = tmp_path / "history"
     result = runner.invoke(
-        app, ["run", str(suite), "--target", server, "--history-dir", str(history)]
+        app,
+        ["run", str(suite), "--target", server, "--service", "svc", "--history-dir", str(history)],
     )
     assert result.exit_code == 0, result.output
     assert "Passed: 1, failed: 0" in result.output
@@ -44,7 +45,8 @@ def test_run_with_failures_exits_1_and_writes_reports(server: str, tmp_path: Pat
     result = runner.invoke(
         app,
         [
-            "run", str(suite), "--target", server, "--history-dir", str(tmp_path / "h"),
+            "run", str(suite), "--target", server, "--service", "svc",
+            "--history-dir", str(tmp_path / "h"),
             "--report-dir", str(reports), "--report", "markdown", "--report", "json",
         ],
     )  # fmt: skip
@@ -60,27 +62,40 @@ def test_run_with_spec_records_hashes(server: str, tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         [
-            "run", str(write_suite(tmp_path, "== 200")), "--target", server,
+            "run", str(write_suite(tmp_path, "== 200")), "--target", server, "--service", "svc",
             "--spec", str(SPEC), "--docs", str(docs), "--history-dir", str(history),
         ],
     )  # fmt: skip
     assert result.exit_code == 0, result.output
     (summary,) = FileRunStore(history).list()
-    record = FileRunStore(history).get(summary.run_id)
+    record = FileRunStore(history).get(summary.service, summary.run_id)
     assert summary.spec_hash and list(record.doc_hashes) == ["design.md"]
-    assert json.loads((history / "index.json").read_text())[0]["run_id"] == summary.run_id
+    assert json.loads((history / "svc" / "index.json").read_text())[0]["run_id"] == summary.run_id
 
 
 def test_run_errors_exit_2(server: str, tmp_path: Path) -> None:
     suite = write_suite(tmp_path, "== 200")
-    base = ["run", str(suite), "--target", server, "--history-dir", str(tmp_path / "h")]
+    base = [
+        "run",
+        str(suite),
+        "--target",
+        server,
+        "--service",
+        "svc",
+        "--service",
+        "svc",
+        "--history-dir",
+        str(tmp_path / "h"),
+    ]
     for extra, message in (
         (["--report", "nope"], "unknown sink"),
         (["--spec", str(tmp_path / "missing.json")], "error:"),
     ):
         result = runner.invoke(app, base + extra)
         assert result.exit_code == 2 and message in result.output
-    missing = runner.invoke(app, ["run", str(tmp_path / "none"), "--target", server])
+    missing = runner.invoke(
+        app, ["run", str(tmp_path / "none"), "--target", server, "--service", "svc"]
+    )
     assert missing.exit_code == 2 and "suite not found" in missing.output
 
 
@@ -94,6 +109,8 @@ def test_run_store_failure_exits_2(server: str, tmp_path: Path) -> None:
             str(write_suite(tmp_path, "== 200")),
             "--target",
             server,
+            "--service",
+            "svc",
             "--history-dir",
             str(blocker),
         ],
@@ -120,14 +137,25 @@ def test_run_suite_publishes_after_saving(server: str, tmp_path: Path) -> None:
         def publish(self, record: object) -> None:
             order.append("publish")
 
-    run_suite(write_suite(tmp_path, "== 200"), server, Store(), [Sink()])  # type: ignore[arg-type]
+    run_suite(write_suite(tmp_path, "== 200"), server, Store(), [Sink()], service="svc")  # type: ignore[arg-type]
     assert order == ["save", "publish"]
 
 
 def test_docs_without_spec_is_a_usage_error(server: str, tmp_path: Path) -> None:
     result = runner.invoke(
         app,
-        ["run", str(write_suite(tmp_path, "== 200")), "--target", server, "--docs", str(tmp_path)],
+        [
+            "run",
+            str(write_suite(tmp_path, "== 200")),
+            "--target",
+            server,
+            "--service",
+            "svc",
+            "--service",
+            "svc",
+            "--docs",
+            str(tmp_path),
+        ],
     )
     assert result.exit_code == 2 and "--docs needs --spec" in result.output
 
@@ -138,11 +166,12 @@ def test_run_target_is_stored_without_credentials(server: str, tmp_path: Path) -
         app,
         [
             "run", str(write_suite(tmp_path, "== 200")), "--target", userinfo_target,
+            "--service", "svc",
             "--history-dir", str(tmp_path / "h"),
         ],
     )  # fmt: skip
     assert result.exit_code == 0, result.output
-    assert "pw" not in (tmp_path / "h" / "index.json").read_text()
+    assert "pw" not in (tmp_path / "h" / "svc" / "index.json").read_text()
 
 
 def test_every_sink_runs_even_if_one_fails(server: str, tmp_path: Path) -> None:
@@ -162,7 +191,7 @@ def test_every_sink_runs_even_if_one_fails(server: str, tmp_path: Path) -> None:
 
     suite = write_suite(tmp_path, "== 200")
     with pytest.raises(SinkError, match=r"was saved, but publishing failed: Boom: read-only"):
-        run_suite(suite, server, Store(), [Boom(), Fine()])  # type: ignore[arg-type]
+        run_suite(suite, server, Store(), [Boom(), Fine()], service="svc")  # type: ignore[arg-type]
     assert published == ["saved", "fine"]
 
 
@@ -172,6 +201,8 @@ def test_sink_failure_still_exits_1_when_tests_failed(server: str, tmp_path: Pat
     args = [
         "--target",
         server,
+        "--service",
+        "svc",
         "--history-dir",
         str(tmp_path / "h"),
         "--report-dir",
@@ -196,7 +227,7 @@ def test_store_failure_after_the_run_still_exits_1_when_tests_failed(
     failing = runner.invoke(
         app,
         [
-            "run", str(write_suite(tmp_path, "== 500")), "--target", server,
+            "run", str(write_suite(tmp_path, "== 500")), "--target", server, "--service", "svc",
             "--history-dir", str(blocker),
         ],
     )  # fmt: skip
@@ -242,7 +273,8 @@ def test_a_bad_report_name_fails_before_any_paid_generation(
     result = runner.invoke(
         app,
         [
-            "run", str(suite), "--target", server, "--spec", str(SPEC),
+            "run", str(suite), "--target", server, "--service", "svc",
+            "--spec", str(SPEC),
             "--generate", "--report", "nope",
         ],
     )  # fmt: skip
@@ -258,26 +290,42 @@ def test_run_generate_records_the_changes(
     result = runner.invoke(
         app,
         [
-            "run", str(tmp_path / "suite"), "--target", server, "--spec", str(SPEC),
+            "run", str(tmp_path / "suite"), "--target", server, "--service", "svc",
+            "--spec", str(SPEC),
             "--generate", "--history-dir", str(history),
         ],
     )  # fmt: skip
     assert result.exit_code == 0, result.output
     (summary,) = FileRunStore(history).list()
     assert summary.added == 19 and summary.passed == 19
-    assert FileRunStore(history).get(summary.run_id).prompt_version == "7"
+    assert FileRunStore(history).get(summary.service, summary.run_id).prompt_version == "7"
 
 
 def test_run_generate_needs_a_spec_and_a_working_author(
     server: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    no_spec = runner.invoke(app, ["run", str(tmp_path), "--target", server, "--generate"])
+    no_spec = runner.invoke(
+        app, ["run", str(tmp_path), "--target", server, "--service", "svc", "--generate"]
+    )
     assert no_spec.exit_code == 2 and "--generate needs --spec" in no_spec.output
     author = FakeAuthor()
     author.fail_on = "addPet"
     use_fake_author(monkeypatch, author)
     broken = runner.invoke(
-        app, ["run", str(tmp_path / "s"), "--target", server, "--spec", str(SPEC), "--generate"]
+        app,
+        [
+            "run",
+            str(tmp_path / "s"),
+            "--target",
+            server,
+            "--service",
+            "svc",
+            "--service",
+            "svc",
+            "--spec",
+            str(SPEC),
+            "--generate",
+        ],
     )
     assert broken.exit_code == 2 and "could not write a test" in broken.output
 
@@ -286,7 +334,13 @@ def test_run_records_given_changes_and_prompt_version(server: str, tmp_path: Pat
     change = SuiteChange(kind="added", test_id="t", reason="r")
     store = FileRunStore(tmp_path / "h")
     record = run_suite(
-        write_suite(tmp_path, "== 200"), server, store, [], changes=[change], prompt_version="3"
+        write_suite(tmp_path, "== 200"),
+        server,
+        store,
+        [],
+        service="svc",
+        changes=[change],
+        prompt_version="3",
     )
     assert record.changes == [change] and record.prompt_version == "3"
 
@@ -300,7 +354,20 @@ def test_write_errors_are_reported_not_raised(
     gen = runner.invoke(app, ["generate", str(SPEC), "--suite", str(blocker / "suite")])
     assert gen.exit_code == 2 and "error:" in gen.output
     run = runner.invoke(
-        app, ["run", str(blocker / "s"), "--target", server, "--spec", str(SPEC), "--generate"]
+        app,
+        [
+            "run",
+            str(blocker / "s"),
+            "--target",
+            server,
+            "--service",
+            "svc",
+            "--service",
+            "svc",
+            "--spec",
+            str(SPEC),
+            "--generate",
+        ],
     )
     assert run.exit_code == 2 and "error:" in run.output
 
@@ -317,3 +384,64 @@ def test_a_bad_target_fails_before_any_paid_generation(
     )
     assert result.exit_code == 2 and "invalid --target" in result.output
     assert author.requests == [] and not suite.exists()
+
+
+PETSTORE_SERVICE = "swagger-petstore-openapi-3-0"  # the slug of the fixture's title
+
+
+def test_tests_are_kept_per_service_and_the_service_comes_from_the_spec_title(
+    server: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    use_fake_author(monkeypatch, FakeAuthor())
+    monkeypatch.chdir(tmp_path)
+    generated = runner.invoke(app, ["generate", str(SPEC)])
+    assert generated.exit_code == 0, generated.output
+    assert (tmp_path / "tests" / PETSTORE_SERVICE / ".hermetic" / "manifest.json").is_file()
+    history = tmp_path / "h"
+    ran = runner.invoke(
+        app, ["run", "--target", server, "--spec", str(SPEC), "--history-dir", str(history)]
+    )
+    assert ran.exit_code == 0, ran.output
+    (summary,) = FileRunStore(history).list(PETSTORE_SERVICE)
+    assert summary.service == PETSTORE_SERVICE and summary.passed == 19
+
+
+def test_two_services_keep_separate_tests_and_history(
+    server: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    use_fake_author(monkeypatch, FakeAuthor())
+    monkeypatch.chdir(tmp_path)
+    history = tmp_path / "h"
+    for name in ("alpha", "beta"):
+        result = runner.invoke(
+            app,
+            [
+                *["run", "--target", server, "--spec", str(SPEC), "--generate"],
+                *["--service", name, "--history-dir", str(history)],
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / "tests" / name / ".hermetic" / "manifest.json").is_file()
+    store = FileRunStore(history)
+    assert [(s.service, s.runs) for s in store.services()] == [("alpha", 1), ("beta", 1)]
+
+
+@pytest.mark.parametrize("command", ["generate", "run"])
+def test_a_bad_service_name_is_a_usage_error(
+    command: str, server: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    author = FakeAuthor()
+    use_fake_author(monkeypatch, author)
+    monkeypatch.chdir(tmp_path)
+    args = {
+        "generate": ["generate", str(SPEC), "--service", "Bad/Name"],
+        "run": ["run", "--target", server, "--spec", str(SPEC), "--service", "Bad/Name"],
+    }[command]
+    result = runner.invoke(app, args)
+    assert result.exit_code == 2 and "invalid service" in result.output
+    assert author.requests == [] and not (tmp_path / "tests").exists()
+
+
+def test_run_without_a_spec_needs_the_service_named(server: str, tmp_path: Path) -> None:
+    result = runner.invoke(app, ["run", str(write_suite(tmp_path, "== 200")), "--target", server])
+    assert result.exit_code == 2 and "--service" in result.output

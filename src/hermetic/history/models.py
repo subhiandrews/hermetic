@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from hermetic.service import DEFAULT_SERVICE, SERVICE_PATTERN
+
 TestStatus = Literal["passed", "failed", "error", "skipped"]
 ChangeKind = Literal["added", "modified", "dropped"]
 
@@ -53,6 +55,10 @@ class SuiteChange(_Frozen):
 
 
 class RunRecord(_Frozen):
+    # Records written before services existed have neither field; they read as version 1 of the
+    # default service.
+    schema_version: int = 1
+    service: str = Field(default=DEFAULT_SERVICE, pattern=SERVICE_PATTERN)
     run_id: str
     started_at: str  # ISO 8601, UTC
     finished_at: str
@@ -68,6 +74,7 @@ class RunRecord(_Frozen):
 class RunSummary(_Frozen):
     """The index entry for a run: enough to list it without reading the full record."""
 
+    service: str = Field(default=DEFAULT_SERVICE, pattern=SERVICE_PATTERN)
     run_id: str
     started_at: str
     target: str
@@ -81,6 +88,14 @@ class RunSummary(_Frozen):
     dropped: int
 
 
+class ServiceSummary(_Frozen):
+    """One service in the history: how many runs it has and the most recent one."""
+
+    service: str
+    runs: int
+    latest: RunSummary
+
+
 def summarize(record: RunRecord) -> RunSummary:
     """Reduce a run record to its index entry."""
 
@@ -91,6 +106,7 @@ def summarize(record: RunRecord) -> RunSummary:
         return sum(1 for change in record.changes if change.kind == kind)
 
     return RunSummary(
+        service=record.service,
         run_id=record.run_id,
         started_at=record.started_at,
         target=record.target,

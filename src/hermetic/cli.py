@@ -19,6 +19,7 @@ from hermetic.ingest import IngestError, ServiceModel
 from hermetic.ingest import ingest as run_ingest
 from hermetic.report import SinkContext, SinkError, load_sinks
 from hermetic.runner import run_suite
+from hermetic.service import InvalidServiceError, resolve_service
 
 app = typer.Typer(
     name="hermetic",
@@ -63,7 +64,14 @@ def make_author() -> SuiteAuthor:
 @app.command()
 def generate(
     spec: Annotated[Path, typer.Argument(help="OpenAPI 3.x file (JSON or YAML).")],
-    suite: Annotated[Path, typer.Option(help="Directory the test suite is written to.")],
+    suite: Annotated[
+        Path | None,
+        typer.Option(help="Directory the test suite is written to; default tests/<service>."),
+    ] = None,
+    service: Annotated[
+        str | None,
+        typer.Option(help="The microservice these tests are for; default: the spec's title."),
+    ] = None,
     docs: Annotated[
         Path | None, typer.Option(help="Directory of design/architecture documents.")
     ] = None,
@@ -71,11 +79,19 @@ def generate(
 ) -> None:
     """Write or update the test suite for the spec; only changed operations are rewritten."""
     try:
-        changes = generate_suite(run_ingest(spec, docs), make_author(), suite, force=force)
-    except (IngestError, GenerateError, ManifestError, OSError) as exc:
+        model = run_ingest(spec, docs)
+        service_id = resolve_service(model.title, service)
+        suite_dir = suite or _default_suite(service_id)
+        changes = generate_suite(model, make_author(), suite_dir, force=force)
+    except (IngestError, InvalidServiceError, GenerateError, ManifestError, OSError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
     _echo_changes(changes)
+
+
+def _default_suite(service: str) -> Path:
+    """Generated tests are kept per microservice."""
+    return Path("tests") / service
 
 
 def _echo_changes(changes: list[SuiteChange]) -> None:
@@ -87,8 +103,17 @@ def _echo_changes(changes: list[SuiteChange]) -> None:
 
 @app.command()
 def run(
-    suite: Annotated[Path, typer.Argument(help="A pytest suite: a directory or a test file.")],
     target: Annotated[str, typer.Option(help="Base URL of the service under test.")],
+    suite: Annotated[
+        Path | None,
+        typer.Argument(
+            help="A pytest suite: a directory or a test file. Default: tests/<service>."
+        ),
+    ] = None,
+    service: Annotated[
+        str | None,
+        typer.Option(help="The microservice under test; default: the --spec title."),
+    ] = None,
     spec: Annotated[Path | None, typer.Option(help="OpenAPI file, to record its hashes.")] = None,
     docs: Annotated[
         Path | None, typer.Option(help="Design documents, to record their hashes.")
@@ -118,6 +143,8 @@ def run(
     record: RunRecord | None = None
     try:
         model: ServiceModel | None = run_ingest(spec, docs) if spec is not None else None
+        service_id = resolve_service(model.title if model else None, service)
+        suite_dir = suite or _default_suite(service_id)
         changes: list[SuiteChange] = []
         author = make_author() if generate_first else None
         # What a typo can break is checked before the step that pays for model calls and
@@ -126,13 +153,14 @@ def run(
         sinks = load_sinks(report or ["stdout"], SinkContext(output_dir=report_dir))
         store = open_store(history_dir)
         if model is not None and author is not None:
-            changes = generate_suite(model, author, suite)
+            changes = generate_suite(model, author, suite_dir)
             _echo_changes(changes)
         record = run_suite(
-            suite,
+            suite_dir,
             target,
             store,
             sinks,
+            service=service_id,
             model=model,
             changes=changes,
             prompt_version=author.prompt_version if author else None,
@@ -140,6 +168,7 @@ def run(
         )
     except (
         IngestError,
+        InvalidServiceError,
         GenerateError,
         ManifestError,
         ExecuteError,

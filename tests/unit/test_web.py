@@ -13,6 +13,7 @@ from hermetic.history import (
     RunRecord,
     RunStoreError,
     RunSummary,
+    ServiceSummary,
     SuiteChange,
     summarize,
 )
@@ -21,6 +22,10 @@ from hermetic.web.app import DEFAULT_RUN_LIMIT, MAX_RUN_LIMIT, STATIC_DIR, hostn
 from tests.factories import make_record, make_result
 
 SECRET = "secret-marker"
+
+
+Summaries = list[RunSummary]  # `list` is a method name inside the fake stores
+Services = list[ServiceSummary]
 
 
 class MemoryStore:
@@ -32,15 +37,23 @@ class MemoryStore:
     def save(self, record: RunRecord) -> None:
         self._records[record.run_id] = record
 
-    def get(self, run_id: str) -> RunRecord:
+    def get(self, service: str, run_id: str) -> RunRecord:
         try:
             return self._records[run_id]
         except KeyError:
             raise RunNotFoundError(run_id) from None
 
-    def list(self) -> list[RunSummary]:
+    def list(self, service: str | None = None) -> Summaries:
         summaries = [summarize(record) for record in self._records.values()]
         return sorted(summaries, key=lambda summary: summary.started_at, reverse=True)
+
+    def services(self) -> Services:
+        found: dict[str, list[RunSummary]] = {}
+        for summary in self.list():
+            found.setdefault(summary.service, []).append(summary)
+        return [
+            ServiceSummary(service=n, runs=len(r), latest=r[0]) for n, r in sorted(found.items())
+        ]
 
 
 class BrokenStore:
@@ -49,10 +62,13 @@ class BrokenStore:
     def save(self, record: RunRecord) -> None:
         raise RunStoreError(SECRET)
 
-    def get(self, run_id: str) -> RunRecord:
+    def get(self, service: str, run_id: str) -> RunRecord:
         raise RunStoreError(f"run {run_id} is corrupt: {SECRET}")
 
-    def list(self) -> list[RunSummary]:
+    def list(self, service: str | None = None) -> Summaries:
+        raise RunStoreError(f"index is corrupt: {SECRET}")
+
+    def services(self) -> Services:
         raise RunStoreError(f"index is corrupt: {SECRET}")
 
 
@@ -125,6 +141,16 @@ def test_a_run_comes_back_with_its_results_and_changes(client: TestClient) -> No
     assert body["changes"][0]["reason"] == "a new operation in the spec"
 
 
+def test_runs_of_different_services_are_found_by_id() -> None:
+    first = make_record("a-run", service="alpha", started_at="2026-01-01T00:00:00+00:00")
+    second = make_record("b-run", service="beta", started_at="2026-01-02T00:00:00+00:00")
+    client = TestClient(create_app(MemoryStore(first, second)), base_url="http://localhost")
+    assert [r["service"] for r in client.get("/api/runs").json()] == ["beta", "alpha"]
+    assert client.get("/api/runs/a-run").json()["service"] == "alpha"
+    assert client.get("/api/runs/b-run").json()["service"] == "beta"
+    assert client.get("/api/runs/c-run").status_code == 404
+
+
 def test_the_file_store_serves_the_same_api(tmp_path: Path) -> None:
     store = FileRunStore(tmp_path / "runs")
     store.save(OLD)
@@ -166,7 +192,7 @@ def test_an_unreadable_store_is_a_500_that_leaks_nothing(caplog: pytest.LogCaptu
 
 def test_an_unexpected_error_is_a_500_that_still_carries_the_security_headers() -> None:
     class Crashing(MemoryStore):
-        def list(self) -> list[RunSummary]:
+        def list(self, service: str | None = None) -> Summaries:
             raise RuntimeError(SECRET)
 
     client = TestClient(
@@ -181,9 +207,10 @@ def test_an_unexpected_error_is_a_500_that_still_carries_the_security_headers() 
 
 def test_a_corrupt_run_file_is_a_500_without_its_content(tmp_path: Path) -> None:
     root = tmp_path / "runs"
-    root.mkdir()
-    (root / "bad.json").write_text(f'{{"{SECRET}": 1}}')
-    client = TestClient(create_app(FileRunStore(root)), base_url="http://localhost")
+    store = FileRunStore(root)
+    store.save(make_record("good"))  # a service with no readable run is not listed at all
+    (root / "default" / "bad.json").write_text(f'{{"{SECRET}": 1}}')
+    client = TestClient(create_app(store), base_url="http://localhost")
     response = client.get("/api/runs/bad")
     assert response.status_code == 500
     assert SECRET not in response.text
