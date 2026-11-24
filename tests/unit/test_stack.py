@@ -540,3 +540,16 @@ def test_a_failed_cleanup_after_an_interrupt_says_what_to_run(stack: tuple[Path,
     with pytest.raises(KeyboardInterrupt) as caught:
         up("shop", path, text, runner)
     assert any("hermetic down --service shop" in n for n in caught.value.__notes__)
+
+
+def test_the_end_of_long_docker_output_is_what_is_reported(stack: tuple[Path, str]) -> None:
+    path, text = stack
+    long = "pulling layer\n" * 400 + "container hermetic-shop-db-1 is unhealthy"
+
+    def runner(argv: Sequence[str], *, stdin: str | None, timeout: float) -> CommandResult:
+        return CommandResult(1, "", long) if "up" in argv else CommandResult(0, "", "")
+
+    with pytest.raises(StackError) as caught:
+        up("shop", path, text, runner)
+    assert str(caught.value).endswith("is unhealthy")
+    assert len(str(caught.value)) < 4200  # 2000 characters, newlines shown as \\n

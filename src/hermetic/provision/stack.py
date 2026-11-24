@@ -94,7 +94,8 @@ class Endpoint:
 
 def _say(result: CommandResult) -> str:
     text = (result.stderr or result.stdout).strip()
-    return printable(text[:_MAX_OUTPUT_CHARS]) or f"exit code {result.returncode}"
+    # the end, not the start: Docker prints pull progress first and what went wrong last
+    return printable(text[-_MAX_OUTPUT_CHARS:]) or f"exit code {result.returncode}"
 
 
 def _compose(

@@ -1,0 +1,62 @@
+openapi: 3.0.3
+info:
+  title: Mail service
+  version: "2.1.0"
+  description: Internal service that sends one email per message and reports delivery.
+servers:
+  - url: https://mail.internal/v2
+paths:
+  /messages:
+    post:
+      operationId: sendMessage
+      summary: Queue an email
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to, subject, body]
+              properties:
+                to: {type: string, format: email}
+                subject: {type: string}
+                body: {type: string}
+      responses:
+        "202":
+          description: Queued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id: {type: string, format: uuid}
+                  status: {type: string, enum: [queued, sent, failed]}
+        "422":
+          description: The message is not valid
+  /messages/{id}:
+    get:
+      operationId: getMessage
+      summary: Delivery status of a message
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        "200":
+          description: The message
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id: {type: string, format: uuid}
+                  status: {type: string, enum: [sent, queued, failed]}
+                  attempts: {type: integer, minimum: 1}
+        "404":
+          description: No such message
+  /health:
+    get:
+      operationId: health
+      responses:
+        "204":
+          description: Up
