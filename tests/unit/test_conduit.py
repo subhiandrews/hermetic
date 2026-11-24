@@ -15,44 +15,26 @@ import pytest
 from typer.testing import CliRunner
 
 from hermetic.cli import app
-from hermetic.discover.infer import InferRequest, InferResult, Proposal, Quote
 from hermetic.ingest import ingest
 from hermetic.provision import COMPOSE_NAME, build_stubs, check_compose, read_compose_file
+from tests.fakes import CONDUIT, MailInferrer
 
-FIXTURE = Path(__file__).parent.parent / "fixtures" / "conduit"
 UPDATE = os.environ.get("HERMETIC_UPDATE_GOLDEN") == "1"
 cli_runner = CliRunner()
 
 
 def golden(name: str, actual: str) -> None:
-    path = FIXTURE / "expected" / name
+    path = CONDUIT / "expected" / name
     if UPDATE:
         path.write_text(actual, encoding="utf-8")
     assert actual == path.read_text(encoding="utf-8"), f"{name} differs from the expected file"
 
 
-class MailInferrer:
-    """What the agent says about the design note: the one service the hints cannot find."""
-
-    prompt_version = "golden"
-
-    def infer(self, request: InferRequest) -> InferResult:
-        return InferResult(
-            [
-                Proposal(
-                    name="mail",
-                    kind="http",
-                    quotes=[Quote(source="architecture.md", quote="it calls the Mail service")],
-                )
-            ]
-        )
-
-
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    shutil.copytree(FIXTURE / "docs", tmp_path / "docs")
-    shutil.copy(FIXTURE / "openapi.yml", tmp_path / "openapi.yml")
-    shutil.copy(FIXTURE / "mail-openapi.yml", tmp_path / "mail-openapi.yml")
+    shutil.copytree(CONDUIT / "docs", tmp_path / "docs")
+    shutil.copy(CONDUIT / "openapi.yml", tmp_path / "openapi.yml")
+    shutil.copy(CONDUIT / "mail-openapi.yml", tmp_path / "mail-openapi.yml")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("hermetic.cli.make_inferrer", lambda: MailInferrer())
     return tmp_path
@@ -65,7 +47,7 @@ def run(*args: str) -> str:
 
 
 def test_the_real_spec_is_read_and_every_operation_can_be_mocked() -> None:
-    model = ingest(FIXTURE / "openapi.yml", FIXTURE / "docs")
+    model = ingest(CONDUIT / "openapi.yml", CONDUIT / "docs")
     assert model.title == "RealWorld Conduit API"
     assert len(model.operations) == 19
     stubs, skipped = build_stubs(model)

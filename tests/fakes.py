@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from hermetic.discover.infer import InferRequest, InferResult, Proposal, Quote
 from hermetic.generate import AuthoredTest, AuthorRequest
+
+CONDUIT = Path(__file__).parent / "fixtures" / "conduit"
 
 
 def good_source(operation_id: str, status: int = 200) -> str:
@@ -33,3 +38,20 @@ class FakeAuthor:
             raise RuntimeError("the agent is unavailable")
         source = self.source_for.get(operation_id, good_source(operation_id))
         return AuthoredTest(source=source, note=self.note)
+
+
+class MailInferrer:
+    """What the agent says about the Conduit design note: the one service the hints cannot find."""
+
+    prompt_version = "golden"
+
+    def infer(self, request: InferRequest) -> InferResult:
+        return InferResult(
+            [
+                Proposal(
+                    name="mail",
+                    kind="http",
+                    quotes=[Quote(source="architecture.md", quote="it calls the Mail service")],
+                )
+            ]
+        )

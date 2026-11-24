@@ -16,8 +16,8 @@ import pytest
 from typer.testing import CliRunner
 
 from hermetic.cli import app
-from tests.integration.test_stack_docker import require_docker
-from tests.unit.test_conduit import FIXTURE, MailInferrer
+from tests.fakes import CONDUIT, MailInferrer
+from tests.integration.helpers import require_docker
 
 pytestmark = pytest.mark.integration
 cli_runner = CliRunner()
@@ -34,7 +34,7 @@ def test_conduit_stack_comes_up_from_its_documents(
 ) -> None:
     require_docker()
     for name in ("docs", "openapi.yml", "mail-openapi.yml"):
-        source = FIXTURE / name
+        source = CONDUIT / name
         if source.is_dir():
             shutil.copytree(source, tmp_path / name)
         else:
