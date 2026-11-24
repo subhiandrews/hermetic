@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import re
 import tempfile
@@ -15,6 +16,7 @@ from hermetic.history.models import RunRecord, RunSummary, ServiceSummary, summa
 from hermetic.history.store import RunNotFoundError, RunStoreError
 from hermetic.service import DEFAULT_SERVICE, is_valid_service
 
+_logger = logging.getLogger("hermetic.history")
 INDEX_NAME = "index.json"
 # run_id becomes a file name, so it must not be able to name a path.
 _RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
@@ -215,15 +217,32 @@ class FileRunStore:
         self._migrated = True
 
 
+def _left_in_place(name: str, why: str) -> None:
+    _logger.warning("earlier run history: %s was left where it is (%s)", name, why)
+
+
 def _move_flat_run(path: Path, target: Path) -> None:
     if path.name == INDEX_NAME:  # rebuilt per service from the run files
         path.unlink(missing_ok=True)
-    elif _valid_run_id(path.stem):
-        try:
-            os.link(path, target / path.name)  # fails, rather than overwrites, if it exists
-        except (FileExistsError, FileNotFoundError):  # already there, or moved by another process
-            return
-        path.unlink(missing_ok=True)
+        return
+    if not _valid_run_id(path.stem):
+        _left_in_place(path.name, "not a run file")
+        return
+    destination = target / path.name
+    try:
+        os.link(path, destination)  # fails, rather than overwrites, if it exists
+    except FileExistsError:
+        _left_in_place(path.name, "the default service already has a run with that id")
+        return
+    except FileNotFoundError:  # moved by another process
+        return
+    except OSError:  # a filesystem without hard links: rename, unless the run is already there
+        if destination.exists():
+            _left_in_place(path.name, "the default service already has a run with that id")
+        else:
+            os.replace(path, destination)
+        return
+    path.unlink(missing_ok=True)
 
 
 def _newest_first(summaries: Summaries) -> Summaries:
