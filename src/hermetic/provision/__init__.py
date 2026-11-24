@@ -13,6 +13,7 @@ from hermetic.provision.compose import (
 )
 from hermetic.provision.images import APPROVED_IMAGES, ENGINES, Engine
 from hermetic.provision.stack import Endpoint, StackError, down, project_name, up
+from hermetic.provision.stubs import build_stubs, write_stubs
 from hermetic.provision.validate import ComposeError, check_compose
 
 __all__ = [
@@ -25,6 +26,7 @@ __all__ = [
     "Engine",
     "ProvisionError",
     "StackError",
+    "build_stubs",
     "check_compose",
     "down",
     "generate_compose",
@@ -33,4 +35,5 @@ __all__ = [
     "refuse_links",
     "up",
     "write_compose",
+    "write_stubs",
 ]
