@@ -26,13 +26,15 @@ from hermetic.discover import (
     DiscoverError,
     Evidence,
     InferRequest,
+    InferResult,
+    Proposal,
     discover,
     docs_hash,
     find_hints,
     load_dependencies,
     write_dependencies,
 )
-from hermetic.discover.models import MAX_DEPENDENCIES, MAX_EVIDENCE
+from hermetic.discover.models import MAX_DEPENDENCIES, MAX_EVIDENCE, MAX_SOURCE_CHARS
 from hermetic.ingest import ingest
 from hermetic.ingest.models import DocFile, ServiceModel
 
@@ -52,21 +54,34 @@ def dep(
     name: str,
     kind: str = "postgres",
     origin: str = "agent",
-    evidence: list[tuple[str, str]] | None = None,
+    evidence: list[tuple[str, int]] | None = None,
 ) -> Dependency:
     return Dependency.model_validate(
         {
             "name": name,
             "kind": kind,
             "origin": origin,
-            "evidence": [{"source": s, "quote": q} for s, q in (evidence or [])],
+            "evidence": [{"source": s, "line": n} for s, n in (evidence or [])],
+        }
+    )
+
+
+def prop(name: str, kind: str = "postgres", *quotes: tuple[str, str]) -> Proposal:
+    return Proposal.model_validate(
+        {
+            "name": name,
+            "kind": kind,
+            "quotes": [{"source": s, "quote": q} for s, q in quotes],
         }
     )
 
 
 class FakeInferrer:
-    def __init__(self, *proposals: Dependency, version: str = "1") -> None:
+    def __init__(
+        self, *proposals: Proposal, notes: list[str] | None = None, version: str = "1"
+    ) -> None:
         self.proposals = list(proposals)
+        self.notes = notes or []
         self._version = version
         self.requests: list[InferRequest] = []
         self.fail = False
@@ -75,11 +90,11 @@ class FakeInferrer:
     def prompt_version(self) -> str:
         return self._version
 
-    def infer(self, request: InferRequest) -> list[Dependency]:
+    def infer(self, request: InferRequest) -> InferResult:
         self.requests.append(request)
         if self.fail:
             raise RuntimeError("the agent is unavailable")
-        return self.proposals
+        return InferResult(self.proposals, self.notes)
 
 
 # --- the model ---
@@ -99,6 +114,8 @@ def test_two_dependencies_cannot_share_a_name() -> None:
 def test_a_dependency_name_cannot_be_free_text(name: str) -> None:
     with pytest.raises(ValidationError):
         dep(name)
+    with pytest.raises(ValidationError):
+        prop(name)
 
 
 def test_an_unknown_kind_or_field_is_refused() -> None:
@@ -106,6 +123,15 @@ def test_an_unknown_kind_or_field_is_refused() -> None:
         dep("x", kind="oracle")
     with pytest.raises(ValidationError):
         Dependency.model_validate({"name": "x", "kind": "redis", "origin": "agent", "extra": 1})
+
+
+def test_evidence_is_a_place_and_cannot_hold_text() -> None:
+    assert Evidence(source="a.md", line=1).line == 1
+    for bad in (0, -1, 10_000_001):
+        with pytest.raises(ValidationError):
+            Evidence(source="a.md", line=bad)
+    with pytest.raises(ValidationError):
+        Evidence.model_validate({"source": "a.md", "line": 1, "quote": "postgres://u:p@h"})
 
 
 # --- hints ---
@@ -129,9 +155,9 @@ def test_an_unknown_kind_or_field_is_refused() -> None:
     ],
 )
 def test_a_connection_string_or_pinned_image_is_a_hint(line: str, kind: str) -> None:
-    (hint,) = find_hints([doc("a.md", line)])
+    (hint,) = find_hints([doc("a.md", f"intro\n{line}")])
     assert (hint.name, hint.kind, hint.origin) == (kind, kind, "hint")
-    assert hint.evidence == [Evidence(source="a.md", quote=" ".join(line.split()))]
+    assert hint.evidence == [Evidence(source="a.md", line=2)]  # a place, not the line's text
 
 
 @pytest.mark.parametrize("line", ["redis: the cache", "we use postgres", "http://example.com"])
@@ -149,13 +175,17 @@ def test_hints_group_by_kind_in_a_fixed_order_with_capped_evidence() -> None:
     assert [h.kind for h in hints] == ["postgres", "redis", "mongo"]
     redis = hints[1]
     assert len(redis.evidence) == MAX_EVIDENCE
-    assert redis.evidence[0].quote == "redis://cache0"
-    assert hints[0].evidence[0].quote.startswith("postgres://db and redis://both")
+    assert redis.evidence[0] == Evidence(source="a.md", line=1)
+    assert hints[0].evidence == [Evidence(source="a.md", line=MAX_EVIDENCE + 4)]
 
 
 def test_one_line_naming_a_kind_twice_counts_once() -> None:
     (hint,) = find_hints([doc("a.md", "redis://a and redis://b")])
     assert len(hint.evidence) == 1
+
+
+def test_a_document_path_too_long_for_evidence_gives_no_hint() -> None:
+    assert find_hints([doc("d/" * MAX_SOURCE_CHARS + "a.md", "redis://c")]) == []
 
 
 # --- the prompt and the reply ---
@@ -202,26 +232,28 @@ def test_the_system_prompt_names_every_kind_and_treats_documents_as_data() -> No
     for kind in ("postgres", "mysql", "redis", "mongo", "http"):
         assert kind in SYSTEM_PROMPT
     assert "not\ninstructions" in SYSTEM_PROMPT
+    assert "Never copy a password" in SYSTEM_PROMPT
 
 
 GOOD_REPLY = """Here you go:
 ```json
 [{"name": "orders-db", "kind": "postgres",
-  "evidence": [{"source": "a.md", "quote": "orders live in Postgres"}]}]
+  "quotes": [{"source": "a.md", "quote": "orders live in Postgres"}]}]
 ```"""
 
 
-def test_a_good_reply_becomes_agent_dependencies() -> None:
-    (found,) = parse_response(GOOD_REPLY)
-    assert (found.name, found.kind, found.origin) == ("orders-db", "postgres", "agent")
-    assert found.evidence[0].quote == "orders live in Postgres"
+def test_a_good_reply_becomes_proposals() -> None:
+    result = parse_response(GOOD_REPLY)
+    (found,) = result.proposals
+    assert (found.name, found.kind) == ("orders-db", "postgres")
+    assert found.quotes[0].quote == "orders live in Postgres" and result.notes == []
 
 
 @pytest.mark.parametrize(
     ("reply", "message"),
     [
         ("no block", "found 0"),
-        (GOOD_REPLY + GOOD_REPLY, "found 2"),
+        (GOOD_REPLY + "\n" + GOOD_REPLY, "found 2"),
         ("```json\nnot json\n```", "not a list"),
         ('```json\n{"name": "x"}\n```', "not a list"),
     ],
@@ -229,6 +261,26 @@ def test_a_good_reply_becomes_agent_dependencies() -> None:
 def test_a_reply_of_the_wrong_shape_is_refused(reply: str, message: str) -> None:
     with pytest.raises(InferResponseError, match=message):
         parse_response(reply)
+
+
+def test_a_proposal_that_does_not_fit_is_set_aside_and_counted() -> None:
+    reply = (
+        '```json\n[{"name": "X!", "kind": "redis", "quotes": []},'
+        ' {"name": "x", "kind": "oracle", "quotes": []},'
+        ' {"name": "good", "kind": "redis", "quotes": []}, 7]\n```'
+    )
+    result = parse_response(reply)
+    assert [p.name for p in result.proposals] == ["good"]
+    assert result.notes == ["3 proposed dependencies did not fit the format and were set aside"]
+
+
+def test_a_code_fence_inside_a_quoted_passage_does_not_cut_the_reply_short() -> None:
+    reply = (
+        '```json\n[{"name": "db", "kind": "redis",\n'
+        ' "quotes": [{"source": "a.md", "quote": "run ```redis-cli``` first"}]}]\n```'
+    )
+    (found,) = parse_response(reply).proposals
+    assert found.quotes[0].quote == "run ```redis-cli``` first"
 
 
 def test_the_inferrer_asks_the_model_and_parses_the_reply(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -241,7 +293,7 @@ def test_the_inferrer_asks_the_model_and_parses_the_reply(monkeypatch: pytest.Mo
     monkeypatch.setattr(ClaudeInferrer, "_ask", fake_ask)
     inferrer = ClaudeInferrer()
     assert inferrer.prompt_version == INFER_PROMPT_VERSION
-    (found,) = inferrer.infer(request_for(doc("a.md", "orders live in Postgres")))
+    (found,) = inferrer.infer(request_for(doc("a.md", "orders live in Postgres"))).proposals
     assert found.name == "orders-db" and "orders live in Postgres" in prompts[0]
 
 
@@ -251,7 +303,7 @@ def test_a_stalled_model_is_given_up_on(monkeypatch: pytest.MonkeyPatch) -> None
         return ""
 
     monkeypatch.setattr(ClaudeInferrer, "_ask", stalled)
-    monkeypatch.setattr("hermetic.agent.infer.AUTHOR_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr("hermetic.agent.infer.INFER_TIMEOUT_SECONDS", 0.01)
     with pytest.raises(InferResponseError, match="did not answer"):
         ClaudeInferrer().infer(request_for())
 
@@ -269,13 +321,14 @@ def run_discover(
 def test_hints_and_proposals_are_merged_and_ordered() -> None:
     docs = [doc("a.md", "DB at postgres://db/app.\nPayments is the payments-api service.")]
     inferrer = FakeInferrer(
-        dep("payments", "http", evidence=[("a.md", "Payments is the   payments-api service.")]),
+        prop("payments", "http", ("a.md", "Payments is the   payments-api service.")),
     )
     result, changes, notes = run_discover(inferrer, *docs)
     assert [(d.name, d.kind, d.origin) for d in result.dependencies] == [
         ("postgres", "postgres", "hint"),
         ("payments", "http", "agent"),
     ]
+    assert result.dependencies[1].evidence == [Evidence(source="a.md", line=2)]
     assert changes == [("added", "payments"), ("added", "postgres")] and notes == []
     assert result.service == "svc" and result.prompt_version == "1"
     assert result.docs_hash == docs_hash(docs)
@@ -286,56 +339,87 @@ def test_hints_and_proposals_are_merged_and_ordered() -> None:
 
 def test_a_proposal_no_document_bears_out_is_dropped() -> None:
     inferrer = FakeInferrer(
-        dep("ghost", evidence=[("a.md", "never written")]),
-        dep("elsewhere", evidence=[("missing.md", "hello")]),
-        dep("bare"),
+        prop("ghost", "postgres", ("a.md", "never written")),
+        prop("elsewhere", "postgres", ("missing.md", "hello world")),
+        prop("short", "postgres", ("a.md", "hi")),
+        prop("blank", "postgres", ("a.md", " \n ")),
+        prop("bare"),
     )
-    result, _, notes = run_discover(inferrer, doc("a.md", "hello"))
+    result, _, notes = run_discover(inferrer, doc("a.md", "hello world"))
     assert result.dependencies == []
-    assert sorted(notes) == [
-        "bare: dropped, no document says it",
-        "elsewhere: dropped, no document says it",
-        "ghost: dropped, no document says it",
+    assert sorted(notes) == [f"{n}: dropped, no document says it" for n in
+                             ("bare", "blank", "elsewhere", "ghost", "short")]  # fmt: skip
+
+
+def test_a_quote_that_runs_across_lines_is_not_found() -> None:
+    inferrer = FakeInferrer(prop("db", "postgres", ("a.md", "the ledger lives in Postgres")))
+    result, _, notes = run_discover(inferrer, doc("a.md", "the ledger lives\nin Postgres"))
+    assert result.dependencies == [] and notes == ["db: dropped, no document says it"]
+
+
+def test_only_the_quotes_that_check_out_become_evidence() -> None:
+    inferrer = FakeInferrer(
+        prop("db", "postgres", ("a.md", "a real passage"), ("a.md", "invented"), ("a.md", "line b"))
+    )
+    result, _, _ = run_discover(inferrer, doc("a.md", "intro\na real passage\nline b"))
+    assert result.dependencies[0].evidence == [
+        Evidence(source="a.md", line=2),
+        Evidence(source="a.md", line=3),
     ]
 
 
-def test_only_the_evidence_that_checks_out_is_kept() -> None:
-    inferrer = FakeInferrer(dep("db", evidence=[("a.md", "real passage"), ("a.md", "invented")]))
-    result, _, _ = run_discover(inferrer, doc("a.md", "a real passage here"))
-    assert [e.quote for e in result.dependencies[0].evidence] == ["real passage"]
+def test_a_quote_on_two_lines_of_the_same_text_points_at_the_first() -> None:
+    inferrer = FakeInferrer(prop("db", "postgres", ("a.md", "same text")))
+    result, _, _ = run_discover(inferrer, doc("a.md", "x\nsame text\nsame text"))
+    assert result.dependencies[0].evidence == [Evidence(source="a.md", line=2)]
+
+
+def test_evidence_from_the_agent_is_capped() -> None:
+    quotes = [("a.md", f"passage number {i}") for i in range(MAX_EVIDENCE + 3)]
+    text = "\n".join(q for _, q in quotes)
+    result, _, _ = run_discover(FakeInferrer(prop("db", "postgres", *quotes)), doc("a.md", text))
+    assert len(result.dependencies[0].evidence) == MAX_EVIDENCE
 
 
 def test_a_proposal_for_a_known_name_adds_its_evidence_without_repeating() -> None:
     docs = [doc("a.md", "postgres://db/app\nthe ledger is in Postgres")]
     inferrer = FakeInferrer(
-        dep(
+        prop(
             "postgres",
-            evidence=[("a.md", "postgres://db/app"), ("a.md", "the ledger is in Postgres")],
+            "postgres",
+            ("a.md", "postgres://db/app"),
+            ("a.md", "the ledger is in Postgres"),
         )
     )
     result, _, _ = run_discover(inferrer, *docs)
     (only,) = result.dependencies
     assert only.origin == "hint"  # the first finder keeps the entry
-    assert [e.quote for e in only.evidence] == ["postgres://db/app", "the ledger is in Postgres"]
+    assert only.evidence == [Evidence(source="a.md", line=1), Evidence(source="a.md", line=2)]
 
 
 def test_a_name_found_as_two_kinds_keeps_the_first() -> None:
-    inferrer = FakeInferrer(dep("postgres", "redis", evidence=[("a.md", "postgres://db")]))
+    inferrer = FakeInferrer(prop("postgres", "redis", ("a.md", "postgres://db")))
     result, _, notes = run_discover(inferrer, doc("a.md", "postgres://db"))
     assert [d.kind for d in result.dependencies] == ["postgres"]
     assert notes == ["postgres: dropped as redis, already found as postgres"]
 
 
+def test_what_the_inferrer_set_aside_is_reported() -> None:
+    inferrer = FakeInferrer(notes=["2 proposed dependencies did not fit the format"])
+    _, _, notes = run_discover(inferrer, doc("a.md", "hello"))
+    assert notes == ["2 proposed dependencies did not fit the format"]
+
+
 def test_a_manual_entry_wins_and_survives() -> None:
-    mine = dep("postgres", "postgres", "manual", [("a.md", "my note")])
+    mine = dep("postgres", "postgres", "manual", [("a.md", 7)])
     existing = DependencySet(
         service="svc", prompt_version="0", docs_hash="old", dependencies=[mine, dep("old", "redis")]
     )
-    inferrer = FakeInferrer(dep("postgres", evidence=[("a.md", "postgres://db")]))
+    inferrer = FakeInferrer(prop("postgres", "postgres", ("a.md", "postgres://db")))
     result, changes, notes = run_discover(inferrer, doc("a.md", "postgres://db"), existing=existing)
     assert result.dependencies == [mine]  # the hint and the agent both yielded to it
     assert ("removed", "old") in changes and ("added", "postgres") not in changes
-    assert "postgres: kept the entry you wrote" in notes
+    assert notes.count("postgres: kept the entry you wrote") == 2
 
 
 def test_a_changed_entry_is_reported_as_changed() -> None:
@@ -343,7 +427,7 @@ def test_a_changed_entry_is_reported_as_changed() -> None:
         service="svc",
         prompt_version="1",
         docs_hash="old",
-        dependencies=[dep("postgres", "postgres", "hint", [("a.md", "stale quote")])],
+        dependencies=[dep("postgres", "postgres", "hint", [("a.md", 9)])],
     )
     _, changes, _ = run_discover(FakeInferrer(), doc("a.md", "postgres://db"), existing=existing)
     assert changes == [("changed", "postgres")]
@@ -356,8 +440,8 @@ def test_an_unchanged_result_reports_no_changes() -> None:
 
 
 def test_more_dependencies_than_a_service_can_have_is_an_error() -> None:
-    quotes = [f"svc{i} is called" for i in range(MAX_DEPENDENCIES + 1)]
-    proposals = [dep(f"svc{i}", "http", evidence=[("a.md", q)]) for i, q in enumerate(quotes)]
+    quotes = [f"service number {i} is called" for i in range(MAX_DEPENDENCIES + 1)]
+    proposals = [prop(f"svc{i}", "http", ("a.md", q)) for i, q in enumerate(quotes)]
     with pytest.raises(DiscoverError, match="at most 32"):
         run_discover(FakeInferrer(*proposals), doc("a.md", "\n".join(quotes)))
 
@@ -376,6 +460,36 @@ def test_the_docs_hash_follows_the_documents_and_not_their_order() -> None:
     assert docs_hash([a]) != docs_hash([doc("a.md", "1").model_copy(update={"sha256": "other"})])
 
 
+SECRETS = (
+    "hunter2",
+    "s3cr3t-token",
+    "pa55/w0rd?#",
+    "swordfish",
+)
+
+
+def test_nothing_a_document_holds_is_copied_into_the_saved_file(tmp_path: Path) -> None:
+    text = "\n".join(
+        [
+            f"DATABASE_URL=postgres://app:{SECRETS[0]}@db/orders",
+            f"REDIS_URL=redis://:{SECRETS[2]}@cache:6379",
+            f"DB_PASS: {SECRETS[3]}",
+            f"Authorization: Token {SECRETS[1]} for the payments-api service",
+        ]
+    )
+    inferrer = FakeInferrer(
+        prop("payments", "http", ("a.md", f"Authorization: Token {SECRETS[1]} for the payments")),
+        prop("orders-db", "postgres", ("a.md", f"postgres://app:{SECRETS[0]}@db/orders")),
+    )
+    result, _, _ = run_discover(inferrer, doc("a.md", text))
+    path = write_dependencies(tmp_path, result)
+    saved = path.read_text()
+    assert {d.name for d in result.dependencies} == {"postgres", "redis", "payments", "orders-db"}
+    for secret in SECRETS:
+        assert secret not in saved
+    assert "Authorization" not in saved and "postgres://" not in saved
+
+
 # --- the file ---
 
 
@@ -386,7 +500,7 @@ def a_set(*dependencies: Dependency) -> DependencySet:
 
 
 def test_a_saved_set_reads_back_and_the_file_is_stable(tmp_path: Path) -> None:
-    saved = a_set(dep("db", evidence=[("a.md", "q")]), dep("cache", "redis"))
+    saved = a_set(dep("db", evidence=[("a.md", 3)]), dep("cache", "redis"))
     path = write_dependencies(tmp_path / "suite", saved)
     assert path == tmp_path / "suite" / DEPENDENCIES_NAME
     assert load_dependencies(tmp_path / "suite") == saved
@@ -501,8 +615,7 @@ def test_discover_writes_the_dependencies_and_lists_what_it_found(
     tmp_path: Path, docs_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     use_inferrer(
-        monkeypatch,
-        FakeInferrer(dep("payments", "http", evidence=[("arch.md", "Payments is called.")])),
+        monkeypatch, FakeInferrer(prop("payments", "http", ("arch.md", "Payments is called.")))
     )
     suite = tmp_path / "suite"
     args = ["discover", str(SPEC), "--docs", str(docs_dir), "--suite", str(suite)]
@@ -512,6 +625,7 @@ def test_discover_writes_the_dependencies_and_lists_what_it_found(
     assert "(2 dependencies)" in result.output
     saved = load_dependencies(suite)
     assert saved is not None and saved.service == "swagger-petstore-openapi-3-0"
+    assert saved.dependencies[1].evidence == [Evidence(source="arch.md", line=2)]
 
 
 def test_discover_defaults_to_the_service_directory(
@@ -536,7 +650,7 @@ def test_discover_keeps_what_a_person_wrote_and_reports_it(
     assert runner.invoke(app, args).exit_code == 0
     saved = load_dependencies(suite)
     assert saved is not None
-    mine = dep("postgres", "postgres", "manual", [("arch.md", "Pets are kept")])
+    mine = dep("postgres", "postgres", "manual", [("arch.md", 1)])
     edited = saved.model_copy(update={"dependencies": [mine]})
     write_dependencies(suite, edited)
     again = runner.invoke(app, args)
@@ -574,108 +688,3 @@ def test_discover_reports_a_corrupt_saved_file_as_exit_2(
     args = ["discover", str(SPEC), "--docs", str(docs_dir), "--suite", str(suite)]
     result = runner.invoke(app, args)
     assert result.exit_code == 2 and "not valid" in result.output
-
-
-def test_one_invalid_proposal_is_set_aside_not_the_whole_reply() -> None:
-    reply = (
-        '```json\n[{"name": "X!", "kind": "redis", "evidence": []},'
-        ' {"name": "cache", "kind": "redis", "evidence": ['
-        + ", ".join(f'{{"source": "a.md", "quote": "quote {i}"}}' for i in range(7))
-        + "]}]\n```"
-    )
-    (found,) = parse_response(reply)
-    assert found.name == "cache" and len(found.evidence) == MAX_EVIDENCE
-
-
-@pytest.mark.parametrize("quote", [" \n ", "a", "five!"])
-def test_a_blank_or_tiny_quote_proves_nothing(quote: str) -> None:
-    inferrer = FakeInferrer(dep("db", evidence=[("a.md", quote), ("nowhere.md", quote)]))
-    result, _, notes = run_discover(inferrer, doc("a.md", "a five! passage"))
-    assert result.dependencies == [] and notes == ["db: dropped, no document says it"]
-
-
-def test_credentials_are_masked_in_kept_quotes_from_hints_and_the_agent() -> None:
-    text = "DATABASE_URL=postgres://user:hunter2@db/app\nthe cache uses password=s3cret here"
-    inferrer = FakeInferrer(
-        dep("cache", "redis", evidence=[("a.md", "the cache uses password=s3cret here")])
-    )
-    result, _, _ = run_discover(inferrer, doc("a.md", text))
-    quotes = [e.quote for d in result.dependencies for e in d.evidence]
-    assert len(quotes) == 2
-    assert not any("hunter2" in q or "s3cret" in q for q in quotes)
-    assert any("[REDACTED]" in q for q in quotes)
-
-
-def test_one_bad_proposal_does_not_discard_the_good_ones() -> None:
-    reply = """```json
-[{"name": "x", "kind": "oracle", "evidence": []},
- {"name": "y", "kind": "redis", "evidence": [{"source": "a.md", "quote": "%s"}], "extra": 1},
- {"name": "z", "kind": "redis", "evidence": [{"source": "a.md", "quote": "redis cache here"}]},
- "not an object"]
-```""" % ("q" * 301)
-    assert [d.name for d in parse_response(reply)] == ["z"]
-
-
-@pytest.mark.parametrize(
-    ("quote", "leaked"),
-    [
-        ('{"password": "hunter2"}', "hunter2"),
-        ("PASSWORD='hunter2'", "hunter2"),
-        ('PASSWORD="hunter2"', "hunter2"),
-        ("Authorization: Bearer hunter2", "hunter2"),
-        ("the passphrase: hunter2 unlocks it", "hunter2"),
-        ("connect with admin:hunter2@db.internal/app", "hunter2"),
-        ("DB_CREDENTIAL=hunter2", "hunter2"),
-    ],
-)
-def test_common_credential_forms_are_masked(quote: str, leaked: str) -> None:
-    inferrer = FakeInferrer(dep("cache", "redis", evidence=[("a.md", quote)]))
-    result, _, _ = run_discover(inferrer, doc("a.md", f"x {quote} y"))
-    (kept,) = [e.quote for d in result.dependencies for e in d.evidence]
-    assert leaked not in kept and "[REDACTED]" in kept
-
-
-@pytest.mark.parametrize(
-    "quote",
-    [
-        "postgres://admin:hunter2",
-        "postgres://u:p/w@h/app",
-        "postgres://u:p#w@h/app",
-        "DB_PASS=hunter2",
-        "redis-server --requirepass hunter2",
-        "mysql -phunter2 -h db",
-        "redis-cli -a hunter2",
-    ],
-)
-def test_a_quote_that_may_still_hold_a_credential_is_not_saved(quote: str) -> None:
-    inferrer = FakeInferrer(dep("cache", "redis", evidence=[("a.md", quote)]))
-    result, _, notes = run_discover(inferrer, doc("a.md", f"x {quote} y"))
-    assert not any("hunter2" in e.quote for d in result.dependencies for e in d.evidence)
-    assert result.dependencies == []
-    assert any("may hold a credential" in n for n in notes)
-
-
-def test_a_quoted_secret_with_spaces_and_commas_is_masked_whole() -> None:
-    quote = 'password="two words, and more" for the cache'
-    inferrer = FakeInferrer(dep("cache", "redis", evidence=[("a.md", quote)]))
-    result, _, _ = run_discover(inferrer, doc("a.md", f"x {quote} y"))
-    (kept,) = [e.quote for d in result.dependencies for e in d.evidence]
-    assert "words" not in kept and "more" not in kept
-
-
-def test_a_long_hint_line_is_cut_between_words_so_a_url_is_never_half_kept() -> None:
-    line = "word " * 59 + "postgres://admin:hunter2@db/app"  # the URL starts near the limit
-    (hint,) = find_hints([doc("a.md", line)])
-    assert "hunter2" not in hint.evidence[0].quote and "admin" not in hint.evidence[0].quote
-    assert len(hint.evidence[0].quote) <= 300
-    assert find_hints([doc("a.md", "postgres://" + "x" * 400)]) == []
-
-
-def test_a_document_path_too_long_for_evidence_gives_no_hint() -> None:
-    assert find_hints([doc("d" * 301 + ".md", "postgres://db/app")]) == []
-
-
-def test_a_long_hint_line_that_breaks_exactly_at_the_limit_is_kept_whole_to_there() -> None:
-    line = "postgres://db/app " + "w" * 282 + " tail"  # a space falls right after character 300
-    (hint,) = find_hints([doc("a.md", line)])
-    assert hint.evidence[0].quote == line[:300]

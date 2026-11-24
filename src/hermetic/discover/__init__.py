@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from hermetic.discover.engine import DiscoverError, Discovery, discover, docs_hash
 from hermetic.discover.hints import find_hints
-from hermetic.discover.infer import DependencyInferrer, InferRequest
+from hermetic.discover.infer import (
+    DependencyInferrer,
+    InferRequest,
+    InferResult,
+    Proposal,
+    Quote,
+)
 from hermetic.discover.models import (
     Dependency,
     DependencyKind,
@@ -29,6 +35,9 @@ __all__ = [
     "Discovery",
     "Evidence",
     "InferRequest",
+    "InferResult",
+    "Proposal",
+    "Quote",
     "discover",
     "docs_hash",
     "find_hints",

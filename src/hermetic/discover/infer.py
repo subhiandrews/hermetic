@@ -2,11 +2,44 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
-from hermetic.discover.models import Dependency
+from pydantic import BaseModel, ConfigDict, Field
+
+from hermetic.discover.models import (
+    MAX_QUOTE_CHARS,
+    MAX_SOURCE_CHARS,
+    NAME_PATTERN,
+    Dependency,
+    DependencyKind,
+)
 from hermetic.ingest.models import DocFile
+
+
+class _Frozen(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class Quote(_Frozen):
+    """A passage the agent says a document holds. Discovery checks it; it is not saved."""
+
+    source: str = Field(min_length=1, max_length=MAX_SOURCE_CHARS)
+    quote: str = Field(min_length=1, max_length=MAX_QUOTE_CHARS)
+
+
+class Proposal(_Frozen):
+    """A dependency the agent names, with the passages it relies on."""
+
+    name: str = Field(pattern=NAME_PATTERN)
+    kind: DependencyKind
+    quotes: list[Quote]
+
+
+@dataclass(frozen=True)
+class InferResult:
+    proposals: list[Proposal]
+    notes: list[str] = field(default_factory=list)  # what the inferrer itself set aside
 
 
 @dataclass(frozen=True)
@@ -27,4 +60,4 @@ class DependencyInferrer(Protocol):
     @property
     def prompt_version(self) -> str: ...
 
-    def infer(self, request: InferRequest) -> list[Dependency]: ...
+    def infer(self, request: InferRequest) -> InferResult: ...

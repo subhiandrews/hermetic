@@ -1,7 +1,7 @@
 """Dependencies the documents name outright, found without the agent.
 
 A connection string (`postgres://...`) or a pinned image (`redis:7`) is not a guess, so it needs
-no model. The agent is asked about what is left.
+no model. The agent is asked about what is left. Evidence is where the line is, never its text.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ import re
 from hermetic.discover.models import (
     KIND_ORDER,
     MAX_EVIDENCE,
-    MAX_QUOTE_CHARS,
     MAX_SOURCE_CHARS,
     Dependency,
     DependencyKind,
@@ -42,34 +41,19 @@ def _kinds_in(line: str) -> list[DependencyKind]:
     return found
 
 
-def _quote(line: str) -> str:
-    """The line squeezed to one space between words and cut to the limit at a word boundary.
-
-    A cut inside a token could leave half a connection string, whose credentials the later
-    masking could no longer recognise. A single token longer than the limit gives no quote.
-    """
-    squeezed = " ".join(line.split())
-    if len(squeezed) <= MAX_QUOTE_CHARS:
-        return squeezed
-    if squeezed[MAX_QUOTE_CHARS] == " ":
-        return squeezed[:MAX_QUOTE_CHARS]
-    return squeezed[:MAX_QUOTE_CHARS].rpartition(" ")[0]
-
-
 def find_hints(docs: list[DocFile]) -> list[Dependency]:
     """One dependency per kind the documents name, each with the lines that name it."""
     evidence: dict[DependencyKind, list[Evidence]] = {}
     for doc in docs:
         if len(doc.path) > MAX_SOURCE_CHARS:  # Evidence cannot name it; the agent may still
             continue
-        for line in doc.text.splitlines():
+        for number, line in enumerate(doc.text.splitlines(), start=1):
             for kind in dict.fromkeys(_kinds_in(line)):  # once per line, in order
-                quote = _quote(line)
-                quotes = evidence.setdefault(kind, [])
-                if quote and len(quotes) < MAX_EVIDENCE:
-                    quotes.append(Evidence(source=doc.path, quote=quote))
+                places = evidence.setdefault(kind, [])
+                if len(places) < MAX_EVIDENCE:
+                    places.append(Evidence(source=doc.path, line=number))
     return [
         Dependency(name=kind, kind=kind, origin="hint", evidence=evidence[kind])
         for kind in KIND_ORDER
-        if evidence.get(kind)
+        if kind in evidence
     ]

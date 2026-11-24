@@ -3,42 +3,20 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from dataclasses import dataclass
 
 from hermetic.discover.hints import find_hints
-from hermetic.discover.infer import DependencyInferrer, InferRequest
+from hermetic.discover.infer import DependencyInferrer, InferRequest, Proposal, Quote
 from hermetic.discover.models import (
     KIND_ORDER,
     MAX_DEPENDENCIES,
     MAX_EVIDENCE,
-    MAX_QUOTE_CHARS,
     MIN_QUOTE_CHARS,
     Dependency,
     DependencySet,
     Evidence,
 )
 from hermetic.ingest.models import DocFile, ServiceModel
-from hermetic.redact import REDACTED, SENSITIVE_KEY_PARTS, redact_url
-
-_URL_IN_TEXT = re.compile(r"[a-z][a-z0-9+.\-]*://\S+", re.IGNORECASE)
-_KEYS = "|".join(re.escape(part) for part in SENSITIVE_KEY_PARTS)
-# key, an optional closing quote, = or :, then the value: quoted whole, or up to a separator
-_SECRET_PAIR = re.compile(
-    rf"((?:{_KEYS}|access[_-]?key)\w*[\"']?\s*[=:]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;&\"']+)",
-    re.IGNORECASE,
-)
-# What masking cannot be trusted with, checked on the masked text: a denylist misses forms, so a
-# quote that still looks like it holds a credential is dropped rather than kept.
-_LEFTOVER_CREDENTIAL = re.compile(
-    r"://[^\s/@#?:\[]+:(?!\d+(?:[/?#\s]|$))"  # scheme://user:<not a port> with no @ behind it
-    r"|[\w-]*(?:pass|auth|key|token|secret|pwd)[\w-]*\s*=\s*(?!\[REDACTED\])\S"  # DB_PASS=x
-    r"|(?<!\S)--?[\w-]*(?:pass|auth|key|token|secret)[\w-]*\s+(?!\[REDACTED\]|-)\S"  # --requirepass
-    r"|(?<!\S)-[pa]\S|(?<!\S)-a\s+\S",  # mysql -pX, redis-cli -a X
-    re.IGNORECASE,
-)
-_AUTH_SCHEME = re.compile(r"\b(bearer|basic)(\s+)\S+", re.IGNORECASE)
-_BARE_USERINFO = re.compile(r"(?<![\w/])[^\s/@:]+:[^\s/@]+@(?=[\w.\-])")  # user:pw@host, no scheme
 
 
 class DiscoverError(Exception):
@@ -64,22 +42,29 @@ def _squash(text: str) -> str:
     return " ".join(text.split())
 
 
-def _says(texts: dict[str, str], evidence: Evidence) -> bool:
-    """Whether the named document holds the quote; an empty or tiny quote proves nothing."""
-    quote = _squash(evidence.quote)
-    return len(quote) >= MIN_QUOTE_CHARS and quote in texts.get(evidence.source, "")
+def _locate(lines: dict[str, list[str]], quote: Quote) -> Evidence | None:
+    """Where in the named document a line holds the quote, or None when none does.
+
+    The saved evidence is that place, not the text: a document can hold anything (a password
+    in a connection string), and a committed file should not copy it. A reader opens the
+    document at the line. A quote too short to mean anything, or one that runs across lines,
+    proves nothing and is not found.
+    """
+    needle = _squash(quote.quote)
+    if len(needle) < MIN_QUOTE_CHARS:
+        return None
+    for number, line in enumerate(lines.get(quote.source, []), start=1):
+        if needle in line:
+            return Evidence(source=quote.source, line=number)
+    return None
 
 
-def _masked(quote: str) -> str:
-    """The quote with credentials removed, since the file is meant to be committed."""
-    clean = " ".join(_URL_IN_TEXT.sub(lambda m: redact_url(m.group()), quote).split())
-    clean = _BARE_USERINFO.sub(REDACTED + "@", clean)
-    clean = _AUTH_SCHEME.sub(lambda m: m.group(1) + m.group(2) + REDACTED, clean)
-    return _SECRET_PAIR.sub(r"\1" + REDACTED, clean)[:MAX_QUOTE_CHARS]
-
-
-def _leaks(masked: str) -> bool:
-    return _LEFTOVER_CREDENTIAL.search(masked) is not None
+def _from_proposal(proposal: Proposal, lines: dict[str, list[str]]) -> Dependency | None:
+    found = [_locate(lines, quote) for quote in proposal.quotes]
+    evidence = list(dict.fromkeys(e for e in found if e is not None))[:MAX_EVIDENCE]
+    if not evidence:
+        return None
+    return Dependency(name=proposal.name, kind=proposal.kind, origin="agent", evidence=evidence)
 
 
 def discover(
@@ -90,10 +75,10 @@ def discover(
 ) -> Discovery:
     """Hints from the documents, then the agent's proposals, each kept only if a document says it.
 
-    Evidence is checked in code: a quote must appear in the document it names, so a proposal
+    A proposal must quote the document it relies on, and code checks the quote is there, so one
     the agent made up has nothing to stand on and is dropped. That shows a document says it, not
-    that the document is right. Kept quotes have URL credentials and secret-looking pairs masked.
-    Entries a person wrote (origin "manual") are kept untouched and win over any found name.
+    that the document is right. Entries a person wrote (origin "manual") are kept untouched and
+    win over any found name.
     """
     hints = find_hints(model.docs)
     request = InferRequest(
@@ -104,47 +89,29 @@ def discover(
         hints=hints,
     )
     try:
-        proposed = inferrer.infer(request)
+        inferred = inferrer.infer(request)
     except Exception as exc:  # the agent can fail in any way: a timeout, a bad reply, no network
         raise DiscoverError(f"dependency inference failed: {exc}") from exc
 
-    texts = {doc.path: _squash(doc.text) for doc in model.docs}
+    lines = {doc.path: [_squash(line) for line in doc.text.splitlines()] for doc in model.docs}
     before = {d.name: d for d in existing.dependencies} if existing else {}
     manual = {name: d for name, d in before.items() if d.origin == "manual"}
-    notes: list[str] = []
+    notes: list[str] = list(inferred.notes)
     found: dict[str, Dependency] = {}
-    for dependency in [*hints, *proposed]:
-        if dependency.name in manual:
-            notes.append(f"{dependency.name}: kept the entry you wrote")
-            continue
-        verified: list[Evidence] = []
-        withheld = False
-        for e in dependency.evidence:
-            if not _says(texts, e):
-                continue
-            quote = _masked(e.quote)
-            if _leaks(quote):
-                withheld = True
-            else:
-                verified.append(Evidence(source=e.source, quote=quote))
-        if withheld:
-            notes.append(f"{dependency.name}: a quote that may hold a credential was not saved")
-        if not verified:
-            if not withheld:
-                notes.append(f"{dependency.name}: dropped, no document says it")
-            continue
-        current = found.get(dependency.name)
-        if current is None:
-            found[dependency.name] = dependency.model_copy(
-                update={"evidence": verified[:MAX_EVIDENCE]}
-            )
+    candidates: list[tuple[str, Dependency | None]] = [(h.name, h) for h in hints]
+    candidates += [(p.name, _from_proposal(p, lines)) for p in inferred.proposals]
+    for name, dependency in candidates:
+        if name in manual:
+            notes.append(f"{name}: kept the entry you wrote")
+        elif dependency is None:
+            notes.append(f"{name}: dropped, no document says it")
+        elif (current := found.get(name)) is None:
+            found[name] = dependency
         elif current.kind != dependency.kind:
-            notes.append(
-                f"{dependency.name}: dropped as {dependency.kind}, already found as {current.kind}"
-            )
+            notes.append(f"{name}: dropped as {dependency.kind}, already found as {current.kind}")
         else:
-            merged = _merged(current.evidence, verified)
-            found[dependency.name] = current.model_copy(update={"evidence": merged})
+            unique = list(dict.fromkeys([*current.evidence, *dependency.evidence]))
+            found[name] = current.model_copy(update={"evidence": unique[:MAX_EVIDENCE]})
 
     everything = {**manual, **found}
     if len(everything) > MAX_DEPENDENCIES:
@@ -160,11 +127,6 @@ def discover(
         dependencies=ordered,
     )
     return Discovery(result, _changes(before, everything), notes)
-
-
-def _merged(first: list[Evidence], second: list[Evidence]) -> list[Evidence]:
-    unique = list(dict.fromkeys([*first, *second]))
-    return unique[:MAX_EVIDENCE]
 
 
 def _changes(before: dict[str, Dependency], after: dict[str, Dependency]) -> list[tuple[str, str]]:

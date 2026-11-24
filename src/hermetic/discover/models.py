@@ -25,12 +25,10 @@ class _Frozen(BaseModel):
 
 
 class Evidence(_Frozen):
-    """A passage of a document that says the service has this dependency."""
+    """Where a document says the service has this dependency: a place, never the text itself."""
 
-    source: str = Field(
-        min_length=1, max_length=MAX_SOURCE_CHARS
-    )  # the document's path under the docs root
-    quote: str = Field(min_length=1, max_length=MAX_QUOTE_CHARS)
+    source: str = Field(min_length=1, max_length=MAX_SOURCE_CHARS)  # path under the docs root
+    line: int = Field(ge=1, le=10_000_000)  # 1-based
 
 
 class Dependency(_Frozen):
