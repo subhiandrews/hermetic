@@ -1,0 +1,191 @@
+"""Start and stop a compose stack, and say where its engines can be reached.
+
+Only a file that passed the allowlist is run, and the text that passed is the text handed to
+Docker (on standard input), so the file cannot change between the check and the start. Docker is
+reached through `CommandRunner`, so tests use a fake and never need a daemon.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import os
+import re
+import subprocess
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Protocol
+
+from hermetic.discover.models import DependencyKind
+from hermetic.provision.images import ENGINES
+from hermetic.provision.validate import PROJECT_PREFIX, ComposeError, _printable, check_compose
+
+UP_TIMEOUT_SECONDS = 300.0  # image pulls included
+COMMAND_TIMEOUT_SECONDS = 60.0
+WAIT_TIMEOUT_SECONDS = 180  # how long Compose waits for the health checks
+_ENDPOINT = re.compile(r"^127\.0\.0\.1:(\d{1,5})$")
+_MAX_OUTPUT_CHARS = 2000
+_URLS: dict[DependencyKind, str] = {
+    "postgres": "postgresql://hermetic:hermetic@127.0.0.1:{port}/hermetic",
+    "mysql": "mysql://root:hermetic@127.0.0.1:{port}/hermetic",
+    "redis": "redis://127.0.0.1:{port}",
+    "mongo": "mongodb://127.0.0.1:{port}",
+    "http": "http://127.0.0.1:{port}",
+}
+_KIND_OF_IMAGE: dict[str, DependencyKind] = {e.image: kind for kind, e in ENGINES.items()}
+
+
+class StackError(Exception):
+    """The stack could not be started, stopped or described."""
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+class CommandRunner(Protocol):
+    def __call__(
+        self, argv: Sequence[str], *, stdin: str | None, timeout: float
+    ) -> CommandResult: ...
+
+
+def run_command(argv: Sequence[str], *, stdin: str | None, timeout: float) -> CommandResult:
+    """Run a fixed argument list, never through a shell, with Compose's own settings removed."""
+    # COMPOSE_FILE, COMPOSE_PROJECT_NAME and the like would let the environment steer which file
+    # or project the command acts on.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("COMPOSE_")}
+    try:
+        done = subprocess.run(
+            list(argv),
+            input=stdin,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise StackError("docker is not installed or not on PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise StackError(f"docker did not finish within {timeout:.0f} seconds") from exc
+    return CommandResult(done.returncode, done.stdout, done.stderr)
+
+
+@dataclass(frozen=True)
+class Endpoint:
+    name: str  # the compose service, which is the dependency's name
+    kind: DependencyKind
+    port: int  # on 127.0.0.1
+
+    @property
+    def url(self) -> str:
+        return _URLS[self.kind].format(port=self.port)
+
+    @property
+    def variable(self) -> str:
+        return f"HERMETIC_DEP_{self.name.upper().replace('-', '_')}_URL"
+
+
+def _say(result: CommandResult) -> str:
+    text = (result.stderr or result.stdout).strip()
+    return _printable(text[:_MAX_OUTPUT_CHARS]) or f"exit code {result.returncode}"
+
+
+def _compose(
+    runner: CommandRunner, project: str, args: Sequence[str], *, timeout: float
+) -> CommandResult:
+    argv = ["docker", "compose", "-p", project, *args]
+    return runner(argv, stdin=None, timeout=timeout)
+
+
+def project_name(service: str) -> str:
+    return f"{PROJECT_PREFIX}{service}"
+
+
+def up(service: str, path: Path, text: str, runner: CommandRunner = run_command) -> list[Endpoint]:
+    """Check `text` (the content of the file at `path`), start it, and say where it listens.
+
+    The file must be the stack of `service`: `down` and the next `up` find it by that name.
+
+    On any failure after the start has begun, what was started is taken down again.
+    """
+    try:
+        document = check_compose(text, path.parent)
+    except ComposeError as exc:
+        raise StackError(f"refusing to run {path}: {exc}") from exc
+    project = str(document["name"])
+    if project != project_name(service):
+        raise StackError(f"{path} is the stack {project!r}, not {project_name(service)!r}")
+    started = runner(
+        [
+            "docker",
+            "compose",
+            "-p",
+            project,
+            "--project-directory",
+            str(path.parent.resolve()),
+            "-f",
+            "-",
+            "up",
+            "--detach",
+            "--wait",
+            "--wait-timeout",
+            str(WAIT_TIMEOUT_SECONDS),
+        ],
+        stdin=text,
+        timeout=UP_TIMEOUT_SECONDS,
+    )
+    try:
+        if started.returncode != 0:
+            raise StackError(f"docker compose up failed: {_say(started)}")
+        return _endpoints(runner, project, document["services"])
+    except BaseException:
+        _best_effort_down(runner, project)
+        raise
+
+
+def _endpoints(
+    runner: CommandRunner, project: str, services: Mapping[str, Mapping[str, object]]
+) -> list[Endpoint]:
+    found: list[Endpoint] = []
+    for name, service in services.items():
+        kind = _KIND_OF_IMAGE[str(service["image"])]
+        asked = _compose(
+            runner,
+            project,
+            ["port", name, str(ENGINES[kind].port)],
+            timeout=COMMAND_TIMEOUT_SECONDS,
+        )
+        if asked.returncode != 0:
+            raise StackError(f"cannot find where {name} listens: {_say(asked)}")
+        match = _ENDPOINT.match(asked.stdout.strip())
+        port = int(match.group(1)) if match else 0
+        if not 0 < port < 65536:
+            raise StackError(f"{name} is not published on 127.0.0.1 as expected")
+        found.append(Endpoint(name, kind, port))
+    return found
+
+
+def _best_effort_down(runner: CommandRunner, project: str) -> None:
+    # the failure that brought us here is the one worth reporting
+    with contextlib.suppress(StackError):
+        down_project(runner, project)
+
+
+def down_project(runner: CommandRunner, project: str) -> None:
+    done = _compose(
+        runner,
+        project,
+        ["down", "--volumes", "--remove-orphans"],
+        timeout=COMMAND_TIMEOUT_SECONDS,
+    )
+    if done.returncode != 0:
+        raise StackError(f"docker compose down failed: {_say(done)}")
+
+
+def down(service: str, runner: CommandRunner = run_command) -> None:
+    """Stop and remove what `up` started for the service, data included."""
+    down_project(runner, project_name(service))

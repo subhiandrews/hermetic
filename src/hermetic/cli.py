@@ -37,11 +37,14 @@ from hermetic.provision import (
     COMPOSE_NAME,
     ComposeError,
     ProvisionError,
+    StackError,
     check_compose,
     generate_compose,
     read_compose_file,
     write_compose,
 )
+from hermetic.provision import down as stop_stack
+from hermetic.provision import up as start_stack
 from hermetic.publish import (
     ExportError,
     PublisherError,
@@ -203,6 +206,45 @@ def check_compose_command(
         typer.echo(f"error: cannot read {file}: {exc.strerror}", err=True)
         raise typer.Exit(code=2) from exc
     typer.echo(f"ok: {file} ({len(document['services'])} services)")
+
+
+@app.command()
+def up(
+    service: Annotated[str, typer.Option(help="The microservice whose stack to start.")],
+    file: Annotated[
+        Path | None,
+        typer.Option(
+            help=f"The compose file; default .hermetic/provision/<service>/{COMPOSE_NAME}."
+        ),
+    ] = None,
+) -> None:
+    """Start a service's mock stack and print where each dependency listens, as NAME=URL lines.
+
+    The file is checked against the allowlist first, and the text that passed is what Docker
+    gets. The engines hold nothing between runs: `hermetic down` removes them.
+    """
+    try:
+        service_id = resolve_service(None, service)
+        path = file or Path(".hermetic") / "provision" / service_id / COMPOSE_NAME
+        endpoints = start_stack(service_id, path, read_compose_file(path))
+    except (InvalidServiceError, StackError, ComposeError, OSError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    for endpoint in endpoints:
+        typer.echo(f"{endpoint.variable}={endpoint.url}")
+
+
+@app.command()
+def down(
+    service: Annotated[str, typer.Option(help="The microservice whose stack to stop.")],
+) -> None:
+    """Stop and remove a service's mock stack, data included."""
+    try:
+        stop_stack(resolve_service(None, service))
+    except (InvalidServiceError, StackError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    typer.echo(f"stopped hermetic-{service}")
 
 
 @app.command()
