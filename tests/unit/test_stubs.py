@@ -108,6 +108,8 @@ def model(tmp_path: Path) -> ServiceModel:
         ({"type": "number", "exclusiveMinimum": 0}, 1.0),
         ({"type": "number", "exclusiveMinimum": 0, "maximum": 1}, 0.5),
         ({"type": "number", "exclusiveMinimum": 3, "exclusiveMaximum": 4}, 3.5),
+        ({"type": "number", "exclusiveMinimum": 1e308, "exclusiveMaximum": 1.7e308}, 1.35e308),
+        ({"type": "number", "exclusiveMinimum": -1.7e308, "exclusiveMaximum": -1e308}, -1.35e308),
         ({"type": "number", "maximum": -1.5}, -1.5),
         ({"type": "number", "exclusiveMaximum": 0}, -1.0),
         ({"type": "number", "minimum": -2, "exclusiveMaximum": 0}, -1.0),

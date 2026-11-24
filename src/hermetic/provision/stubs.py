@@ -81,11 +81,11 @@ def _number(schema: Json, *, whole: bool) -> int | float:
         if low is not None and (low > 0 or (low_open and low == 0)):
             if not low_open:
                 return float(low)
-            return float((low + high) / 2 if high is not None else low + 1)
+            return float(low / 2 + high / 2 if high is not None else low + 1)
         if high is not None and (high < 0 or (high_open and high == 0)):
             if not high_open:
                 return float(high)
-            return float((low + high) / 2 if low is not None else high - 1)
+            return float(low / 2 + high / 2 if low is not None else high - 1)
         return 0.0
     except OverflowError as exc:  # an integer bound too large for a float
         raise ProvisionError("a bound in the spec is too large to sample") from exc
