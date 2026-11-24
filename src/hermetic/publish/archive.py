@@ -91,6 +91,17 @@ def _read_limited(suite_dir: Path, name: str, limit: int) -> bytes:
     return data
 
 
+def read_suite(suite_dir: Path) -> list[tuple[str, bytes]]:
+    """The suite's files as (path inside the suite, content), sorted, each read within its limit.
+
+    Raises ExportError when the suite holds no generated test or a file is not what was
+    generated (see `_read_limited`).
+    """
+    return [
+        (name, _read_limited(suite_dir, name, limit)) for name, limit in require_tests(suite_dir)
+    ]
+
+
 def write_suite_zip(service: str, suite_dir: Path, destination: Path) -> list[str]:
     """Write the suite to `destination` and return the names packed, in archive order.
 
@@ -98,10 +109,7 @@ def write_suite_zip(service: str, suite_dir: Path, destination: Path) -> list[st
     directory. The archive is written beside its destination and moved into place, so a failure
     leaves no half-written file and an existing archive is replaced whole.
     """
-    files = require_tests(suite_dir)
-    contents: list[tuple[str, bytes]] = []
-    for name, limit in files:
-        contents.append((name, _read_limited(suite_dir, name, limit)))
+    contents = read_suite(suite_dir)
 
     fd, tmp = tempfile.mkstemp(dir=destination.parent, prefix=".export-", suffix=".tmp")
     try:

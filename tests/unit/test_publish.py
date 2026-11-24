@@ -246,8 +246,8 @@ def _entry_points(*eps: EntryPoint) -> object:
     return lambda group: [ep for ep in eps if ep.group == group]
 
 
-def test_the_builtin_publisher_is_local() -> None:
-    assert set(BUILTIN_PUBLISHERS) == {"local"}
+def test_the_builtin_publishers_are_local_and_github_pr() -> None:
+    assert set(BUILTIN_PUBLISHERS) == {"local", "github-pr"}
 
 
 def test_the_local_publisher_leaves_the_suite_where_it_is(tmp_path: Path) -> None:
@@ -288,7 +288,9 @@ def test_a_publisher_that_fails_to_import_is_a_publisher_error(
 
 
 def test_an_unknown_publisher_lists_the_available_ones() -> None:
-    with pytest.raises(PublisherError, match=r"unknown publisher 'nope' \(available: local"):
+    with pytest.raises(
+        PublisherError, match=r"unknown publisher 'nope' \(available: github-pr, local"
+    ):
         load_publisher("nope")
 
 

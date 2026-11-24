@@ -33,7 +33,16 @@ class LocalPublisher:
         return str(suite_dir)
 
 
-BUILTIN_PUBLISHERS: dict[str, PublisherFactory] = {"local": LocalPublisher}
+def _github_pr() -> SuitePublisher:
+    from hermetic.publish.github_pr import GitHubPRPublisher  # only a github-pr user needs httpx
+
+    return GitHubPRPublisher.from_environment()
+
+
+BUILTIN_PUBLISHERS: dict[str, PublisherFactory] = {
+    "local": LocalPublisher,
+    "github-pr": _github_pr,
+}
 
 
 def load_publisher(name: str) -> SuitePublisher:

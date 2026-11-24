@@ -148,8 +148,9 @@ def publish(
     publisher: Annotated[
         str,
         typer.Option(
-            help="Where to deliver the suite: 'local' leaves it where it is; other names come "
-            "from plugins in the hermetic.publishers entry-point group."
+            help="Where to deliver the suite: 'local' leaves it where it is, 'github-pr' opens "
+            "a pull request (see docs/architecture.md); other names come from plugins in the "
+            "hermetic.publishers entry-point group."
         ),
     ] = "local",
 ) -> None:
