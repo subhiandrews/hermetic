@@ -18,7 +18,7 @@ from typing import Protocol
 
 from hermetic.discover.models import DependencyKind
 from hermetic.provision.images import ENGINES
-from hermetic.provision.validate import PROJECT_PREFIX, ComposeError, _printable, check_compose
+from hermetic.provision.validate import PROJECT_PREFIX, ComposeError, check_compose, printable
 
 UP_TIMEOUT_SECONDS = 300.0  # image pulls included
 COMMAND_TIMEOUT_SECONDS = 60.0
@@ -63,12 +63,15 @@ def run_command(argv: Sequence[str], *, stdin: str | None, timeout: float) -> Co
             input=stdin,
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=timeout,
             env=env,
             check=False,
         )
     except FileNotFoundError as exc:
         raise StackError("docker is not installed or not on PATH") from exc
+    except OSError as exc:  # not executable, and the like
+        raise StackError(f"cannot run docker: {exc.strerror or exc}") from exc
     except subprocess.TimeoutExpired as exc:
         raise StackError(f"docker did not finish within {timeout:.0f} seconds") from exc
     return CommandResult(done.returncode, done.stdout, done.stderr)
@@ -91,7 +94,7 @@ class Endpoint:
 
 def _say(result: CommandResult) -> str:
     text = (result.stderr or result.stdout).strip()
-    return _printable(text[:_MAX_OUTPUT_CHARS]) or f"exit code {result.returncode}"
+    return printable(text[:_MAX_OUTPUT_CHARS]) or f"exit code {result.returncode}"
 
 
 def _compose(
@@ -114,37 +117,57 @@ def up(service: str, path: Path, text: str, runner: CommandRunner = run_command)
     """
     try:
         document = check_compose(text, path.parent)
+        _make_mount_sources(path.parent, document)
+        # A source that did not exist was accepted above; now every one exists, so look again.
+        document = check_compose(text, path.parent)
     except ComposeError as exc:
         raise StackError(f"refusing to run {path}: {exc}") from exc
     project = str(document["name"])
     if project != project_name(service):
         raise StackError(f"{path} is the stack {project!r}, not {project_name(service)!r}")
-    started = runner(
-        [
-            "docker",
-            "compose",
-            "-p",
-            project,
-            "--project-directory",
-            str(path.parent.resolve()),
-            "-f",
-            "-",
-            "up",
-            "--detach",
-            "--wait",
-            "--wait-timeout",
-            str(WAIT_TIMEOUT_SECONDS),
-        ],
-        stdin=text,
-        timeout=UP_TIMEOUT_SECONDS,
-    )
+    argv = [
+        "docker",
+        "compose",
+        "-p",
+        project,
+        "--project-directory",
+        str(path.parent.resolve()),
+        "-f",
+        "-",
+        "up",
+        "--detach",
+        "--wait",
+        "--wait-timeout",
+        str(WAIT_TIMEOUT_SECONDS),
+    ]
     try:
+        started = runner(argv, stdin=text, timeout=UP_TIMEOUT_SECONDS)
         if started.returncode != 0:
             raise StackError(f"docker compose up failed: {_say(started)}")
         return _endpoints(runner, project, document["services"])
-    except BaseException:
+    except BaseException:  # a timeout or Ctrl-C can leave containers behind too
         _best_effort_down(runner, project)
         raise
+
+
+def _make_mount_sources(folder: Path, document: Mapping[str, Mapping[str, object]]) -> None:
+    """Create the folders a service mounts, so Docker never creates one itself.
+
+    Docker makes a missing source at bind time, and by then it could be a link to anywhere, so
+    each folder is made here, one step at a time, refusing a link at any step.
+    """
+    services = document["services"]
+    assert isinstance(services, Mapping)  # check_compose has said so
+    for service in services.values():
+        for volume in service.get("volumes", []):  # type: ignore[attr-defined]
+            source = str(volume).split(":", 1)[0]
+            step = folder
+            for part in Path(source).parts:
+                step = step / part
+                if step.is_symlink():
+                    raise StackError(f"{step} is a symlink; not mounting through it")
+                if not step.exists():
+                    step.mkdir()
 
 
 def _endpoints(

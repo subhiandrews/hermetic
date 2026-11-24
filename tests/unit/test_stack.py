@@ -273,3 +273,84 @@ def test_down_command_reports_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.exit_code == 2
     result = cli_runner.invoke(app, ["down", "--service", "Bad Name"])
     assert result.exit_code == 2
+
+
+# --- review fixes ---
+
+
+def test_up_makes_the_mount_folders_before_docker_sees_them(stack: tuple[Path, str]) -> None:
+    path, text = stack
+    made: list[bool] = []
+
+    def runner(argv: Sequence[str], *, stdin: str | None, timeout: float) -> CommandResult:
+        if "up" in argv:
+            made.append((path.parent / "mocks" / "payments").is_dir())
+        return FakeDocker()(argv, stdin=stdin, timeout=timeout)
+
+    up("shop", path, text, runner)
+    assert made == [True]
+
+
+def test_a_linked_mount_folder_is_refused(stack: tuple[Path, str], tmp_path: Path) -> None:
+    path, text = stack
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (path.parent / "mocks").symlink_to(elsewhere)
+    docker = FakeDocker()
+    with pytest.raises(StackError, match="symlink"):
+        up("shop", path, text, docker)
+    assert docker.calls == []
+
+
+def test_a_timeout_during_up_is_cleaned_up(stack: tuple[Path, str]) -> None:
+    path, text = stack
+    calls: list[list[str]] = []
+
+    def runner(argv: Sequence[str], *, stdin: str | None, timeout: float) -> CommandResult:
+        calls.append(list(argv))
+        if "up" in argv:
+            raise StackError("docker did not finish within 300 seconds")
+        return CommandResult(0, "", "")
+
+    with pytest.raises(StackError, match="did not finish"):
+        up("shop", path, text, runner)
+    assert "down" in calls[-1]
+
+
+def test_an_interrupt_during_up_is_cleaned_up(stack: tuple[Path, str]) -> None:
+    path, text = stack
+    calls: list[list[str]] = []
+
+    def runner(argv: Sequence[str], *, stdin: str | None, timeout: float) -> CommandResult:
+        calls.append(list(argv))
+        if "up" in argv:
+            raise KeyboardInterrupt
+        return CommandResult(0, "", "")
+
+    with pytest.raises(KeyboardInterrupt):
+        up("shop", path, text, runner)
+    assert "down" in calls[-1]
+
+
+def test_run_command_turns_os_errors_into_stack_errors(tmp_path: Path) -> None:
+    script = tmp_path / "docker"
+    script.write_text("#!/bin/sh\n")  # not executable
+    with pytest.raises(StackError, match="cannot run docker"):
+        run_command([str(script)], stdin=None, timeout=5)
+
+
+def test_run_command_survives_output_that_is_not_utf8(tmp_path: Path) -> None:
+    script = tmp_path / "docker"
+    script.write_text("#!/bin/sh\nprintf '\\377\\376 ok'\n")
+    script.chmod(0o755)
+    result = run_command([str(script)], stdin=None, timeout=5)
+    assert result.stdout.endswith(" ok")
+
+
+def test_an_existing_mount_folder_is_left_as_it_is(stack: tuple[Path, str]) -> None:
+    path, text = stack
+    kept = path.parent / "mocks" / "payments"
+    kept.mkdir(parents=True)
+    (kept / "stub.json").write_text("{}")
+    up("shop", path, text, FakeDocker())
+    assert (kept / "stub.json").read_text() == "{}"

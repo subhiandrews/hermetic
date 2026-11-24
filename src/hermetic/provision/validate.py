@@ -57,7 +57,7 @@ _HEALTH_KEYS = frozenset({"test", "interval", "timeout", "retries", "start_perio
 _DEPENDS_CONDITIONS = frozenset({"service_started", "service_healthy"})
 
 
-def _printable(text: str) -> str:
+def printable(text: str) -> str:
     return "".join(
         c if c.isprintable() else c.encode("unicode_escape").decode("ascii") for c in text
     )
@@ -73,7 +73,7 @@ class ComposeError(Exception):
     def __init__(self, problems: list[str]) -> None:
         # A problem can quote a key from the file, and a key can hold an escape sequence that
         # rewrites a terminal, so what is kept and printed is made printable here, once.
-        self.problems = [_printable(problem) for problem in problems]
+        self.problems = [printable(problem) for problem in problems]
         super().__init__("; ".join(self.problems))
 
 

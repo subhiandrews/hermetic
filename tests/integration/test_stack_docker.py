@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from hermetic.discover import Dependency, DependencySet
-from hermetic.provision import COMPOSE_NAME, MOCKS_DIR, down, generate_compose, up
+from hermetic.provision import COMPOSE_NAME, down, generate_compose, up
 
 pytestmark = pytest.mark.integration
 
@@ -38,7 +38,6 @@ def test_every_kind_comes_up_healthy_answers_and_goes_away(tmp_path: Path) -> No
             Dependency(name="payments", kind="http", origin="manual"),
         ],
     )
-    (tmp_path / MOCKS_DIR / "payments").mkdir(parents=True)
     path = tmp_path / COMPOSE_NAME
     text = generate_compose(deps, tmp_path)
     path.write_text(text)
