@@ -2,6 +2,9 @@
 # The fast pre-commit checks: lint, format and types. The full suite and the coverage gate run
 # in CI (and by hand: `uv run pytest --cov`); they are too slow to run on every commit.
 #
+# The checks cover the working tree, not just what is staged, so unstaged edits can fail a
+# commit whose staged content is clean. The hooks are best-effort; CI is the gate.
+#
 # Both the git pre-commit hook and the Claude Code hook in .claude/settings.json call this, so a
 # commit made through Claude Code runs it twice (under a second). That is deliberate: if either
 # hook skipped when the other is installed, a commit that bypasses the git hook would skip both.
@@ -16,7 +19,7 @@ fi
 
 run() {
   echo "check: $*" >&2
-  uv run --group dev --quiet "$@" >&2 || { echo "check: '$*' failed: fix the findings above before committing" >&2; exit 1; }
+  uv run --locked --group dev --quiet "$@" >&2 || { echo "check: '$*' failed: fix the findings above before committing" >&2; exit 1; }
 }
 
 run ruff check .
