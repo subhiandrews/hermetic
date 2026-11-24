@@ -182,15 +182,15 @@ def compose(
 @app.command("check-compose")
 def check_compose_command(
     file: Annotated[Path, typer.Argument(help="The compose file to check.")],
-    workdir: Annotated[
-        Path | None,
-        typer.Option(help="The directory a mount may reach into; default: the file's directory."),
-    ] = None,
 ) -> None:
-    """Check a compose file against the allowlist Hermetic applies before it runs one."""
+    """Check a compose file against the allowlist Hermetic applies before it runs one.
+
+    Mounts are checked against the file's own directory, because that is what Compose resolves
+    a relative path against when it runs the file.
+    """
     try:
         text = read_compose_file(file)
-        document = check_compose(text, workdir or file.parent)
+        document = check_compose(text, file.parent)
     except ComposeError as exc:
         for problem in exc.problems:
             typer.echo(f"refused: {problem}", err=True)

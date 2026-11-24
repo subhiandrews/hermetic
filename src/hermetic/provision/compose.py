@@ -17,7 +17,12 @@ import yaml
 
 from hermetic.discover.models import Dependency, DependencySet
 from hermetic.provision.images import ENGINES
-from hermetic.provision.validate import MAX_COMPOSE_BYTES, ComposeError, check_compose
+from hermetic.provision.validate import (
+    MAX_COMPOSE_BYTES,
+    PROJECT_PREFIX,
+    ComposeError,
+    check_compose,
+)
 
 COMPOSE_NAME = "docker-compose.hermetic.yml"
 MOCKS_DIR = "mocks"  # under the compose file's directory: WireMock's stubs, one folder each
@@ -81,7 +86,7 @@ def generate_compose(dependencies: DependencySet, workdir: Path) -> str:
     if not dependencies.dependencies:
         raise ProvisionError("there are no dependencies to provision")
     document = {
-        "name": f"hermetic-{dependencies.service}",
+        "name": f"{PROJECT_PREFIX}{dependencies.service}",
         "services": {d.name: _service(d) for d in dependencies.dependencies},
     }
     text = _HEADER + yaml.safe_dump(document, sort_keys=False, default_flow_style=False)

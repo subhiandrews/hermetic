@@ -11,6 +11,7 @@ so is `$` anywhere, which Compose would replace from the environment *after* thi
 
 from __future__ import annotations
 
+import os
 import re
 import stat
 from pathlib import Path, PurePosixPath
@@ -39,18 +40,29 @@ ALLOWED_SERVICE_KEYS = frozenset(
         "pids_limit",
     }
 )
-_PROJECT = re.compile(r"^[a-z0-9][a-z0-9_-]{0,69}$")
+# The project is `hermetic-<service id>`, and a service id is at most 63 characters.
+PROJECT_PREFIX = "hermetic-"
+MAX_PROJECT_CHARS = len(PROJECT_PREFIX) + 63
+MAX_NESTING = 32  # compose files nest a handful of levels; deeper is not one
+MAX_MOUNT_ENTRIES = 10_000  # files and folders looked through under one mount
+MAX_MEMORY_MB = 65_536
+# Every pattern is applied with fullmatch: `$` alone would also accept a trailing newline.
+_PROJECT = re.compile(rf"[a-z0-9][a-z0-9_-]{{0,{MAX_PROJECT_CHARS - 1}}}")
 _SERVICE = re.compile(NAME_PATTERN)
-_ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_PORT = re.compile(r"^127\.0\.0\.1:(\d{1,5})?:(\d{1,5})(?:/(?:tcp|udp))?$")
-_MEM = re.compile(r"^\d{1,5}[mg]$")
-_TMPFS = re.compile(r"^/[A-Za-z0-9_./-]*$")
+_ENV_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_PORT = re.compile(r"127\.0\.0\.1:(\d{1,5})?:(\d{1,5})(?:/(?:tcp|udp))?")
+_MEM = re.compile(r"([1-9]\d{0,5})([mg])")  # a limit of 0 means no limit to Docker
+_TMPFS = re.compile(r"/[A-Za-z0-9_./-]*")
 _HEALTH_KEYS = frozenset({"test", "interval", "timeout", "retries", "start_period"})
 _DEPENDS_CONDITIONS = frozenset({"service_started", "service_healthy"})
 
 
 class ComposeError(Exception):
-    """A compose file that must not run. `problems` says everything wrong with it."""
+    """A compose file that must not run. `problems` lists what is wrong with its content.
+
+    A file that cannot be read as a compose file at all (too large, not YAML, not a mapping)
+    gives the one reason it stopped on, since there is nothing further to check.
+    """
 
     def __init__(self, problems: list[str]) -> None:
         super().__init__("; ".join(problems))
@@ -101,13 +113,17 @@ def check_compose(text: str, workdir: Path) -> dict[str, Any]:
         document = yaml.load(text, Loader=_Loader)
     except yaml.YAMLError as exc:
         raise ComposeError([f"not valid YAML for a compose file: {_why(exc)}"]) from exc
+    except ValueError as exc:  # a scalar that looks like a date but is not one (2001-02-30)
+        raise ComposeError(["not valid YAML for a compose file: a value cannot be read"]) from exc
+    except RecursionError as exc:  # brackets nested far deeper than the size cap would suggest
+        raise ComposeError(["not valid YAML for a compose file: nested too deeply"]) from exc
     problems: list[str] = []
     if not isinstance(document, dict):
         raise ComposeError(["the file must be a mapping with a `services` key"])
     for key in document.keys() - ALLOWED_TOP_LEVEL:
         problems.append(f"{key}: not allowed at the top level (only name and services)")
     name = document.get("name")
-    if name is not None and not (isinstance(name, str) and _PROJECT.match(name)):
+    if name is not None and not (isinstance(name, str) and _PROJECT.fullmatch(name)):
         problems.append("name: must be a lowercase project name")
     services = document.get("services")
     if not isinstance(services, dict) or not services:
@@ -129,24 +145,27 @@ def _why(exc: yaml.YAMLError) -> str:
     return "invalid"  # pragma: no cover  (every error the loader raises carries a mark)
 
 
-def _find_interpolation(node: object, where: str, problems: list[str]) -> None:
+def _find_interpolation(node: object, where: str, problems: list[str], depth: int = 0) -> None:
     """Compose replaces `${...}` from the environment after this check ran, so none may stay."""
-    if isinstance(node, str):
+    if depth > MAX_NESTING:
+        problems.append(f"{where or 'file'}: nested more than {MAX_NESTING} levels deep")
+    elif isinstance(node, str):
         if "$" in node:
             problems.append(f"{where or 'file'}: `$` (variable interpolation) is not allowed")
     elif isinstance(node, dict):
         for key, value in node.items():
-            _find_interpolation(key, f"{where}.{key}" if where else str(key), problems)
-            _find_interpolation(value, f"{where}.{key}" if where else str(key), problems)
+            path = f"{where}.{key}" if where else str(key)
+            _find_interpolation(key, path, problems, depth + 1)
+            _find_interpolation(value, path, problems, depth + 1)
     elif isinstance(node, list):
         for item in node:
-            _find_interpolation(item, where, problems)
+            _find_interpolation(item, where, problems, depth + 1)
 
 
 def _check_service(
     service: object, body: object, names: set[Any], workdir: Path, problems: list[str]
 ) -> None:
-    if not (isinstance(service, str) and _SERVICE.match(service)):
+    if not (isinstance(service, str) and _SERVICE.fullmatch(service)):
         problems.append(f"services.{service}: the service name must be a lowercase slug")
         return
     where = f"services.{service}"
@@ -185,7 +204,7 @@ def _check_ports(where: str, value: object, workdir: Path, problems: list[str]) 
         problems.append(f"{where}: must be a list of 127.0.0.1:[host]:container strings")
         return
     for entry in entries:
-        match = _PORT.match(entry)
+        match = _PORT.fullmatch(entry)
         if not match or any(int(p) > 65535 for p in match.groups() if p):
             problems.append(f"{where}: {entry!r} must publish on 127.0.0.1 only, as a valid port")
 
@@ -207,15 +226,41 @@ def _check_volumes(where: str, value: object, workdir: Path, problems: list[str]
         target = (root / source).resolve()
         if not target.is_relative_to(root):
             problems.append(f"{where}: {entry!r} reaches outside the working directory")
-        elif target.exists() and stat.S_ISSOCK(target.stat().st_mode):
-            problems.append(f"{where}: {entry!r} is a socket")
+        elif target == root:
+            problems.append(f"{where}: {entry!r} mounts the whole working directory")
         elif ".." in PurePosixPath(destination).parts:
             problems.append(f"{where}: {entry!r} has a destination with ..")
+        else:
+            try:
+                reason = _mount_problem(target)
+            except OSError:  # something changed or cannot be read while it was looked at
+                reason = "cannot be checked"
+            if reason:
+                problems.append(f"{where}: {entry!r} {reason}")
+
+
+def _mount_problem(target: Path) -> str | None:
+    """Why a mount source must be refused, or None. A read-only mount does not stop a container
+    from connecting to a Unix socket, so a socket at or anywhere under the source (the Docker
+    daemon's, an SSH agent's) is refused; so is a source too big to look through."""
+    if not target.exists():
+        return None  # nothing there yet; the provisioner creates it and checks again first
+    if stat.S_ISSOCK(target.lstat().st_mode):
+        return "is a socket"
+    seen = 0
+    for directory, folders, files in os.walk(target, followlinks=False):
+        for name in [*folders, *files]:
+            seen += 1
+            if seen > MAX_MOUNT_ENTRIES:
+                return f"holds more than {MAX_MOUNT_ENTRIES} entries to look through"
+            if stat.S_ISSOCK(os.lstat(Path(directory, name)).st_mode):
+                return f"holds a socket ({Path(directory, name).relative_to(target)})"
+    return None
 
 
 def _check_tmpfs(where: str, value: object, workdir: Path, problems: list[str]) -> None:
     paths = _strings(value)
-    if paths is None or not all(_TMPFS.match(p) for p in paths):
+    if paths is None or not all(_TMPFS.fullmatch(p) for p in paths):
         problems.append(f"{where}: must be absolute container paths")
 
 
@@ -228,7 +273,7 @@ def _check_environment(where: str, value: object, workdir: Path, problems: list[
         problems.append(f"{where}: must be a mapping or a list of NAME=value strings")
         return
     for key, item in pairs:
-        if not (isinstance(key, str) and _ENV_KEY.match(key)):
+        if not (isinstance(key, str) and _ENV_KEY.fullmatch(key)):
             problems.append(f"{where}: {key!r} is not a variable name")
         if not isinstance(item, str | int | float) or isinstance(item, bool):
             problems.append(f"{where}.{key}: the value must be text or a number")
@@ -252,12 +297,12 @@ def _check_command(where: str, value: object, workdir: Path, problems: list[str]
 
 
 def _check_scalars(where: str, body: dict[Any, Any], names: set[Any], problems: list[str]) -> None:
-    if "restart" in body and body["restart"] not in ("no", False):  # YAML 1.1 reads no as false
-        problems.append(f"{where}.restart: only `no` is allowed")
-    if "mem_limit" in body and not (
-        isinstance(body["mem_limit"], str) and _MEM.match(body["mem_limit"])
-    ):
-        problems.append(f"{where}.mem_limit: must look like 512m or 1g")
+    if "restart" in body:
+        restart = body["restart"]
+        if not (restart == "no" or restart is False):  # YAML 1.1 reads an unquoted no as false
+            problems.append(f"{where}.restart: only `no` is allowed")
+    if "mem_limit" in body and not _memory_ok(body["mem_limit"]):
+        problems.append(f"{where}.mem_limit: must be a real limit such as 512m or 1g")
     if "pids_limit" in body:
         limit = body["pids_limit"]
         if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 4096:
@@ -266,6 +311,15 @@ def _check_scalars(where: str, body: dict[Any, Any], names: set[Any], problems: 
         problems.append(f"{where}.security_opt: only no-new-privileges:true is allowed")
     if "depends_on" in body:
         _check_depends_on(where, body["depends_on"], names, problems)
+
+
+def _memory_ok(value: object) -> bool:
+    """A limit from 1m up to the cap; 0 would mean no limit to Docker."""
+    match = _MEM.fullmatch(value) if isinstance(value, str) else None
+    if match is None:
+        return False
+    amount = int(match.group(1)) * (1024 if match.group(2) == "g" else 1)
+    return amount <= MAX_MEMORY_MB
 
 
 def _check_depends_on(where: str, value: object, names: set[Any], problems: list[str]) -> None:
@@ -282,6 +336,7 @@ def _check_depends_on(where: str, value: object, names: set[Any], problems: list
         if detail is not None and not (
             isinstance(detail, dict)
             and set(detail) == {"condition"}
+            and isinstance(detail["condition"], str)
             and detail["condition"] in _DEPENDS_CONDITIONS
         ):
             problems.append(f"{where}.depends_on.{target}: only a started or healthy condition")

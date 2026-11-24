@@ -24,7 +24,13 @@ from hermetic.provision import (
     read_compose_file,
     write_compose,
 )
-from hermetic.provision.validate import MAX_COMPOSE_BYTES
+from hermetic.provision.validate import (
+    MAX_COMPOSE_BYTES,
+    MAX_MEMORY_MB,
+    MAX_NESTING,
+    MAX_PROJECT_CHARS,
+    PROJECT_PREFIX,
+)
 
 GOLDEN = Path(__file__).parent.parent / "fixtures" / "compose" / "all-kinds.yml"
 runner = CliRunner()
@@ -215,8 +221,20 @@ services:
         ({"ports": [{"target": 6379, "published": 6379}]}, "list of 127.0.0.1"),
         ({"ports": "127.0.0.1::6379"}, "list of 127.0.0.1"),
         ({"restart": "always"}, "only `no` is allowed"),
-        ({"mem_limit": "lots"}, "mem_limit"),
-        ({"mem_limit": 512}, "mem_limit"),
+        ({"restart": 0}, "only `no` is allowed"),
+        ({"ports": ["127.0.0.1::6379\n"]}, "127.0.0.1 only"),
+        ({"mem_limit": "512m\n"}, "real limit"),
+        ({"mem_limit": "0m"}, "real limit"),
+        ({"mem_limit": "0g"}, "real limit"),
+        ({"mem_limit": "00512m"}, "real limit"),
+        ({"mem_limit": "65537m"}, "real limit"),
+        ({"mem_limit": "65g"}, "real limit"),
+        ({"tmpfs": ["/data\n"]}, "absolute container paths"),
+        ({"environment": {"A\n": "x"}}, "not a variable name"),
+        ({"depends_on": {"db": {"condition": ["service_healthy"]}}}, "condition"),
+        ({"depends_on": {"db": {"condition": {"a": 1}}}}, "condition"),
+        ({"mem_limit": "lots"}, "real limit"),
+        ({"mem_limit": 512}, "real limit"),
         ({"pids_limit": 0}, "pids_limit"),
         ({"pids_limit": True}, "pids_limit"),
         ({"pids_limit": "many"}, "pids_limit"),
@@ -264,6 +282,9 @@ def test_a_construct_outside_the_allowlist_is_refused(
         ("./stubs:/a/../b:ro", "destination with .."),
         ("./link:/x:ro", "outside the working directory"),
         ("./s.sock:/x:ro", "is a socket"),
+        ("./:/x:ro", "whole working directory"),
+        ("./.:/x:ro", "whole working directory"),
+        ("./sockdir:/x:ro", "holds a socket (inner/deeper.sock)"),
     ],
 )
 def test_a_mount_may_only_reach_read_only_into_the_working_directory(
@@ -273,19 +294,54 @@ def test_a_mount_may_only_reach_read_only_into_the_working_directory(
     (work / "stubs").mkdir(parents=True)
     (tmp_path / "outside").mkdir()
     (work / "link").symlink_to(tmp_path / "outside")
+    (work / "sockdir" / "inner").mkdir(parents=True)
     monkeypatch.chdir(work)
-    listener = socket.socket(socket.AF_UNIX)
-    listener.bind("s.sock")
+    listeners = [socket.socket(socket.AF_UNIX), socket.socket(socket.AF_UNIX)]
+    listeners[0].bind("s.sock")
+    listeners[1].bind("sockdir/inner/deeper.sock")
     try:
         problems = problems_of(document_with(volumes=[volume]), work)
     finally:
-        listener.close()
+        for listener in listeners:
+            listener.close()
     assert any(expected in problem for problem in problems)
+
+
+def test_a_mount_with_too_many_files_to_look_through_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "big").mkdir()
+    for i in range(5):
+        (tmp_path / "big" / f"f{i}").write_text("x")
+    monkeypatch.setattr("hermetic.provision.validate.MAX_MOUNT_ENTRIES", 3)
+    problems = problems_of(document_with(volumes=["./big:/m:ro"]), tmp_path)
+    assert any("more than 3 entries" in p for p in problems)
+
+
+def test_a_mount_that_cannot_be_looked_through_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def deny(target: Path) -> str | None:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr("hermetic.provision.validate._mount_problem", deny)
+    problems = problems_of(document_with(volumes=["./x:/m:ro"]), tmp_path)
+    assert any("cannot be checked" in p for p in problems)
+
+
+def test_a_mount_of_a_plain_file_is_accepted(tmp_path: Path) -> None:
+    (tmp_path / "one.json").write_text("{}")
+    assert check_compose(document_with(volumes=["./one.json:/m:ro"]), tmp_path)
 
 
 def test_a_mount_of_a_folder_inside_the_working_directory_is_accepted(tmp_path: Path) -> None:
     (tmp_path / "stubs").mkdir()
     assert check_compose(document_with(volumes=["./stubs:/m:ro"]), tmp_path)
+
+
+@pytest.mark.parametrize("limit", ["1m", "512m", "1g", f"{MAX_MEMORY_MB}m", "64g"])
+def test_a_real_memory_limit_is_accepted(tmp_path: Path, limit: str) -> None:
+    assert check_compose(document_with(mem_limit=limit), tmp_path)
 
 
 def test_a_mount_of_something_not_yet_created_is_accepted(tmp_path: Path) -> None:
@@ -336,12 +392,43 @@ def test_nothing_but_name_and_services_is_allowed_at_the_top_level(
         ("services:\n  ? [a, b]\n  : c\n", "plain value"),
         ("services: [unclosed\n", "not valid YAML"),
         ("!!python/object/apply:os.system [x]\n", "not valid YAML"),
+        ("services:\n  db: {image: 'redis:7-alpine'}\nwhen: 2001-02-30\n", "cannot be read"),
+        ("[" * 100_000, "nested too deeply"),
     ],
 )
 def test_a_file_two_parsers_could_read_differently_is_refused(
     tmp_path: Path, text: str, expected: str
 ) -> None:
     assert any(expected in problem for problem in problems_of(text, tmp_path))
+
+
+def test_a_document_nested_past_the_limit_is_refused_even_when_it_parses(tmp_path: Path) -> None:
+    nested: Any = "leaf"
+    for _ in range(MAX_NESTING + 8):
+        nested = {"k": nested}
+    text = yaml.safe_dump({"services": {"db": good_service()}, "extra": nested})
+    assert any(f"nested more than {MAX_NESTING} levels" in p for p in problems_of(text, tmp_path))
+
+
+@pytest.mark.parametrize("name", ["hermetic-x\n", "x" * (MAX_PROJECT_CHARS + 1)])
+def test_a_project_name_with_a_newline_or_over_the_limit_is_refused(
+    tmp_path: Path, name: str
+) -> None:
+    text = yaml.safe_dump({"name": name, "services": {"db": good_service()}})
+    assert any(p.startswith("name:") for p in problems_of(text, tmp_path))
+
+
+def test_the_longest_service_id_still_gives_a_file_that_passes_its_own_check(
+    tmp_path: Path,
+) -> None:
+    text = generate_compose(deps_set(dep("x", "redis"), service="a" * 63), tmp_path)
+    assert len(PROJECT_PREFIX + "a" * 63) == MAX_PROJECT_CHARS
+    assert check_compose(text, tmp_path)["name"] == f"{PROJECT_PREFIX}{'a' * 63}"
+
+
+def test_a_service_name_with_a_newline_is_refused(tmp_path: Path) -> None:
+    text = yaml.safe_dump({"services": {"db\n": good_service()}})
+    assert any("lowercase slug" in p for p in problems_of(text, tmp_path))
 
 
 @pytest.mark.parametrize("text", ["- a\n- b\n", "just text\n", ""])
@@ -369,7 +456,7 @@ def test_too_many_services_are_refused(tmp_path: Path) -> None:
     assert any("more than" in p for p in problems_of(text, tmp_path))
 
 
-@pytest.mark.parametrize("name", ["Upper", "has space", "", 5, "x" * 71])
+@pytest.mark.parametrize("name", ["Upper", "has space", "", 5])
 def test_the_project_name_must_be_a_plain_lowercase_name(tmp_path: Path, name: object) -> None:
     text = yaml.safe_dump({"name": name, "services": {"db": good_service()}})
     assert any(p.startswith("name:") for p in problems_of(text, tmp_path))
@@ -385,9 +472,10 @@ def test_every_problem_is_reported_at_once_and_in_a_stable_order(tmp_path: Path)
     assert len(problems) == 3 and problems == sorted(problems)
 
 
-def test_the_check_does_not_mutate_what_it_returns_for_a_good_file(tmp_path: Path) -> None:
+def test_checking_the_same_text_twice_gives_the_same_result(tmp_path: Path) -> None:
     text = document_with()
-    assert check_compose(text, tmp_path) == copy.deepcopy(check_compose(text, tmp_path))
+    first = check_compose(text, tmp_path)
+    assert check_compose(text, tmp_path) == copy.deepcopy(first)
 
 
 # --- the commands ---
@@ -456,12 +544,13 @@ def test_check_compose_refuses_with_every_problem_and_exit_1(tmp_path: Path) -> 
     assert "refused: services.db.image:" in result.output
 
 
-def test_check_compose_takes_a_working_directory(tmp_path: Path) -> None:
-    (tmp_path / "work").mkdir()
-    path = tmp_path / "stack.yml"
-    path.write_text(document_with(volumes=["./stubs:/m:ro"]))
-    ok = runner.invoke(app, ["check-compose", str(path), "--workdir", str(tmp_path / "work")])
-    assert ok.exit_code == 0, ok.output
+def test_check_compose_resolves_mounts_against_the_files_own_directory(tmp_path: Path) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    (tmp_path / "a" / "stubs").mkdir()
+    (tmp_path / "b" / "stack.yml").write_text(document_with(volumes=["./../a/stubs:/m:ro"]))
+    result = runner.invoke(app, ["check-compose", str(tmp_path / "b" / "stack.yml")])
+    assert result.exit_code == 1 and "outside the working directory" in result.output
 
 
 def test_check_compose_reports_an_unreadable_file_as_exit_2(tmp_path: Path) -> None:
