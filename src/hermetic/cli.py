@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-import uvicorn
 
 from hermetic import __version__
 from hermetic.agent import ClaudeAuthor
@@ -20,7 +19,6 @@ from hermetic.ingest import IngestError, ServiceModel
 from hermetic.ingest import ingest as run_ingest
 from hermetic.report import SinkContext, SinkError, load_sinks
 from hermetic.runner import run_suite
-from hermetic.web import LOOPBACK_HOSTS, WILDCARD, create_app
 
 app = typer.Typer(
     name="hermetic",
@@ -181,6 +179,11 @@ def serve(
     ] = None,
 ) -> None:
     """Serve a read-only web UI over the run history."""
+    import uvicorn  # only `serve` needs the server, so the other commands skip its import cost
+
+    from hermetic.web import WILDCARD, create_app
+    from hermetic.web.app import hostname
+
     hosts = _allowed_hosts(host, allowed_host or [])
     if host not in _LOOPBACK_ADDRESSES:
         typer.echo(
@@ -188,7 +191,8 @@ def serve(
             "history, including request and response bodies (secrets are redacted)",
             err=True,
         )
-    if WILDCARD in hosts:
+    # Compared as the app compares them: a port is dropped, so '*:8000' is still the wildcard.
+    if any(hostname(entry) == WILDCARD for entry in hosts):
         typer.echo(
             "warning: --allowed-host '*' turns off the Host check, so a web page you open can "
             "reach this server by rebinding its own domain to it, even if the port is firewalled",
@@ -201,6 +205,8 @@ _LOOPBACK_ADDRESSES = ("127.0.0.1", "localhost", "::1")
 
 
 def _binds_every_interface(listen: str) -> bool:
+    if not listen.strip():  # asyncio treats an empty host as every interface
+        return True
     try:
         return ipaddress.ip_address(listen.strip("[]")).is_unspecified
     except ValueError:  # a host name, not an address
@@ -214,6 +220,8 @@ def _allowed_hosts(listen: str, extra: Sequence[str]) -> list[str]:
     On every interface no client sends the bound address, so this machine's own names stand in
     for it. A web page that rebinds its own domain to this server is not on the list.
     """
+    from hermetic.web import LOOPBACK_HOSTS
+
     hosts = [*LOOPBACK_HOSTS, *extra]
     if _binds_every_interface(listen):
         hosts.extend(_machine_hosts())
@@ -226,10 +234,12 @@ def _machine_hosts() -> list[str]:
     """What a client on this machine's network may call it: its host name and its addresses."""
     name = socket.gethostname()
     try:
-        addresses = socket.gethostbyname_ex(name)[2]
+        found = socket.getaddrinfo(name, None)
     except (OSError, UnicodeError):  # unresolvable or unencodable name; the name still counts
-        addresses = []
-    return [name, *addresses]
+        return [name]
+    # IPv4 and IPv6 alike; an IPv6 address is bracketed and loses its zone, as in a `Host` header.
+    addresses = {str(info[4][0]).partition("%")[0] for info in found}
+    return [name, *sorted(f"[{a}]" if ":" in a else a for a in addresses)]
 
 
 def _any_failed(record: RunRecord) -> bool:

@@ -65,15 +65,19 @@ def test_serve_warns_when_asked_to_listen_beyond_loopback(
 def fake_machine(monkeypatch: pytest.MonkeyPatch, *, fails_with: Exception | None = None) -> None:
     monkeypatch.setattr("socket.gethostname", lambda: "box.example")
 
-    def resolve(name: str) -> tuple[str, list[str], list[str]]:
+    def resolve(name: str, port: None) -> list[tuple[Any, ...]]:
         if fails_with is not None:
             raise fails_with
-        return (name, [], ["10.0.0.7"])
+        return [
+            (socket.AF_INET, 0, 0, "", ("10.0.0.7", 0)),
+            (socket.AF_INET6, 0, 0, "", ("fd00::7", 0, 0, 0)),
+            (socket.AF_INET6, 0, 0, "", ("fe80::7%en0", 0, 0, 3)),
+        ]
 
-    monkeypatch.setattr("socket.gethostbyname_ex", resolve)
+    monkeypatch.setattr("socket.getaddrinfo", resolve)
 
 
-@pytest.mark.parametrize("every_interface", ["0.0.0.0", "::", "0:0:0:0:0:0:0:0", "[::]"])
+@pytest.mark.parametrize("every_interface", ["0.0.0.0", "::", "0:0:0:0:0:0:0:0", "[::]", ""])
 def test_serve_on_every_interface_still_checks_the_host_header(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, every_interface: str
 ) -> None:
@@ -87,9 +91,11 @@ def test_serve_on_every_interface_still_checks_the_host_header(
     assert result.exit_code == 0 and "listening on" in result.output
     assert "rebinding" not in result.output
     served = calls[0][0]
-    for accepted in ("localhost:8000", "box.example:8000", "10.0.0.7:8000"):
+    accepted_hosts = ("localhost:8000", "box.example:8000", "10.0.0.7:8000", "[fd00::7]:8000")
+    for accepted in (*accepted_hosts, "[fe80::7]:8000"):
         assert status_with_host(served, accepted) == 200
     assert status_with_host(served, "evil.example") == 421
+    assert status_with_host(served, "") == 421  # no Host header must not slip through
 
 
 @pytest.mark.parametrize(
@@ -122,6 +128,18 @@ def test_serve_answers_to_the_names_it_is_given(
     for accepted in ("hermetic.internal:8000", "other.test"):
         assert status_with_host(calls[0][0], accepted) == 200
     assert status_with_host(calls[0][0], "evil.example") == 421
+
+
+@pytest.mark.parametrize("wildcard", ["*:8000", " * ", "*"])
+def test_serve_warns_about_a_wildcard_however_it_is_written(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, wildcard: str
+) -> None:
+    calls = fake_uvicorn(monkeypatch)
+    result = runner.invoke(
+        app, ["serve", "--history-dir", str(tmp_path), "--allowed-host", wildcard]
+    )
+    assert "turns off the Host check" in result.output
+    assert status_with_host(calls[0][0], "anything.example") == 200
 
 
 def test_serve_only_accepts_any_host_when_asked_to_and_says_what_that_risks(
