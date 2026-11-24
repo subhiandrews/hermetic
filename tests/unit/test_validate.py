@@ -104,6 +104,7 @@ def test_ordinary_strings_marks_and_header_edits_are_accepted() -> None:
         ("(x for x in []).gi_frame.f_globals\n", "attribute `f_globals`"),
         ("def f(g):\n    return g.gi_frame\n", "attribute `gi_frame`"),
         ("pytest_plugins = ['pytester']\n", "`pytest_plugins` is not allowed"),
+        ("pytestmark = [pytest.mark.skip]\n", "`pytestmark` is not allowed"),
         ("def test_a(pytester): ...\n", "fixture `pytester`"),
         # Names bound without an `ast.Name`: a hook, an alias, a capture, a handler, a class.
         ("def pytest_generate_tests(metafunc): ...\n", "binding the name `pytest_generate_tests`"),

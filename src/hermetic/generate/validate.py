@@ -152,7 +152,7 @@ def validate_source(source: str, operation_id: str) -> None:
             node.id in FORBIDDEN_NAMES
             or node.id in EVALUATING_MARKS
             or node.id == "usefixtures"
-            or node.id.startswith(("__", "pytest_"))  # `pytest_plugins` loads any plugin
+            or _reserved_name(node.id)  # `pytest_plugins` loads any plugin, `pytestmark` marks
             # `p = re` would hide `p.enum`: an imported module is only used as `module.name`
             or ((node.id == "pytest" or node.id in modules) and id(node) not in attributed)
         ):
