@@ -181,6 +181,35 @@ def test_the_page_links_runs_by_service_and_id() -> None:
     assert "/api/services/" in script and "run.service" in script
 
 
+def test_the_page_reads_only_the_service_routes() -> None:
+    # A server that keeps the history of many services is addressed through /api/services, so the
+    # page must not depend on the flat /api/runs alias.
+    script = (STATIC_DIR / "app.js").read_text()
+    assert "/api/runs" not in script
+    assert "/api/services" in script
+
+
+def test_the_page_routes_the_services_list_a_service_and_a_run() -> None:
+    script = (STATIC_DIR / "app.js").read_text()
+    assert r"#\/services\/([^/]+)\/runs\/([^/]+)" in script  # a run
+    assert r"#\/services\/([^/]+)$" in script  # one service's history
+    assert r"#\/runs\/([^/]+)\/([^/]+)" in script  # the older address of a run keeps working
+    assert "renderServices" in script  # anything else is the services list
+
+
+def test_the_service_listing_the_page_draws_carries_what_each_row_shows() -> None:
+    first = make_record("a-1", service="alpha", started_at="2026-01-01T00:00:00+00:00")
+    second = make_record("a-2", service="alpha", started_at="2026-01-02T00:00:00+00:00")
+    other = make_record("b-1", service="beta", started_at="2026-01-03T00:00:00+00:00")
+    client = TestClient(create_app(MemoryStore(first, second, other)), base_url="http://localhost")
+    rows = {row["service"]: row for row in client.get("/api/services").json()}
+    assert rows["alpha"]["runs"] == 2
+    assert rows["alpha"]["latest"]["run_id"] == "a-2"
+    assert rows["beta"]["latest"]["service"] == "beta"
+    # the trend column asks each service for its own newest runs
+    assert [r["run_id"] for r in client.get("/api/services/alpha/runs?limit=1").json()] == ["a-2"]
+
+
 def test_the_file_store_serves_the_same_api(tmp_path: Path) -> None:
     store = FileRunStore(tmp_path / "runs")
     store.save(OLD)

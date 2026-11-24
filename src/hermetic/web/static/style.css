@@ -145,6 +145,16 @@ td.bad {
   background: var(--bad);
 }
 
+/* The trend inside a table cell: no card of its own. */
+.trend.compact {
+  width: 9rem;
+  height: 1.75rem;
+  margin: 0;
+  padding: 2px;
+  background: none;
+  border: 0;
+}
+
 .badge {
   display: inline-block;
   padding: 0 0.45rem;
