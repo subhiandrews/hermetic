@@ -128,6 +128,11 @@ def up(service: str, path: Path, text: str, runner: CommandRunner = run_command)
         project = str(document["name"])
         if project != project_name(service):  # before anything is created on disk
             raise StackError(f"{path} is the stack {project!r}, not {project_name(service)!r}")
+        # Compose reads a `.env` beside the file, where COMPOSE_* settings could steer it again.
+        if (path.parent / ".env").exists():
+            raise StackError(
+                f"{path.parent / '.env'} exists; Compose would read it, so not starting"
+            )
         _make_mount_sources(path.parent, document)
         # A source that did not exist was accepted above; now every one exists, so look again.
         document = check_compose(text, path.parent)
@@ -158,11 +163,11 @@ def up(service: str, path: Path, text: str, runner: CommandRunner = run_command)
         return _endpoints(runner, project, text, document["services"])
     except BaseException as failure:  # a timeout or Ctrl-C can leave containers behind too
         left = _take_down(runner, project)
-        if left is not None and isinstance(failure, StackError):
-            raise StackError(
-                f"{failure}; cleaning up also failed ({left}); "
-                f"run `hermetic down --service {service}`"
-            ) from failure
+        if left is not None:
+            hint = f"cleaning up also failed ({left}); run `hermetic down --service {service}`"
+            if isinstance(failure, StackError):
+                raise StackError(f"{failure}; {hint}") from failure
+            failure.add_note(hint)  # an interrupt or other error keeps its own type
         raise
 
 

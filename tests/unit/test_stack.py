@@ -499,3 +499,25 @@ def test_down_reports_a_network_it_cannot_list_or_remove() -> None:
         down("shop", FakeDocker(net_ls_code=1))
     with pytest.raises(StackError, match="cannot remove a network of hermetic-shop: rm broke"):
         down("shop", FakeDocker(networks="n1", net_rm_code=1))
+
+
+def test_an_env_file_beside_the_compose_file_stops_the_start(stack: tuple[Path, str]) -> None:
+    path, text = stack
+    (path.parent / ".env").write_text("COMPOSE_PROFILES=x\n")
+    docker = FakeDocker()
+    with pytest.raises(StackError, match=r"\.env exists"):
+        up("shop", path, text, docker)
+    assert docker.calls == []
+
+
+def test_a_failed_cleanup_after_an_interrupt_says_what_to_run(stack: tuple[Path, str]) -> None:
+    path, text = stack
+
+    def runner(argv: Sequence[str], *, stdin: str | None, timeout: float) -> CommandResult:
+        if "up" in argv:
+            raise KeyboardInterrupt
+        return CommandResult(1 if "down" in argv else 0, "", "daemon gone")
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        up("shop", path, text, runner)
+    assert any("hermetic down --service shop" in n for n in caught.value.__notes__)
