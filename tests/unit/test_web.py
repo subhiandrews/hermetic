@@ -22,6 +22,7 @@ from hermetic.history import (
     SuiteChange,
     summarize,
 )
+from hermetic.history.models import RECENT_RUNS
 from hermetic.web import LOOPBACK_HOSTS, create_app
 from hermetic.web.app import (
     DEFAULT_RUN_LIMIT,
@@ -67,7 +68,8 @@ class MemoryStore:
         for summary in self.list():
             found.setdefault(summary.service, []).append(summary)
         return [
-            ServiceSummary(service=n, runs=len(r), latest=r[0]) for n, r in sorted(found.items())
+            ServiceSummary(service=n, runs=len(r), latest=r[0], recent=r[:RECENT_RUNS])
+            for n, r in sorted(found.items())
         ]
 
 
@@ -189,7 +191,9 @@ def test_the_page_reads_only_the_service_routes() -> None:
     assert "/api/services" in script
 
 
-def test_the_page_routes_the_services_list_a_service_and_a_run() -> None:
+def test_the_page_keeps_the_route_patterns_for_the_list_a_service_and_a_run() -> None:
+    # Only the source is checked: the page has no JavaScript test harness, so how the patterns
+    # are tried is checked by hand in a browser until a smoke test exists.
     script = (STATIC_DIR / "app.js").read_text()
     assert r"#\/services\/([^/]+)\/runs\/([^/]+)" in script  # a run
     assert r"#\/services\/([^/]+)$" in script  # one service's history
@@ -206,8 +210,15 @@ def test_the_service_listing_the_page_draws_carries_what_each_row_shows() -> Non
     assert rows["alpha"]["runs"] == 2
     assert rows["alpha"]["latest"]["run_id"] == "a-2"
     assert rows["beta"]["latest"]["service"] == "beta"
-    # the trend column asks each service for its own newest runs
-    assert [r["run_id"] for r in client.get("/api/services/alpha/runs?limit=1").json()] == ["a-2"]
+    # the trend column is drawn from the listing itself: newest first, one request for all
+    assert [r["run_id"] for r in rows["alpha"]["recent"]] == ["a-2", "a-1"]
+    assert [r["run_id"] for r in rows["beta"]["recent"]] == ["b-1"]
+
+
+def test_the_page_draws_as_many_runs_in_a_trend_as_the_server_sends() -> None:
+    script = (STATIC_DIR / "app.js").read_text()
+    match = re.search(r"const TREND_RUNS = (\d+);", script)
+    assert match is not None and int(match.group(1)) == RECENT_RUNS
 
 
 def test_the_file_store_serves_the_same_api(tmp_path: Path) -> None:

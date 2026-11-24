@@ -10,6 +10,7 @@ from hermetic.service import DEFAULT_SERVICE, SERVICE_PATTERN
 
 TestStatus = Literal["passed", "failed", "error", "skipped"]
 ChangeKind = Literal["added", "modified", "dropped"]
+RECENT_RUNS = 20  # how many of a service's newest runs its summary carries
 
 
 class _Frozen(BaseModel):
@@ -94,6 +95,9 @@ class ServiceSummary(_Frozen):
     service: str
     runs: int
     latest: RunSummary
+    # Its newest runs, newest first, at most RECENT_RUNS (the first is `latest`). The page draws
+    # its trend from this, so listing the services is one request and not one per service.
+    recent: list[RunSummary] = Field(default_factory=list)
 
 
 def summarize(record: RunRecord) -> RunSummary:

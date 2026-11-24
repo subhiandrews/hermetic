@@ -85,8 +85,9 @@ function resultBadge(run) {
   return badge(passedLabel(run), kind);
 }
 
-function serviceRow(summary, runs) {
+function serviceRow(summary) {
   const latest = summary.latest;
+  const runs = summary.recent; // the newest runs, newest first
   return el(
     "tr",
     {},
@@ -99,8 +100,7 @@ function serviceRow(summary, runs) {
   );
 }
 
-// `histories` holds the newest runs of each service, in the order of `services`.
-function renderServices(services, histories) {
+function renderServices(services) {
   const title = "Hermetic services";
   const view = el("section", {}, el("h1", {}, "Services"));
   if (services.length === 0) {
@@ -113,7 +113,7 @@ function renderServices(services, histories) {
     {},
     heads.map((name, index) => el("th", { class: index === 1 ? "num" : "" }, name)),
   );
-  const rows = services.map((summary, index) => serviceRow(summary, histories[index]));
+  const rows = services.map(serviceRow);
   view.append(el("table", {}, el("thead", {}, header), el("tbody", {}, rows)));
   return { title, view };
 }
@@ -355,16 +355,7 @@ async function load(hash) {
     const runs = await getJson(`/api/services/${apiSegment(service[1])}/runs?limit=${RUN_LIMIT}`);
     return renderHistory(decoded(service[1]), runs);
   }
-  const services = await getJson("/api/services");
-  // One request per service for its trend; a service whose runs cannot be read still lists.
-  const histories = await Promise.all(
-    services.map((summary) =>
-      getJson(`/api/services/${encodeURIComponent(summary.service)}/runs?limit=${TREND_RUNS}`).catch(
-        () => [],
-      ),
-    ),
-  );
-  return renderServices(services, histories);
+  return renderServices(await getJson("/api/services")); // each service carries its recent runs
 }
 
 async function route() {

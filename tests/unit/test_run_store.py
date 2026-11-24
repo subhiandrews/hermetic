@@ -24,6 +24,7 @@ from hermetic.history import (
     summarize,
 )
 from hermetic.history.file_store import _ServiceDir
+from hermetic.history.models import RECENT_RUNS
 from hermetic.web import create_app
 from tests.factories import make_record, make_result
 
@@ -135,6 +136,17 @@ def test_services_lists_each_with_its_run_count_and_latest_run(store: RunStore) 
         ("alpha", 2, "a2"),
         ("beta", 1, "b1"),
     ]
+
+
+def test_a_service_carries_its_newest_runs_and_no_more_than_the_limit(store: RunStore) -> None:
+    total = RECENT_RUNS + 2
+    for n in range(total):
+        store.save(make_record(f"r{n:02d}", started_at=f"2026-01-01T00:{n:02d}:00+00:00"))
+    (found,) = store.services()
+    assert found.runs == total
+    assert len(found.recent) == RECENT_RUNS
+    assert found.recent[0] == found.latest and found.latest.run_id == f"r{total - 1:02d}"
+    assert found.recent[-1].run_id == f"r{total - RECENT_RUNS:02d}"  # the oldest still shown
 
 
 @pytest.mark.parametrize("service", ["../x", "Alpha", "", "a/b"])
