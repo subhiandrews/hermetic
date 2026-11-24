@@ -30,7 +30,7 @@ from hermetic.publish import (
     ExportError,
     PublisherError,
     load_publisher,
-    suite_files,
+    require_tests,
     write_suite_zip,
 )
 from hermetic.report import SinkContext, SinkError, load_sinks
@@ -165,16 +165,13 @@ def publish(
     try:
         service_id = resolve_service(None, service)
         suite_dir = suite or _default_suite(service_id)
-        if not any(name.startswith("test_") for name, _ in suite_files(suite_dir)):
-            raise PublisherError(
-                f"no generated tests in {suite_dir}; run `hermetic generate` first"
-            )
+        require_tests(suite_dir)
         chosen = load_publisher(publisher)
         try:
             where = chosen.publish(service_id, suite_dir)
         except Exception as exc:  # a third-party publisher can fail in any way
             raise PublisherError(f"publisher {publisher!r} failed: {exc}") from exc
-    except (InvalidServiceError, PublisherError) as exc:
+    except (InvalidServiceError, ExportError, PublisherError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
     typer.echo(f"published {service_id} to {where}")

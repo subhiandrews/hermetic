@@ -167,6 +167,19 @@ def test_a_file_that_is_not_regular_after_listing_is_refused(
         write_suite_zip("svc", suite, tmp_path / "out.zip")
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs FIFOs")
+def test_a_file_swapped_for_a_fifo_is_refused_without_blocking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    suite = make_suite(tmp_path / "suite", "test_a.py")
+    real = suite_files(suite)
+    (suite / "test_a.py").unlink()
+    os.mkfifo(suite / "test_a.py")
+    monkeypatch.setattr("hermetic.publish.archive.suite_files", lambda _: real)
+    with pytest.raises(ExportError, match="not a regular file"):
+        write_suite_zip("svc", suite, tmp_path / "out.zip")
+
+
 def test_a_manifest_larger_than_the_generator_reads_is_refused(tmp_path: Path) -> None:
     suite = make_suite(tmp_path / "suite", "test_a.py")
     (suite / MANIFEST).write_bytes(b" " * (MAX_MANIFEST_BYTES + 1))

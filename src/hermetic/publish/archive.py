@@ -43,13 +43,23 @@ def suite_files(suite_dir: Path) -> list[tuple[str, int]]:
     return sorted(found)
 
 
+def require_tests(suite_dir: Path) -> list[tuple[str, int]]:
+    """The suite's files (see `suite_files`), or ExportError when it holds no generated test."""
+    files = suite_files(suite_dir)
+    if not any(name.startswith("test_") for name, _ in files):
+        raise ExportError(f"no generated tests in {suite_dir}; run `hermetic generate` first")
+    return files
+
+
 def _read_limited(path: Path, name: str, limit: int) -> bytes:
     """Read a regular file of at most `limit` bytes without following a symlink.
 
     The checks run on the open handle, so a file swapped for a link or a huge file after
     `suite_files` listed it is refused, and at most `limit + 1` bytes are ever read.
     """
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    # O_NONBLOCK: a FIFO swapped in after listing must not block the open before the check below.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(path, flags)
     if not stat.S_ISREG(os.fstat(fd).st_mode):
         os.close(fd)
         raise ExportError(f"{name} is not a regular file")
@@ -67,9 +77,7 @@ def write_suite_zip(service: str, suite_dir: Path, destination: Path) -> list[st
     directory. The archive is written beside its destination and moved into place, so a failure
     leaves no half-written file and an existing archive is replaced whole.
     """
-    files = suite_files(suite_dir)
-    if not any(name.startswith("test_") for name, _ in files):
-        raise ExportError(f"no generated tests in {suite_dir}; run `hermetic generate` first")
+    files = require_tests(suite_dir)
     contents: list[tuple[str, bytes]] = []
     for name, limit in files:
         contents.append((name, _read_limited(suite_dir / name, name, limit)))
