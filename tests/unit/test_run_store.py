@@ -177,6 +177,18 @@ def test_a_run_the_default_service_already_has_stays_put_and_is_not_overwritten(
     assert (root / "same.json").exists()
 
 
+def test_a_run_left_under_both_names_by_an_interrupted_move_keeps_only_the_new_one(
+    tmp_path: Path,
+) -> None:
+    # The link into default/ happened, the removal of the root name did not.
+    root = tmp_path / "runs"
+    write_flat(root, "r1")
+    (root / "default").mkdir()
+    os.link(root / "r1.json", root / "default" / "r1.json")
+    assert [s.run_id for s in FileRunStore(root).list("default")] == ["r1"]
+    assert not (root / "r1.json").exists() and (root / "default" / "r1.json").exists()
+
+
 def test_only_run_records_and_the_old_index_are_touched(tmp_path: Path) -> None:
     root = tmp_path / "runs"
     root.mkdir()

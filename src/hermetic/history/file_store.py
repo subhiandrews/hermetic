@@ -236,7 +236,15 @@ def _move_earlier_history(path: Path, default_dir: Path) -> None:
     destination = default_dir / path.name
     try:
         os.link(path, destination)  # fails, rather than overwrites, if it exists
-    except (FileExistsError, FileNotFoundError):  # the default service has it, or it already moved
+    except FileNotFoundError:  # already moved by another process
+        return
+    except FileExistsError:
+        # Either the default service has a different run with that id, which stays where it is,
+        # or both names are one file (a crash or another process between the link and the
+        # unlink), and the leftover root name is removed.
+        with contextlib.suppress(OSError):
+            if os.path.samefile(path, destination):
+                path.unlink(missing_ok=True)
         return
     except OSError:
         # A filesystem without hard links: rename, unless the run is already there. Unlike the
