@@ -201,7 +201,9 @@ def test_an_unreadable_store_is_a_500_that_leaks_nothing(caplog: pytest.LogCaptu
     assert SECRET not in caplog.text
 
 
-def test_an_unexpected_error_is_a_500_that_still_carries_the_security_headers() -> None:
+def test_an_unexpected_error_is_a_500_that_still_carries_the_security_headers(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     class Crashing(MemoryStore):
         def list(self, service: str | None = None) -> Summaries:
             raise RuntimeError(SECRET)
@@ -209,8 +211,10 @@ def test_an_unexpected_error_is_a_500_that_still_carries_the_security_headers() 
     client = TestClient(
         create_app(Crashing()), base_url="http://localhost", raise_server_exceptions=False
     )
-    response = client.get("/api/runs")
+    with caplog.at_level(logging.WARNING, logger="hermetic.web"):
+        response = client.get("/api/runs")
     assert response.status_code == 500 and SECRET not in response.text
+    assert SECRET not in caplog.text and "(RuntimeError)" in caplog.text
     assert response.headers["Content-Security-Policy"].startswith("default-src 'self'")
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert response.headers["Cache-Control"] == "no-store"
@@ -239,6 +243,19 @@ def test_an_unexpected_host_header_is_refused(client: TestClient, path: str) -> 
 )
 def test_loopback_host_headers_are_accepted(client: TestClient, host: str) -> None:
     assert client.get("/api/runs", headers={"host": host}).status_code == 200
+
+
+@pytest.mark.parametrize("entry", ["", " ", ":8000"])
+def test_an_empty_allowed_host_is_refused_rather_than_matching_a_missing_header(
+    entry: str,
+) -> None:
+    with pytest.raises(ValueError, match="cannot be empty"):
+        create_app(MemoryStore(), ["localhost", entry])
+
+
+def test_an_unbracketed_ipv6_allowed_host_matches_its_bracketed_header() -> None:
+    served = TestClient(create_app(MemoryStore(), ["fd00::7"]))
+    assert served.get("/api/runs", headers={"host": "[fd00::7]:8000"}).status_code == 200
 
 
 def test_the_accepted_hosts_can_be_set_or_opened_up() -> None:

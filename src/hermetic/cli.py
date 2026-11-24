@@ -210,9 +210,11 @@ def serve(
     """Serve a read-only web UI over the run history."""
     import uvicorn  # only `serve` needs the server, so the other commands skip its import cost
 
-    from hermetic.web import WILDCARD, create_app
-    from hermetic.web.app import hostname
+    from hermetic.web import WILDCARD, create_app, hostname
 
+    if any(not hostname(entry) for entry in allowed_host or []):
+        typer.echo("error: --allowed-host needs a host name, not an empty value", err=True)
+        raise typer.Exit(code=2)
     hosts = _allowed_hosts(host, allowed_host or [])
     if host not in _LOOPBACK_ADDRESSES:
         typer.echo(

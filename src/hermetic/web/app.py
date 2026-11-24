@@ -42,6 +42,8 @@ def hostname(host_header: str) -> str:
     host = host_header.strip().lower()
     if host.startswith("["):
         return host[: host.find("]") + 1]
+    if host.count(":") > 1:  # a bare IPv6 address, not host:port
+        return f"[{host}]"
     return host.partition(":")[0]
 
 
@@ -49,6 +51,8 @@ def create_app(store: RunStore, allowed_hosts: Sequence[str] = LOOPBACK_HOSTS) -
     """The app over `store`. `allowed_hosts` are the host names it answers to; "*" allows any."""
     # Entries are compared like a `Host` header, by name: "example.test:8080" is "example.test".
     allowed = frozenset(hostname(host) for host in allowed_hosts)
+    if "" in allowed:  # it would also match a request that sends no Host header
+        raise ValueError("an allowed host cannot be empty")
     # The interactive docs load script from a CDN, which the policy above does not allow.
     app = FastAPI(title="Hermetic", docs_url=None, redoc_url=None, openapi_url="/api/openapi.json")
 
@@ -59,7 +63,14 @@ def create_app(store: RunStore, allowed_hosts: Sequence[str] = LOOPBACK_HOSTS) -
         if WILDCARD not in allowed and hostname(request.headers.get("host", "")) not in allowed:
             response: Response = PlainTextResponse("unexpected Host header", status_code=421)
         else:
-            response = await call_next(request)
+            try:
+                response = await call_next(request)
+            except Exception as exc:
+                # Starlette would answer outside this middleware, without the headers, and the
+                # server would log the traceback with the exception's message, which can quote
+                # stored data. Answer here and log only the kind of failure, as for the store.
+                _logger.error("unexpected error serving the request (%s)", type(exc).__name__)
+                response = JSONResponse({"detail": "internal server error"}, status_code=500)
         _harden(response, request.url.path)
         return response
 
@@ -73,14 +84,6 @@ def create_app(store: RunStore, allowed_hosts: Sequence[str] = LOOPBACK_HOSTS) -
         # neither the client nor the log gets it: only what kind of failure it was.
         _logger.warning("run history could not be read (%s)", type(exc).__name__)
         return JSONResponse({"detail": "the run history could not be read"}, status_code=500)
-
-    @app.exception_handler(Exception)
-    async def crashed(request: Request, exc: Exception) -> JSONResponse:
-        # Starlette answers an unhandled error outside the middleware above, so the headers are
-        # added here too; the traceback is still logged by the server.
-        response = JSONResponse({"detail": "internal server error"}, status_code=500)
-        _harden(response, request.url.path)
-        return response
 
     @app.get("/api/runs")
     def list_runs(
