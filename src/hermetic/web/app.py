@@ -30,9 +30,10 @@ from hermetic.history import (
     is_valid_run_id,
     summarize,
 )
+from hermetic.net import LOOPBACK_NAMES
 
 STATIC_DIR = Path(__file__).parent / "static"
-LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "[::1]")
+LOOPBACK_HOSTS = tuple(f"[{n}]" if ":" in n else n for n in LOOPBACK_NAMES)  # as in a Host header
 WILDCARD = "*"
 DEFAULT_RUN_LIMIT = 200
 MAX_RUN_LIMIT = 10_000
@@ -185,7 +186,7 @@ def create_app(
         authorize(request)  # before the body is read, so an unauthenticated client costs nothing
         body = await _read_limited(request)
         try:
-            record = RunRecord.model_validate_json(body)
+            record = await run_in_threadpool(RunRecord.model_validate_json, body)
         except ValidationError as exc:
             # Only where and what, never the input: it is untrusted and may hold secrets. A dict
             # key is input too, and pydantic puts it in the location, so only names the model

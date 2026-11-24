@@ -24,6 +24,7 @@ from hermetic.history import (
 )
 from hermetic.ingest import IngestError, ServiceModel
 from hermetic.ingest import ingest as run_ingest
+from hermetic.net import LOOPBACK_NAMES
 from hermetic.report import SinkContext, SinkError, load_sinks
 from hermetic.runner import run_suite
 from hermetic.service import InvalidServiceError, resolve_service
@@ -227,7 +228,7 @@ def serve(
         typer.echo("error: --allowed-host needs a host name, not an empty value", err=True)
         raise typer.Exit(code=2)
     hosts = _allowed_hosts(host, allowed_host or [])
-    if host not in _LOOPBACK_ADDRESSES:
+    if host not in LOOPBACK_NAMES:
         typer.echo(
             f"warning: listening on {host}: anyone who can reach this port can read the run "
             "history, including request and response bodies (secrets are redacted)",
@@ -254,7 +255,7 @@ def serve(
             f"{API_TOKEN_ENV} bearer token",
             err=True,
         )
-        if host not in _LOOPBACK_ADDRESSES:
+        if host not in LOOPBACK_NAMES:
             typer.echo(
                 "warning: the token and the runs travel unencrypted unless a TLS proxy fronts "
                 "this server",
@@ -269,7 +270,6 @@ def serve(
 
 
 MIN_TOKEN_LENGTH = 32
-_LOOPBACK_ADDRESSES = ("127.0.0.1", "localhost", "::1")
 
 
 def _binds_every_interface(listen: str) -> bool:

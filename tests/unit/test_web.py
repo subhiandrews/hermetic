@@ -22,7 +22,7 @@ from hermetic.history import (
     SuiteChange,
     summarize,
 )
-from hermetic.web import create_app
+from hermetic.web import LOOPBACK_HOSTS, create_app
 from hermetic.web.app import (
     DEFAULT_RUN_LIMIT,
     MAX_INGEST_BYTES,
@@ -170,6 +170,10 @@ def test_the_runs_of_every_service_are_listed_with_their_service() -> None:
     second = make_record("b-run", service="beta", started_at="2026-01-02T00:00:00+00:00")
     client = TestClient(create_app(MemoryStore(first, second)), base_url="http://localhost")
     assert [r["service"] for r in client.get("/api/runs").json()] == ["beta", "alpha"]
+
+
+def test_the_hosts_answered_to_by_default_are_loopback_as_a_host_header_writes_them() -> None:
+    assert LOOPBACK_HOSTS == ("localhost", "127.0.0.1", "[::1]")
 
 
 def test_the_page_links_runs_by_service_and_id() -> None:

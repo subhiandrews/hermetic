@@ -111,6 +111,20 @@ def test_a_reply_that_is_not_valid_is_a_store_error(body: str) -> None:
         store_over(answer(200, body)).get("alpha", "r1")
 
 
+@pytest.mark.parametrize(
+    ("asked", "sent"), [(("alpha", "r2"), "alpha/r1"), (("beta", "r1"), "alpha/r1")]
+)
+def test_a_server_that_sends_a_different_run_than_asked_for_is_refused(
+    asked: tuple[str, str], sent: str
+) -> None:
+    service, run_id = sent.split("/")
+    other = make_record(run_id, service=service).model_dump_json()
+    with pytest.raises(RunStoreError, match="different run"):
+        store_over(answer(200, other)).get(*asked)
+    # and the run that was asked for is accepted
+    assert store_over(answer(200, other)).get(service, run_id).run_id == run_id
+
+
 @pytest.mark.parametrize("status", [200, 204, 301, 302, 307, 399])
 def test_a_save_is_only_recorded_on_a_2xx_answer(status: int) -> None:
     store = store_over(answer(status, ""))
@@ -153,6 +167,11 @@ def test_a_proxy_in_the_environment_never_sees_the_token(
     assert httpx.Client()._mounts  # the default client would route through the proxy
     store = HttpRunStore("http://127.0.0.1:8000", token=TOKEN)
     assert store._client._mounts == {}  # ours does not, so loopback is not sent through one
+
+
+def test_every_loopback_name_may_receive_the_token_in_the_clear() -> None:
+    for name in ("localhost", "127.0.0.1", "[::1]"):  # as written in an address
+        HttpRunStore(f"http://{name}:8000", token=TOKEN)
 
 
 def test_the_token_is_not_sent_in_the_clear_to_another_machine() -> None:

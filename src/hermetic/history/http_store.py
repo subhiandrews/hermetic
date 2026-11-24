@@ -9,10 +9,10 @@ from pydantic import TypeAdapter, ValidationError
 
 from hermetic.history.models import RunRecord, RunSummary, ServiceSummary
 from hermetic.history.store import RunNotFoundError, RunStoreError, is_valid_run_id
+from hermetic.net import LOOPBACK_NAMES
 from hermetic.redact import redact_url
 from hermetic.service import is_valid_service
 
-LOOPBACK = ("localhost", "127.0.0.1", "::1")
 LIST_LIMIT = 10_000  # the server's largest page; a longer history lists its newest runs
 Summaries = list[RunSummary]  # aliases: `list` is shadowed by the method inside the class
 Services = list[ServiceSummary]
@@ -48,7 +48,7 @@ class HttpRunStore:
             raise RunStoreError(f"not a server address: {redact_url(base_url)}")
         # Credentials in the address are sent too (as Basic auth), so they count like the token.
         carries_secret = token or parts.username or parts.password
-        if carries_secret and parts.scheme == "http" and hostname not in LOOPBACK:
+        if carries_secret and parts.scheme == "http" and hostname not in LOOPBACK_NAMES:
             raise RunStoreError(
                 f"refusing to send credentials to {hostname} over plain http; use https"
             )
@@ -77,9 +77,12 @@ class HttpRunStore:
             raise RunNotFoundError(f"no run {run_id!r} for service {service!r}")
         self._check(response)
         try:
-            return RunRecord.model_validate_json(response.content)
+            record = RunRecord.model_validate_json(response.content)
         except ValidationError as exc:
             raise RunStoreError(f"{self._where} sent a run that is not valid") from exc
+        if (record.service, record.run_id) != (service, run_id):  # not the run that was asked for
+            raise RunStoreError(f"{self._where} sent a different run than the one asked for")
+        return record
 
     def list(self, service: str | None = None) -> Summaries:
         if service is not None and not is_valid_service(service):  # nothing can be filed there
