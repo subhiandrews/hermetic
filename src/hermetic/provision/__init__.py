@@ -8,9 +8,11 @@ from hermetic.provision.compose import (
     ProvisionError,
     generate_compose,
     read_compose_file,
+    refuse_links,
     write_compose,
 )
 from hermetic.provision.images import APPROVED_IMAGES, ENGINES, Engine
+from hermetic.provision.stack import Endpoint, StackError, down, project_name, up
 from hermetic.provision.validate import ComposeError, check_compose
 
 __all__ = [
@@ -19,10 +21,16 @@ __all__ = [
     "ENGINES",
     "MOCKS_DIR",
     "ComposeError",
+    "Endpoint",
     "Engine",
     "ProvisionError",
+    "StackError",
     "check_compose",
+    "down",
     "generate_compose",
+    "project_name",
     "read_compose_file",
+    "refuse_links",
+    "up",
     "write_compose",
 ]

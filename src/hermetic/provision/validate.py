@@ -57,7 +57,7 @@ _HEALTH_KEYS = frozenset({"test", "interval", "timeout", "retries", "start_perio
 _DEPENDS_CONDITIONS = frozenset({"service_started", "service_healthy"})
 
 
-def _printable(text: str) -> str:
+def printable(text: str) -> str:
     return "".join(
         c if c.isprintable() else c.encode("unicode_escape").decode("ascii") for c in text
     )
@@ -73,7 +73,7 @@ class ComposeError(Exception):
     def __init__(self, problems: list[str]) -> None:
         # A problem can quote a key from the file, and a key can hold an escape sequence that
         # rewrites a terminal, so what is kept and printed is made printable here, once.
-        self.problems = [_printable(problem) for problem in problems]
+        self.problems = [printable(problem) for problem in problems]
         super().__init__("; ".join(self.problems))
 
 
@@ -235,7 +235,11 @@ def _check_volumes(
     if not isinstance(value, list) or not all(isinstance(e, str) for e in value):
         problems.append(f"{where}: must be a list of ./path:/container/path:ro strings")
         return
-    root = workdir.resolve()
+    try:
+        root = workdir.resolve()
+    except (OSError, RuntimeError):  # Python 3.12 raises RuntimeError for a symlink loop
+        problems.append(f"{where}: the working directory cannot be checked")
+        return
     for entry in value:
         parts = entry.split(":")
         if len(parts) != 3 or parts[2] != "ro":
@@ -250,7 +254,14 @@ def _check_volumes(
             # different folders; and a NUL cannot be a path at all.
             problems.append(f"{where}: {entry!r} must not hold `..` or a NUL character")
             continue
-        target = (root / source).resolve()
+        try:
+            target = (root / source).resolve()
+        except (
+            OSError,
+            RuntimeError,
+        ):  # a symlink loop (RuntimeError on Python 3.12) or unreadable link
+            problems.append(f"{where}: {entry!r} cannot be checked")
+            continue
         if not target.is_relative_to(root):
             problems.append(f"{where}: {entry!r} reaches outside the working directory")
         elif target == root:

@@ -94,7 +94,7 @@ def generate_compose(dependencies: DependencySet, workdir: Path) -> str:
     return text
 
 
-def _refuse_links(path: Path) -> None:
+def refuse_links(path: Path) -> None:
     """A repository can commit `.hermetic` as a link; writing through it would land anywhere.
 
     The folders from the current directory down to the file are checked; for a path elsewhere,
@@ -113,7 +113,7 @@ def _refuse_links(path: Path) -> None:
 
 def write_compose(path: Path, text: str) -> None:
     """Save the file whole or not at all, and never through a symlinked folder."""
-    _refuse_links(path)
+    refuse_links(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".compose-", suffix=".tmp")
     try:
