@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import socket
 from collections.abc import Sequence
 from pathlib import Path
@@ -14,9 +15,16 @@ from hermetic import __version__
 from hermetic.agent import ClaudeAuthor
 from hermetic.execute import ExecuteError, check_target
 from hermetic.generate import GenerateError, ManifestError, SuiteAuthor, generate_suite
-from hermetic.history import RunRecord, RunStoreError, SuiteChange, open_store
+from hermetic.history import (
+    API_TOKEN_ENV,
+    RunRecord,
+    RunStoreError,
+    SuiteChange,
+    open_store,
+)
 from hermetic.ingest import IngestError, ServiceModel
 from hermetic.ingest import ingest as run_ingest
+from hermetic.net import LOOPBACK_NAMES, is_header_token
 from hermetic.report import SinkContext, SinkError, load_sinks
 from hermetic.runner import run_suite
 from hermetic.service import InvalidServiceError, resolve_service
@@ -118,9 +126,13 @@ def run(
     docs: Annotated[
         Path | None, typer.Option(help="Design documents, to record their hashes.")
     ] = None,
-    history_dir: Annotated[Path, typer.Option(help="Where run history is stored.")] = Path(
-        ".hermetic/runs"
-    ),
+    history_dir: Annotated[
+        str,
+        typer.Option(
+            help="Where run history is stored: a directory, or the address of a Hermetic "
+            "server (http:// or https://; the token is read from HERMETIC_API_TOKEN)."
+        ),
+    ] = ".hermetic/runs",
     report_dir: Annotated[Path, typer.Option(help="Where file reports are written.")] = Path(
         "hermetic-reports"
     ),
@@ -188,9 +200,9 @@ def run(
 
 @app.command()
 def serve(
-    history_dir: Annotated[Path, typer.Option(help="Where run history is read from.")] = Path(
-        ".hermetic/runs"
-    ),
+    history_dir: Annotated[
+        str, typer.Option(help="Where run history is kept, and accepted runs are saved to.")
+    ] = ".hermetic/runs",
     host: Annotated[
         str, typer.Option(help="Address to listen on; loopback keeps it on this machine.")
     ] = "127.0.0.1",
@@ -207,7 +219,7 @@ def serve(
         ),
     ] = None,
 ) -> None:
-    """Serve a read-only web UI over the run history."""
+    """Serve the web UI over the run history; with HERMETIC_API_TOKEN set, also accept runs."""
     import uvicorn  # only `serve` needs the server, so the other commands skip its import cost
 
     from hermetic.web import WILDCARD, create_app, hostname
@@ -216,7 +228,7 @@ def serve(
         typer.echo("error: --allowed-host needs a host name, not an empty value", err=True)
         raise typer.Exit(code=2)
     hosts = _allowed_hosts(host, allowed_host or [])
-    if host not in _LOOPBACK_ADDRESSES:
+    if host not in LOOPBACK_NAMES:
         typer.echo(
             f"warning: listening on {host}: anyone who can reach this port can read the run "
             "history, including request and response bodies (secrets are redacted)",
@@ -229,10 +241,42 @@ def serve(
             "reach this server by rebinding its own domain to it, even if the port is firewalled",
             err=True,
         )
-    uvicorn.run(create_app(open_store(history_dir), hosts), host=host, port=port)
+    token = os.environ.get(API_TOKEN_ENV) or None
+    if token and not is_header_token(token):  # no client could send it
+        typer.echo(
+            f"error: {API_TOKEN_ENV} must be printable ASCII without spaces, so clients can send "
+            "it",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if token and len(token) < MIN_TOKEN_LENGTH:  # the only guard on writes, and not rate limited
+        typer.echo(
+            f"error: {API_TOKEN_ENV} must be at least {MIN_TOKEN_LENGTH} characters; make one with "
+            "python -c 'import secrets; print(secrets.token_urlsafe(32))'",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if token:
+        typer.echo(
+            "ingest is on: runs are accepted at /api/services/<service>/runs with the "
+            f"{API_TOKEN_ENV} bearer token",
+            err=True,
+        )
+        if host not in LOOPBACK_NAMES:
+            typer.echo(
+                "warning: the token and the runs travel unencrypted unless a TLS proxy fronts "
+                "this server",
+                err=True,
+            )
+    try:
+        store = open_store(history_dir)
+    except RunStoreError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    uvicorn.run(create_app(store, hosts, token), host=host, port=port)
 
 
-_LOOPBACK_ADDRESSES = ("127.0.0.1", "localhost", "::1")
+MIN_TOKEN_LENGTH = 32
 
 
 def _binds_every_interface(listen: str) -> bool:

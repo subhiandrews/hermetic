@@ -34,6 +34,21 @@ def status_with_host(served: Any, host: str) -> int:
     return int(client.get("/api/runs", headers={"host": host}).status_code)
 
 
+STRONG = "t" * 40  # a token long enough for serve to accept
+
+
+def post_status(served: Any, token: str) -> int:
+    from tests.factories import make_record
+
+    client = TestClient(served, base_url="http://localhost")
+    response = client.post(
+        "/api/services/default/runs",
+        content=make_record("r1").model_dump_json(),
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    return int(response.status_code)
+
+
 def test_serve_listens_on_loopback_only_by_default(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -191,6 +206,72 @@ def test_serve_on_a_bare_ipv6_address_accepts_its_bracketed_host_header(
     result = runner.invoke(app, ["serve", "--history-dir", str(tmp_path), "--host", "fe80::1"])
     assert result.exit_code == 0 and len(calls) == 1
     assert status_with_host(calls[0][0], "[fe80::1]:8000") == 200
+
+
+def test_serve_accepts_runs_only_when_a_token_is_set(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls = fake_uvicorn(monkeypatch)
+    monkeypatch.delenv("HERMETIC_API_TOKEN", raising=False)
+    off = runner.invoke(app, ["serve", "--history-dir", str(tmp_path)])
+    assert "ingest" not in off.output
+    assert post_status(calls[0][0], "anything") == 403
+
+    monkeypatch.setenv("HERMETIC_API_TOKEN", STRONG)
+    on = runner.invoke(app, ["serve", "--history-dir", str(tmp_path)])
+    assert "ingest is on" in on.output and STRONG not in on.output
+    assert "unencrypted" not in on.output  # loopback: nothing crosses the network
+    assert post_status(calls[1][0], "wrong") == 401
+    assert post_status(calls[1][0], STRONG) == 201
+
+
+@pytest.mark.parametrize("token", ["é" * 40, "a b" * 20, "x" * 39 + "\n"])
+def test_serve_refuses_a_token_no_client_could_send(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, token: str
+) -> None:
+    calls = fake_uvicorn(monkeypatch)
+    monkeypatch.setenv("HERMETIC_API_TOKEN", token)
+    result = runner.invoke(app, ["serve", "--history-dir", str(tmp_path)])
+    assert result.exit_code == 2 and "printable ASCII" in result.output
+    assert token.strip() not in result.output and calls == []
+
+
+@pytest.mark.parametrize("token", ["s3cret", "x" * 31])
+def test_serve_refuses_a_token_too_short_to_guard_writes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, token: str
+) -> None:
+    calls = fake_uvicorn(monkeypatch)
+    monkeypatch.setenv("HERMETIC_API_TOKEN", token)
+    result = runner.invoke(app, ["serve", "--history-dir", str(tmp_path)])
+    assert result.exit_code == 2 and "at least 32 characters" in result.output
+    assert "token_urlsafe" in result.output and token not in result.output and calls == []
+    monkeypatch.setenv("HERMETIC_API_TOKEN", "x" * 32)  # exactly the minimum is fine
+    assert runner.invoke(app, ["serve", "--history-dir", str(tmp_path)]).exit_code == 0
+
+
+def test_serve_beyond_loopback_with_ingest_says_the_token_is_not_encrypted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake_uvicorn(monkeypatch)
+    monkeypatch.setenv("HERMETIC_API_TOKEN", STRONG)
+    result = runner.invoke(app, ["serve", "--history-dir", str(tmp_path), "--host", "192.168.1.5"])
+    assert "ingest is on" in result.output and "unencrypted unless a TLS proxy" in result.output
+    assert STRONG not in result.output
+
+
+@pytest.mark.parametrize("address", ["http://[bad", "http://", "http://host:notaport"])
+def test_serve_with_a_bad_server_address_is_an_error_line_not_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, address: str
+) -> None:
+    calls = fake_uvicorn(monkeypatch)
+    result = runner.invoke(app, ["serve", "--history-dir", address])
+    assert result.exit_code == 2 and "error: not a server address" in result.output
+    assert calls == [] and "Traceback" not in result.output
+
+
+def test_serve_help_says_it_can_accept_runs() -> None:
+    result = runner.invoke(app, ["serve", "--help"])
+    assert "HERMETIC_API_TOKEN" in result.output and "read-only" not in result.output
 
 
 @pytest.mark.parametrize("port", ["0", "70000"])

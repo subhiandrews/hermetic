@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
+import time
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,8 +22,14 @@ from hermetic.history import (
     SuiteChange,
     summarize,
 )
-from hermetic.web import create_app
-from hermetic.web.app import DEFAULT_RUN_LIMIT, MAX_RUN_LIMIT, STATIC_DIR, hostname
+from hermetic.web import LOOPBACK_HOSTS, create_app
+from hermetic.web.app import (
+    DEFAULT_RUN_LIMIT,
+    MAX_INGEST_BYTES,
+    MAX_RUN_LIMIT,
+    STATIC_DIR,
+    hostname,
+)
 from tests.factories import make_record, make_result
 
 SECRET = "secret-marker"
@@ -44,7 +55,11 @@ class MemoryStore:
         return record
 
     def list(self, service: str | None = None) -> Summaries:
-        summaries = [summarize(record) for record in self._records.values()]
+        summaries = [
+            summarize(record)
+            for record in self._records.values()
+            if service is None or record.service == service
+        ]
         return sorted(summaries, key=lambda summary: summary.started_at, reverse=True)
 
     def services(self) -> Services:
@@ -155,6 +170,10 @@ def test_the_runs_of_every_service_are_listed_with_their_service() -> None:
     second = make_record("b-run", service="beta", started_at="2026-01-02T00:00:00+00:00")
     client = TestClient(create_app(MemoryStore(first, second)), base_url="http://localhost")
     assert [r["service"] for r in client.get("/api/runs").json()] == ["beta", "alpha"]
+
+
+def test_the_hosts_answered_to_by_default_are_loopback_as_a_host_header_writes_them() -> None:
+    assert LOOPBACK_HOSTS == ("localhost", "127.0.0.1", "[::1]")
 
 
 def test_the_page_links_runs_by_service_and_id() -> None:
@@ -343,3 +362,218 @@ def test_the_page_never_builds_markup_from_run_data() -> None:
     assert not re.search(r"\son[a-z]+\s*=", page), "an inline event handler"
     assert not re.search(r"style\s*=", page), "an inline style"
     assert "http://" not in page and "https://" not in page, "a resource from another origin"
+
+
+# --- the service listings and run ingest ---
+
+TOKEN = "ingest-token-9c1"
+BEARER = {"Authorization": f"Bearer {TOKEN}"}
+
+
+def ingesting(store: MemoryStore | None = None, token: str | None = TOKEN) -> TestClient:
+    app = create_app(store or MemoryStore(), ingest_token=token)
+    return TestClient(app, base_url="http://localhost")
+
+
+def post_run(client: TestClient, record: RunRecord, headers: dict[str, str] | None = None) -> Any:
+    return client.post(
+        f"/api/services/{record.service}/runs", content=record.model_dump_json(), headers=headers
+    )
+
+
+def test_the_services_and_their_runs_are_listed(client: TestClient) -> None:
+    (only,) = client.get("/api/services").json()
+    assert only["service"] == "default" and only["runs"] == 2 and only["latest"]["run_id"] == "new"
+    assert [r["run_id"] for r in client.get("/api/services/default/runs").json()] == ["new", "old"]
+    assert [r["run_id"] for r in client.get("/api/services/default/runs?limit=1").json()] == ["new"]
+    assert client.get("/api/services/other/runs").json() == []
+    assert client.get("/api/services/default/runs?limit=0").status_code == 422
+
+
+def test_a_run_is_accepted_with_the_token_and_can_be_read_back() -> None:
+    store = MemoryStore()
+    client = ingesting(store)
+    record = make_record("r1", service="alpha", results=[make_result("passed")])
+    response = post_run(client, record, headers=BEARER)
+    assert response.status_code == 201
+    assert response.json()["run_id"] == "r1" and response.json()["passed"] == 1
+    assert client.get("/api/services/alpha/runs/r1").json()["service"] == "alpha"
+    assert store.get("alpha", "r1") == record
+
+
+def test_ingest_is_off_unless_a_token_is_configured() -> None:
+    for token in (None, ""):
+        client = ingesting(token=token)
+        response = post_run(client, make_record("r1"), headers=BEARER)
+        assert response.status_code == 403
+        assert "HERMETIC_API_TOKEN" in response.text
+        assert client.get("/api/services").json() == []  # and nothing was stored
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"Authorization": "Bearer wrong"},
+        {"Authorization": TOKEN},
+        {"Authorization": f"Basic {TOKEN}"},
+        {"Authorization": "Bearer "},
+        {"Authorization": f"Bearer {TOKEN} "},
+    ],
+)
+def test_a_missing_or_wrong_token_is_refused_and_nothing_is_stored(
+    headers: dict[str, str],
+) -> None:
+    client = ingesting()
+    response = post_run(client, make_record("r1"), headers=headers)
+    assert response.status_code == 401
+    assert response.headers["WWW-Authenticate"] == "Bearer"
+    assert client.get("/api/services").json() == []
+
+
+def test_the_token_is_checked_before_the_body_is_read() -> None:
+    # An unauthenticated client must not make the server read (or parse) a large body.
+    client = ingesting()
+    big = b"x" * (MAX_INGEST_BYTES + 1)
+    assert client.post("/api/services/alpha/runs", content=big).status_code == 401
+
+
+def test_a_scheme_is_case_insensitive_but_the_token_is_not() -> None:
+    client = ingesting()
+    ok = post_run(client, make_record("r1"), headers={"Authorization": f"bearer {TOKEN}"})
+    assert ok.status_code == 201
+    bad = post_run(client, make_record("r2"), headers={"Authorization": f"Bearer {TOKEN.upper()}"})
+    assert bad.status_code == 401
+
+
+def test_a_run_for_another_service_than_the_address_is_refused() -> None:
+    client = ingesting()
+    record = make_record("r1", service="alpha")
+    response = client.post(
+        "/api/services/beta/runs", content=record.model_dump_json(), headers=BEARER
+    )
+    assert response.status_code == 422 and "does not match" in response.text
+    assert client.get("/api/services").json() == []
+
+
+@pytest.mark.parametrize("run_id", ["index", "Index", "../x", ".hidden", "a/b", ""])
+def test_a_run_id_the_store_cannot_use_is_a_client_error_not_a_server_error(run_id: str) -> None:
+    client = ingesting()
+    body = make_record("r1").model_dump_json().replace('"run_id":"r1"', f'"run_id":"{run_id}"')
+    response = client.post("/api/services/default/runs", content=body, headers=BEARER)
+    assert response.status_code == 422 and "run id" in response.text
+    assert client.get("/api/services").json() == []
+
+
+@pytest.mark.parametrize(
+    "body", ["not json", "[]", "{}", '{"run_id": 1}', '{"service": "Bad Name"}', "\xff"]
+)
+def test_a_body_that_is_not_a_run_is_refused_without_echoing_it(body: str) -> None:
+    client = ingesting()
+    marked = body if body != "{}" else f'{{"{SECRET}": 1}}'
+    response = client.post("/api/services/default/runs", content=marked, headers=BEARER)
+    assert response.status_code == 422 and SECRET not in response.text
+    assert isinstance(response.json()["detail"], list)  # where and what, nothing quoted
+
+
+def test_a_value_the_model_rejects_is_not_quoted_back() -> None:
+    client = ingesting()
+    record = make_record("r1").model_dump(mode="json")
+    record["target"] = None
+    record["started_at"] = SECRET * 3
+    record["spec_hash"] = {SECRET: 1}
+    response = client.post("/api/services/default/runs", content=json.dumps(record), headers=BEARER)
+    assert response.status_code == 422 and SECRET not in response.text
+
+
+def test_a_dict_key_in_the_body_is_not_echoed_in_the_error_location() -> None:
+    client = ingesting()
+    record = make_record("r1", results=[make_result("passed")]).model_dump(mode="json")
+    record["doc_hashes"] = {SECRET: 1}  # invalid value under a client-chosen key
+    record["results"][0]["exchanges"] = [
+        {"method": "GET", "url": "u", "request_headers": {SECRET + "2": 1}}
+    ]
+    response = client.post("/api/services/default/runs", content=json.dumps(record), headers=BEARER)
+    assert response.status_code == 422 and SECRET not in response.text
+    locations = [problem["loc"] for problem in response.json()["detail"]]
+    assert ["doc_hashes", "*"] in locations  # where, without the key
+    assert ["results", 0, "exchanges", 0, "request_headers", "*"] in locations  # positions stay
+
+
+def test_a_body_over_the_limit_is_refused_by_its_declared_length() -> None:
+    client = ingesting()
+    big = b"x" * (MAX_INGEST_BYTES + 1)
+    response = client.post("/api/services/default/runs", content=big, headers=BEARER)
+    assert response.status_code == 413 and "too large" in response.text
+    assert response.headers["Content-Security-Policy"]  # the headers are on error replies too
+
+
+def test_a_body_over_the_limit_is_refused_while_streaming_when_no_length_is_declared() -> None:
+    client = ingesting()
+
+    def chunks() -> Iterator[bytes]:
+        for _ in range(MAX_INGEST_BYTES // 65_536 + 2):
+            yield b"x" * 65_536
+
+    response = client.post("/api/services/default/runs", content=chunks(), headers=BEARER)
+    assert response.status_code == 413
+
+
+def test_a_run_just_under_the_limit_is_accepted() -> None:
+    client = ingesting()
+    padding = "x" * (MAX_INGEST_BYTES - 4_096)
+    record = make_record("r1", doc_hashes={"padding": padding})
+    assert post_run(client, record, headers=BEARER).status_code == 201
+
+
+def test_a_run_replaces_an_earlier_one_with_the_same_id() -> None:
+    client = ingesting()
+    post_run(client, make_record("r1", target="http://first"), headers=BEARER)
+    post_run(client, make_record("r1", target="http://second"), headers=BEARER)
+    assert client.get("/api/services/default/runs/r1").json()["target"] == "http://second"
+    assert len(client.get("/api/services/default/runs").json()) == 1
+
+
+def test_a_store_that_cannot_save_is_a_500_that_leaks_nothing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = TestClient(
+        create_app(BrokenStore(), ingest_token=TOKEN),
+        base_url="http://localhost",
+    )
+    with caplog.at_level(logging.WARNING, logger="hermetic.web"):
+        response = post_run(client, make_record("r1"), headers=BEARER)
+    assert response.status_code == 500 and SECRET not in response.text
+    assert "could not be saved" in response.text  # not "could not be read"
+    assert "run could not be saved (RunStoreError)" in caplog.text and SECRET not in caplog.text
+
+
+def test_concurrent_ingests_are_saved_one_at_a_time() -> None:
+    class SlowStore(MemoryStore):
+        active = 0
+        most = 0
+
+        def save(self, record: RunRecord) -> None:
+            SlowStore.active += 1
+            SlowStore.most = max(SlowStore.most, SlowStore.active)
+            time.sleep(0.03)  # long enough for the other requests to arrive
+            super().save(record)
+            SlowStore.active -= 1
+
+    store = SlowStore()
+    client = ingesting(store)
+    records = [make_record(f"r{i}") for i in range(6)]
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        replies = list(pool.map(lambda record: post_run(client, record, headers=BEARER), records))
+    assert [reply.status_code for reply in replies] == [201] * 6
+    assert SlowStore.most == 1 and len(store.list()) == 6
+
+
+def test_ingest_replies_carry_the_security_headers_and_the_host_check_applies() -> None:
+    client = ingesting()
+    response = post_run(client, make_record("r1"), headers=BEARER)
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    evil = post_run(client, make_record("r2"), headers={**BEARER, "host": "evil.example"})
+    assert evil.status_code == 421
+    assert client.get("/api/services/default/runs/r2").status_code == 404

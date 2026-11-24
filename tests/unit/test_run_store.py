@@ -7,11 +7,15 @@ import logging
 import os
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
+import httpx
 import pytest
+from fastapi.testclient import TestClient
 
 from hermetic.history import (
     FileRunStore,
+    HttpRunStore,
     RunNotFoundError,
     RunRecord,
     RunStore,
@@ -20,14 +24,26 @@ from hermetic.history import (
     summarize,
 )
 from hermetic.history.file_store import _ServiceDir
+from hermetic.web import create_app
 from tests.factories import make_record, make_result
 
 StoreFactory = Callable[[Path], RunStore]
 
 
-@pytest.fixture(params=["file"])
+def http_store(root: Path) -> RunStore:
+    """HttpRunStore against the real web app, over a file store, in process."""
+    app = create_app(FileRunStore(root / "runs"), ingest_token="contract-token")
+    # Starlette's TestClient is built on its own copy of httpx's client, with the same API.
+    client = cast(httpx.Client, TestClient(app, base_url="http://localhost"))
+    return HttpRunStore("http://localhost", token="contract-token", client=client)
+
+
+@pytest.fixture(params=["file", "http"])
 def store(request: pytest.FixtureRequest, tmp_path: Path) -> RunStore:
-    factories: dict[str, StoreFactory] = {"file": lambda root: FileRunStore(root / "runs")}
+    factories: dict[str, StoreFactory] = {
+        "file": lambda root: FileRunStore(root / "runs"),
+        "http": http_store,
+    }
     return factories[request.param](tmp_path)
 
 

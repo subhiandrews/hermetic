@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
+import httpx
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from hermetic.cli import app
 from hermetic.history import FileRunStore, SuiteChange
 from hermetic.report import SinkError
 from hermetic.runner import new_run_id, run_suite
+from hermetic.web import create_app
 from tests.fakes import FakeAuthor
 
 runner = CliRunner()
@@ -437,3 +442,105 @@ def test_a_bad_service_name_is_a_usage_error(
 def test_run_without_a_spec_needs_the_service_named(server: str, tmp_path: Path) -> None:
     result = runner.invoke(app, ["run", str(write_suite(tmp_path, "== 200")), "--target", server])
     assert result.exit_code == 2 and "--service" in result.output
+
+
+def serve_history_from(monkeypatch: pytest.MonkeyPatch, hist_app: FastAPI) -> None:
+    """Point the history store's HTTP client at `hist_app` in process, instead of a network. Only
+    the store's module is changed: the tests' own target client must stay a real one."""
+    fake_httpx = SimpleNamespace(
+        Client=lambda **kwargs: TestClient(hist_app, base_url="https://hist.test"),
+        HTTPError=httpx.HTTPError,
+    )
+    monkeypatch.setattr("hermetic.history.http_store.httpx", fake_httpx)
+
+
+def test_a_run_can_be_recorded_on_a_server_instead_of_a_directory(
+    server: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    central = FileRunStore(tmp_path / "central")
+    hist_app = create_app(central, ["hist.test"], ingest_token="tok")
+    monkeypatch.setenv("HERMETIC_API_TOKEN", "tok")
+    # the CLI's HTTP client is pointed at the app in process instead of a network
+    serve_history_from(monkeypatch, hist_app)
+    result = runner.invoke(
+        app,
+        [
+            *["run", str(write_suite(tmp_path, "== 200")), "--target", server],
+            *["--service", "svc", "--history-dir", "https://hist.test"],
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    (summary,) = central.list("svc")
+    assert summary.service == "svc" and summary.passed == 1
+
+
+def test_a_server_that_refuses_the_token_is_reported_as_a_store_error(
+    server: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hist_app = create_app(FileRunStore(tmp_path / "central"), ["hist.test"], ingest_token="right")
+    monkeypatch.setenv("HERMETIC_API_TOKEN", "wrong")
+    serve_history_from(monkeypatch, hist_app)
+    failing_dir, passing_dir = tmp_path / "failing", tmp_path / "passing"
+    failing_dir.mkdir()
+    passing_dir.mkdir()
+    failing = runner.invoke(
+        app,
+        [
+            *["run", str(write_suite(failing_dir, "== 500")), "--target", server],
+            *["--service", "svc", "--history-dir", "https://hist.test"],
+        ],
+    )
+    assert failing.exit_code == 1  # the tests failed, and that still decides the exit code
+    assert "refused the request (HTTP 401)" in failing.output and "wrong" not in failing.output
+    passing = runner.invoke(
+        app,
+        [
+            *["run", str(write_suite(passing_dir, "== 200")), "--target", server],
+            *["--service", "svc", "--history-dir", "https://hist.test"],
+        ],
+    )
+    assert passing.exit_code == 2  # the run could not be recorded
+
+
+def test_the_token_is_not_sent_in_the_clear_to_another_machine_from_the_cli(
+    server: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HERMETIC_API_TOKEN", "tok")
+    result = runner.invoke(
+        app,
+        [
+            *["run", str(write_suite(tmp_path, "== 200")), "--target", server],
+            *["--service", "svc", "--history-dir", "http://hist.example"],
+        ],
+    )
+    assert result.exit_code == 2 and "over plain http" in result.output
+
+
+@pytest.mark.parametrize("address", ["http://[bad", "http://host:notaport"])
+def test_a_malformed_history_server_is_reported_as_an_error_line(
+    server: str, tmp_path: Path, address: str
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            *["run", str(write_suite(tmp_path, "== 200")), "--target", server],
+            *["--service", "svc", "--history-dir", address],
+        ],
+    )
+    assert result.exit_code == 2 and "error: not a server address" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_a_token_that_cannot_be_sent_is_an_error_line_not_a_traceback(
+    server: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HERMETIC_API_TOKEN", "tök3n-with-an-accent")
+    result = runner.invoke(
+        app,
+        [
+            *["run", str(write_suite(tmp_path, "== 200")), "--target", server],
+            *["--service", "svc", "--history-dir", "https://hist.example"],
+        ],
+    )
+    assert result.exit_code == 2 and "cannot be sent" in result.output
+    assert "tök3n" not in result.output and "Traceback" not in result.output

@@ -60,12 +60,21 @@ A **service id** is lowercase letters, digits and hyphens (at most 63, starting 
 
 A run record holds metadata (target, spec/doc hashes, prompt and tool versions), per-test results (with expected vs actual, redacted request/response and a `curl` command for failures), and the suite changes since the previous run: tests added, modified and dropped, each with a reason.
 
-`hermetic serve` runs a read-only web UI over the store: a history table with a pass-rate trend, and a run detail view with Failed / Added / Modified / Dropped / All tabs. The same data is exposed as JSON: `/api/runs` lists the runs of every service (each carries its `service`), and `/api/services/<service>/runs/<run_id>` returns one, since a run id is only unique within its service. It is a small FastAPI app (`web/app.py`) that depends only on the `RunStore` protocol, plus a static page (`web/static/`) with no build step.
+`hermetic serve` runs a web UI over the store: a history table with a pass-rate trend, and a run detail view with Failed / Added / Modified / Dropped / All tabs. The same data is exposed as JSON: `/api/runs` lists the runs of every service (each carries its `service`), and `/api/services/<service>/runs/<run_id>` returns one, since a run id is only unique within its service. It is a small FastAPI app (`web/app.py`) that depends only on the `RunStore` protocol, plus a static page (`web/static/`) with no build step.
 
 - **Run records are untrusted data.** They hold request and response bodies from the service under test, so the page only ever inserts them as text, never as markup (a test fails if the script uses `innerHTML` and the like). The content security policy forbids inline script and style, and every response carries it.
 - **It listens on loopback by default** and refuses a `Host` header it was not started for, so a web page cannot reach it through DNS rebinding (the page's own domain, pointed at the server, is not on the list). Listening beyond loopback prints a warning, because anyone who can reach the port can read the history, but keeps the check. `--allowed-host` extends the list and can switch the check off, with a warning; `hermetic serve --help` has the details.
 - **Store errors never reach a client or the log.** A missing or malformed run id is a 404 and an unreadable run is a generic 500; every response, errors included, carries the security headers. The store's message can quote the record (a corrupt file's validation error does), so only the kind of failure is logged.
 - **The run list is capped**, because history only grows; the page says when it shows a partial list.
+
+### Central history
+
+`hermetic serve` can also be the place runs are kept. The API is the interface: the CLI and the page only use it, so the file store behind it can later be a database. `GET /api/services` lists the services, `GET /api/services/<service>/runs` and `/<run_id>` read them, and `POST /api/services/<service>/runs` records one. `hermetic run --history-dir https://host` does that through `HttpRunStore`, which passes the same contract tests as the file store.
+
+- **Ingest is off unless the server has `HERMETIC_API_TOKEN`, and the token must be at least 32 characters** (`serve` refuses a shorter one), because it is the only guard on writes and is not rate limited. It is a bearer token, compared in constant time and checked before the body is read. With none configured, a POST is refused, so a local process or a web page cannot write history. The client reads the same variable.
+- **The token only travels where it is safe.** `HttpRunStore` refuses to send it over plain `http` to a host that is not on this machine, does not follow redirects, and never puts the token, the address's credentials or a response body in an error. A server reachable beyond loopback should sit behind TLS; `serve` says so.
+- **The body is untrusted.** It is capped at 10 MB, parsed as a run record, and must name the service in the address and a run id the store accepts. A rejected body is answered with where and what was wrong, never the value; a client-chosen dict key is shown as `*`. A run with an existing id replaces it, as in the store protocol.
+- **The server must allow the client's host name** (`--allowed-host`), as for any other client. Reads are not authenticated yet; that is needed before a server is shared beyond one team.
 
 ## Safety
 

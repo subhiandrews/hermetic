@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
+import re
 from typing import Protocol
 
 from hermetic.history.models import RunRecord, RunSummary, ServiceSummary
+
+# A run id becomes a file name and a URL segment, so it must not be able to name a path. "index"
+# is reserved for the file store's index, in any case.
+_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+_RESERVED_RUN_ID = "index"
+
+
+def is_valid_run_id(run_id: str) -> bool:
+    return _RUN_ID.fullmatch(run_id) is not None and run_id.lower() != _RESERVED_RUN_ID
 
 
 class RunStoreError(Exception):
