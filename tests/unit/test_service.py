@@ -27,15 +27,20 @@ def test_invalid_service_ids(service: str) -> None:
     [
         ("Conduit API (v2)", "conduit-api-v2"),
         ("  Swagger Petstore - OpenAPI 3.0  ", "swagger-petstore-openapi-3-0"),
-        ("???", "service"),
-        ("", "service"),
-        ("日本語", "service"),
         ("a" * 100, "a" * 63),
         ("a" * 62 + " b", "a" * 62),  # cut where it would leave a trailing hyphen
     ],
 )
 def test_slugify_gives_a_valid_id(title: str, slug: str) -> None:
     assert slugify(title) == slug and is_valid_service(slug)
+
+
+@pytest.mark.parametrize("title", ["???", "", "日本語", " - "])
+def test_a_title_with_nothing_to_make_an_id_from_gives_none(title: str) -> None:
+    assert slugify(title) == ""
+    with pytest.raises(InvalidServiceError, match="use --service"):
+        resolve_service(title, None)
+    assert resolve_service(title, "chosen-name") == "chosen-name"
 
 
 def test_an_explicit_service_wins_over_the_title() -> None:

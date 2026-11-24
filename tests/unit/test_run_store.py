@@ -167,30 +167,35 @@ def test_flat_history_moves_under_the_default_service_on_first_use(tmp_path: Pat
     assert [s.service for s in store.services()] == ["default"]
 
 
-def test_migration_keeps_a_run_the_default_service_already_has(
+def test_a_run_the_default_service_already_has_is_set_aside_once_not_overwritten(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     root = tmp_path / "runs"
     FileRunStore(root).save(make_record("same", target="http://kept"))
     write_flat(root, "same")
     with caplog.at_level(logging.WARNING, logger="hermetic.history"):
-        store = FileRunStore(root)
-        assert store.get("default", "same").target == "http://kept"
-    assert (root / "same.json").exists()  # left where it was, not overwritten or deleted
-    assert "same.json was left where it is" in caplog.text  # and said so
+        assert FileRunStore(root).get("default", "same").target == "http://kept"
+    assert not (root / "same.json").exists() and (root / "legacy" / "same.json").exists()
+    assert "moved same.json to" in caplog.text
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="hermetic.history"):
+        FileRunStore(root).list()  # nothing is left in the root, so nothing is said again
+    assert caplog.text == ""
 
 
-def test_migration_happens_once_per_store_and_a_failure_is_retried(tmp_path: Path) -> None:
+def test_migration_happens_once_per_store_and_a_failure_is_logged_not_raised(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     root = tmp_path / "runs"
     write_flat(root, "old1")
     (root / "default").write_text("a file where the service directory should be")
     store = FileRunStore(root)
-    with pytest.raises(RunStoreError, match="cannot move the earlier run history"):
+    with caplog.at_level(logging.WARNING, logger="hermetic.history"):
+        assert store.list() == []  # the store still answers, without the runs it cannot move
         store.list()
+    assert caplog.text.count("could not be moved under 'default'") == 1  # once, not per call
     (root / "default").unlink()
-    assert [s.run_id for s in store.list()] == ["old1"]  # the failure was not remembered
-    write_flat(root, "late")
-    assert [s.run_id for s in store.list()] == ["old1"]  # a finished migration is not repeated
+    assert FileRunStore(root).list()[0].run_id == "old1"  # the next process tries again
 
 
 def test_migration_falls_back_to_a_rename_where_hard_links_are_not_allowed(
@@ -225,7 +230,7 @@ def test_the_rename_fallback_tolerates_a_file_another_process_moved_first(
 
 
 def test_the_rename_fallback_does_not_overwrite_a_run_the_default_service_has(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "runs"
     FileRunStore(root).save(make_record("same", target="http://kept"))
@@ -235,10 +240,19 @@ def test_the_rename_fallback_does_not_overwrite_a_run_the_default_service_has(
         raise PermissionError("hard links are not supported here")
 
     monkeypatch.setattr("hermetic.history.file_store.os.link", no_links)
-    with caplog.at_level(logging.WARNING, logger="hermetic.history"):
-        store = FileRunStore(root)
-        assert store.get("default", "same").target == "http://kept"
-    assert (root / "same.json").exists() and "same.json was left where it is" in caplog.text
+    store = FileRunStore(root)
+    assert store.get("default", "same").target == "http://kept"
+    assert (root / "legacy" / "same.json").exists()  # set aside by rename, not overwritten
+
+
+def test_a_set_aside_file_is_never_overwritten_in_legacy(tmp_path: Path) -> None:
+    root = tmp_path / "runs"
+    (root / "legacy").mkdir(parents=True)
+    (root / "legacy" / ".odd.json").write_text("first")
+    (root / ".odd.json").write_text("second")
+    FileRunStore(root).list()
+    assert (root / "legacy" / ".odd.json").read_text() == "first"
+    assert (root / ".odd.json").read_text() == "second"  # nowhere to go, so it stays
 
 
 def test_a_file_another_process_already_moved_is_skipped_quietly(
@@ -255,16 +269,15 @@ def test_a_file_another_process_already_moved_is_skipped_quietly(
     assert FileRunStore(root).list() == []  # nothing was readable, and nothing raised
 
 
-def test_migration_ignores_files_that_are_not_runs(
+def test_a_json_file_that_is_not_a_run_is_set_aside(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     root = tmp_path / "runs"
     root.mkdir()
     (root / ".hidden.json").write_text("{}")
     with caplog.at_level(logging.WARNING, logger="hermetic.history"):
-        store = FileRunStore(root)
-        assert store.list() == []
-    assert (root / ".hidden.json").exists() and ".hidden.json was left" in caplog.text
+        assert FileRunStore(root).list() == []
+    assert (root / "legacy" / ".hidden.json").exists() and "moved .hidden.json" in caplog.text
 
 
 def test_the_history_directory_may_not_exist_yet(tmp_path: Path) -> None:

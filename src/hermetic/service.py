@@ -17,9 +17,9 @@ def is_valid_service(service: str) -> bool:
 
 
 def slugify(title: str) -> str:
-    """A service id from a spec title: "Conduit API (v2)" becomes "conduit-api-v2"."""
-    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:_MAX_LENGTH].rstrip("-")
-    return slug or "service"
+    """A service id from a spec title: "Conduit API (v2)" becomes "conduit-api-v2". Empty when the
+    title has no ASCII letters or digits to make one from."""
+    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:_MAX_LENGTH].rstrip("-")
 
 
 class InvalidServiceError(ValueError):
@@ -37,4 +37,9 @@ def resolve_service(title: str | None, override: str | None) -> str:
         return override
     if title is None:
         raise InvalidServiceError("name the service with --service, or give --spec to derive it")
-    return slugify(title)
+    slug = slugify(title)
+    if not slug:  # a shared fallback id would silently merge unrelated services
+        raise InvalidServiceError(
+            f"cannot derive a service id from the title {title!r}: use --service"
+        )
+    return slug

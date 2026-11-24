@@ -267,7 +267,9 @@ def test_hostname_drops_the_port_and_keeps_ipv6_brackets(header: str, expected: 
     assert hostname(header) == expected
 
 
-@pytest.mark.parametrize("path", ["/", "/api/runs", "/api/runs/new", "/static/app.js"])
+@pytest.mark.parametrize(
+    "path", ["/", "/api/runs", "/api/services/default/runs/new", "/static/app.js"]
+)
 def test_every_response_carries_the_security_headers(client: TestClient, path: str) -> None:
     headers = client.get(path).headers
     policy = headers["Content-Security-Policy"]
