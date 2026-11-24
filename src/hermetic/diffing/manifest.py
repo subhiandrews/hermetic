@@ -78,6 +78,11 @@ def save_manifest(path: Path, manifest: Manifest) -> None:
     payload = manifest.model_dump(mode="json")
     payload["entries"] = dict(sorted(payload["entries"].items()))
     text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+    size = len(text.encode("utf-8"))
+    if size > MAX_MANIFEST_BYTES:  # never write what `load_manifest` would refuse to read back
+        raise ManifestError(
+            f"the manifest would be {size} bytes, over the {MAX_MANIFEST_BYTES} byte limit"
+        )
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".manifest-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:

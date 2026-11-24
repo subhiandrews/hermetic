@@ -300,6 +300,26 @@ def test_oversized_and_unreadable_manifests_are_rejected(
         load_manifest(plain_file / "manifest.json")
 
 
+def test_save_refuses_a_manifest_it_could_not_read_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("hermetic.diffing.manifest.MAX_MANIFEST_BYTES", 10)
+    path = tmp_path / "manifest.json"
+    with pytest.raises(ManifestError, match="over the 10 byte limit"):
+        save_manifest(path, Manifest(entries={"op": entry()}))
+    assert not path.exists() and not list(tmp_path.glob(".manifest-*"))
+
+
+def test_an_oversized_spec_fails_before_any_paid_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("hermetic.generate.suite.MAX_MANIFEST_BYTES", 100)
+    author = FakeAuthor()
+    with pytest.raises(GenerateError, match="split the spec"):
+        generate_suite(model_from(tmp_path), author, tmp_path / "suite")
+    assert author.requests == [] and not (tmp_path / "suite").exists()
+
+
 def test_save_cleans_up_when_the_write_fails(tmp_path: Path) -> None:
     target = tmp_path / "manifest.json"
     target.mkdir()

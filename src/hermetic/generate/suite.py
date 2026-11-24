@@ -10,6 +10,7 @@ from pathlib import Path
 
 from hermetic.diffing import plan_changes
 from hermetic.diffing.manifest import (
+    MAX_MANIFEST_BYTES,
     Manifest,
     ManifestEntry,
     file_name_for,
@@ -48,6 +49,14 @@ def generate_suite(
     """
     manifest_path = suite_dir / MANIFEST_NAME
     manifest = load_manifest(manifest_path)
+    # Every operation's fragment is stored in the manifest, which cannot be read back above a
+    # size limit. Say so before the paid authoring step, not after it (`save_manifest` checks too).
+    stored = sum(len(fragment_text(op).encode("utf-8")) for op in model.operations)
+    if stored > MAX_MANIFEST_BYTES:
+        raise GenerateError(
+            f"the spec's operations need {stored} bytes in the manifest, over its "
+            f"{MAX_MANIFEST_BYTES} byte limit; split the spec"
+        )
     plan = plan_changes(
         model,
         manifest,
