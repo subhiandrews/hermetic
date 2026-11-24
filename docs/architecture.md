@@ -58,7 +58,11 @@ Flat files, no database. Each run is `.hermetic/runs/<run_id>.json` plus an `ind
 
 A run record holds metadata (target, spec/doc hashes, prompt and tool versions), per-test results (with expected vs actual, redacted request/response and a `curl` command for failures), and the suite changes since the previous run: tests added, modified and dropped, each with a reason.
 
-`hermetic serve` runs a read-only web UI over the store: a history table with a pass-rate trend, and a run detail view with Failed / Added / Modified / Dropped / All tabs. The same data is exposed as JSON at `/api/runs`.
+`hermetic serve` runs a read-only web UI over the store: a history table with a pass-rate trend, and a run detail view with Failed / Added / Modified / Dropped / All tabs. The same data is exposed as JSON at `/api/runs` and `/api/runs/<run_id>`. It is a small FastAPI app (`web/app.py`) that depends only on the `RunStore` protocol, plus a static page (`web/static/`) with no build step.
+
+- **Run records are untrusted data.** They hold request and response bodies from the service under test, so the page only ever inserts them as text, never as markup (a test fails if the script uses `innerHTML` and the like). The content security policy forbids inline script and style, and every response carries it.
+- **It listens on loopback by default** and refuses a `Host` header it was not started for, so a web page cannot reach it through DNS rebinding. `--host 0.0.0.0` (the container case) opens the header check and prints a warning, because anyone who can reach the port can read the history.
+- **Store errors never reach a client.** A missing or malformed run id is a 404 and an unreadable run is a generic 500; the store's message can quote the record, so it only goes to the server log.
 
 ## Safety
 

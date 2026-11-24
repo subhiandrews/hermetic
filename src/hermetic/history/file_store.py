@@ -22,8 +22,14 @@ Summaries = list[RunSummary]
 _INDEX = TypeAdapter(Summaries)
 
 
+def _valid_run_id(run_id: str) -> bool:
+    return _RUN_ID.fullmatch(run_id) is not None and run_id.lower() != INDEX_NAME.removesuffix(
+        ".json"
+    )
+
+
 def _check_run_id(run_id: str) -> None:
-    if _RUN_ID.fullmatch(run_id) is None or run_id.lower() == INDEX_NAME.removesuffix(".json"):
+    if not _valid_run_id(run_id):
         raise RunStoreError(f"invalid run id: {run_id!r}")
 
 
@@ -69,7 +75,8 @@ class FileRunStore:
             (self._root / INDEX_NAME).unlink(missing_ok=True)
 
     def get(self, run_id: str) -> RunRecord:
-        _check_run_id(run_id)
+        if not _valid_run_id(run_id):  # no run can have this id, so it is simply not found
+            raise RunNotFoundError(f"no run {run_id!r}")
         path = self._root / f"{run_id}.json"
         try:
             text = path.read_text(encoding="utf-8")

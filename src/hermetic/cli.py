@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+import uvicorn
 
 from hermetic import __version__
 from hermetic.agent import ClaudeAuthor
@@ -16,6 +17,7 @@ from hermetic.ingest import IngestError, ServiceModel
 from hermetic.ingest import ingest as run_ingest
 from hermetic.report import SinkContext, SinkError, load_sinks
 from hermetic.runner import run_suite
+from hermetic.web import LOOPBACK_HOSTS, WILDCARD, create_app
 
 app = typer.Typer(
     name="hermetic",
@@ -152,6 +154,36 @@ def run(
         raise typer.Exit(code=1 if _any_failed(record) else 2) from exc
     if _any_failed(record):
         raise typer.Exit(code=1)
+
+
+@app.command()
+def serve(
+    history_dir: Annotated[Path, typer.Option(help="Where run history is read from.")] = Path(
+        ".hermetic/runs"
+    ),
+    host: Annotated[
+        str, typer.Option(help="Address to listen on; loopback keeps it on this machine.")
+    ] = "127.0.0.1",
+    port: Annotated[int, typer.Option(min=1, max=65535, help="Port to listen on.")] = 8000,
+) -> None:
+    """Serve a read-only web UI over the run history."""
+    if host not in _LOOPBACK_ADDRESSES:
+        typer.echo(
+            f"warning: listening on {host}: anyone who can reach this port can read the run "
+            "history, including request and response bodies (secrets are redacted)",
+            err=True,
+        )
+    uvicorn.run(create_app(open_store(history_dir), _allowed_hosts(host)), host=host, port=port)
+
+
+_LOOPBACK_ADDRESSES = ("127.0.0.1", "localhost", "::1")
+
+
+def _allowed_hosts(listen: str) -> list[str]:
+    """The `Host` values the UI answers to: loopback, plus the address it was asked to bind."""
+    if listen in ("0.0.0.0", "::"):  # every interface: the address a client uses is unknowable
+        return [WILDCARD]
+    return [*LOOPBACK_HOSTS, f"[{listen}]" if ":" in listen else listen]
 
 
 def _any_failed(record: RunRecord) -> bool:
