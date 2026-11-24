@@ -144,6 +144,10 @@ def validate_source(source: str, operation_id: str) -> None:
                     or _is_module(node.module, alias.name)  # `from re import enum`
                 ):
                     raise SourceRejected(f"importing `{alias.name}` is not allowed in a test")
+        elif (bound := _bound_names(node)) and any(_reserved_name(n) for n in bound):
+            # `def pytest_generate_tests` is a hook pytest calls from a test module, and
+            # `import json as pytest_plugins` or `except E as __x` bind a name with no ast.Name
+            raise SourceRejected(f"binding the name `{bound[0]}` is not allowed in a test")
         elif isinstance(node, ast.Name) and (
             node.id in FORBIDDEN_NAMES
             or node.id in EVALUATING_MARKS
@@ -205,6 +209,24 @@ def validate_source(source: str, operation_id: str) -> None:
             and not any(_marks_operation(d, operation_id) for d in function.decorator_list)
         ):
             raise SourceRejected(f"{function.name} lacks @pytest.mark.operation({operation_id!r})")
+
+
+def _reserved_name(name: str) -> bool:
+    return name.startswith(("__", "pytest_")) or name == "pytestmark"
+
+
+def _bound_names(node: ast.AST) -> list[str]:
+    """Names a statement or pattern binds without an `ast.Name` node."""
+    names: list[str | None] = []
+    if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+        names.append(node.name)
+    elif isinstance(node, ast.alias):
+        names.append(node.asname)
+    elif isinstance(node, ast.ExceptHandler | ast.MatchAs | ast.MatchStar):
+        names.append(node.name)
+    elif isinstance(node, ast.MatchMapping):
+        names.append(node.rest)
+    return [n for n in names if n]
 
 
 def _has_field_access(template: str) -> bool:
