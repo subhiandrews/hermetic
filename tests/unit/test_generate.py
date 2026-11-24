@@ -92,7 +92,7 @@ def test_new_prompt_version_and_force_rewrite_tests(tmp_path: Path) -> None:
     generate_suite(model, FakeAuthor("1"), suite)
     changes = generate_suite(model, FakeAuthor("2"), suite)
     assert {c.kind for c in changes} == {"modified"}
-    assert "the generation prompt changed (1 -> 2)" in changes[0].reason
+    assert "the generation prompt changed ('1' -> 2)" in changes[0].reason
     forced = generate_suite(model, FakeAuthor("2"), suite, force=True)
     assert len(forced) == len(model.operations)
     assert "regeneration was requested" in forced[0].reason

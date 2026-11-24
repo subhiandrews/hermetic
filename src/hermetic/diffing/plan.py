@@ -51,7 +51,7 @@ def plan_changes(
         elif entry.fragment_hash != operation.fragment_hash:
             modified.append(Modification(operation, entry, "the operation changed in the spec"))
         elif entry.prompt_version != prompt_version:
-            reason = f"the generation prompt changed ({entry.prompt_version} -> {prompt_version})"
+            reason = f"the generation prompt changed ({entry.prompt_version!r} ->{prompt_version})"
             modified.append(Modification(operation, entry, reason))
         elif existing_files is not None and entry.test_file not in existing_files:
             modified.append(Modification(operation, entry, "its test file was missing"))

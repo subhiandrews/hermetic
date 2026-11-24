@@ -40,9 +40,26 @@ def test_classifies_every_operation() -> None:
         third.operation_id,
     ]
     assert plan.modified[0].reason == "the operation changed in the spec"
-    assert plan.modified[1].reason == "the generation prompt changed (0 -> 1)"
+    assert plan.modified[1].reason == "the generation prompt changed ('0' -> 1)"
     assert len(plan.added) == len(rest)
     assert [e.operation_id for e in plan.dropped] == ["also_gone", "gone"]
+
+
+def test_a_prompt_version_from_the_manifest_cannot_smuggle_escape_sequences() -> None:
+    model = ingest(SPEC)
+    op = model.operations[0]
+    entry = ManifestEntry(
+        operation_id=op.operation_id,
+        test_file=f"test_{op.operation_id}.py",
+        fragment_hash=op.fragment_hash,
+        fragment="{}",
+        prompt_version="\x1b]0;pwned\x07",
+        reason="r",
+    )
+    plan = plan_changes(model, Manifest(entries={op.operation_id: entry}), "1")
+    reason = plan.modified[0].reason
+    assert "\x1b" not in reason
+    assert "\x07" not in reason
 
 
 def test_a_missing_test_file_is_regenerated_only_when_files_are_given() -> None:
