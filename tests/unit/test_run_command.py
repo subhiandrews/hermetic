@@ -15,6 +15,7 @@ from hermetic.history import FileRunStore, SuiteChange
 from hermetic.report import SinkError
 from hermetic.runner import new_run_id, run_suite
 from hermetic.web import create_app
+from tests.fake_admin import FakeAdmin
 from tests.fakes import FakeAuthor
 
 runner = CliRunner()
@@ -544,3 +545,65 @@ def test_a_token_that_cannot_be_sent_is_an_error_line_not_a_traceback(
     )
     assert result.exit_code == 2 and "cannot be sent" in result.output
     assert "tök3n" not in result.output and "Traceback" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("carts", "--mock expects NAME=URL"),
+        ("=http://127.0.0.1:1", "--mock expects NAME=URL"),
+        ("carts=", "--mock expects NAME=URL"),
+        ("bad name=http://127.0.0.1:1", "invalid mock name"),
+        ("carts=ftp://127.0.0.1:21", "expected http"),
+        ("carts=http://u:hunter2@[bad", "invalid URL for mock 'carts'"),
+    ],
+)
+def test_a_malformed_mock_fails_before_any_test_runs(
+    server: str, tmp_path: Path, value: str, message: str
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            *["run", str(write_suite(tmp_path, "== 200")), "--target", server],
+            *["--service", "svc", "--history-dir", str(tmp_path / "h"), "--mock", value],
+        ],
+    )
+    assert result.exit_code == 2 and message in result.output
+    assert "hunter2" not in result.output and "Traceback" not in result.output
+    assert not (tmp_path / "h").exists()  # nothing ran, so nothing was recorded
+
+
+def test_the_same_mock_given_twice_is_refused(server: str, tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            *["run", str(write_suite(tmp_path, "== 200")), "--target", server],
+            *["--service", "svc", "--history-dir", str(tmp_path / "h")],
+            *["--mock", "carts=http://127.0.0.1:1", "--mock", "carts=http://127.0.0.1:2"],
+        ],
+    )
+    assert result.exit_code == 2 and "--mock 'carts' was given twice" in result.output
+
+
+def test_a_run_with_a_mock_lets_a_test_switch_it(
+    server: str, tmp_path: Path, mock_admin: FakeAdmin
+) -> None:
+    metadata = {"hermetic": True, "operation": "getCart", "scenario": "getcart-1", "state": "404"}
+    mock_admin.listing = {"mappings": [{"metadata": metadata}], "meta": {"total": 1}}
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    (suite / "test_api.py").write_text(
+        "def test_missing(hermetic_client, hermetic_mocks):\n"
+        "    hermetic_mocks['carts'].answer('getCart', 404)\n"
+        "    assert hermetic_client.get('/ok').status_code == 200\n"
+    )
+    result = runner.invoke(
+        app,
+        [
+            *["run", str(suite), "--target", server, "--service", "svc"],
+            *["--history-dir", str(tmp_path / "h"), "--mock", f"carts={mock_admin.url}"],
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert mock_admin.paths("PUT") == ["/__admin/scenarios/getcart-1/state"]
+    assert mock_admin.paths("POST") == ["/__admin/scenarios/reset"]

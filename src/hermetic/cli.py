@@ -22,6 +22,7 @@ from hermetic.discover import (
 )
 from hermetic.discover import discover as run_discovery
 from hermetic.execute import ExecuteError, check_target
+from hermetic.execute.mocks import MockError, check_mock
 from hermetic.generate import GenerateError, ManifestError, SuiteAuthor, generate_suite
 from hermetic.history import (
     API_TOKEN_ENV,
@@ -334,6 +335,24 @@ def _default_suite(service: str) -> Path:
     return Path("tests") / service
 
 
+def _parse_mocks(values: list[str]) -> dict[str, str]:
+    """`--mock NAME=URL` values as a dict, refusing a typo before any test is run."""
+    mocks: dict[str, str] = {}
+    for value in values:
+        name, separator, url = value.partition("=")
+        if not separator or not name or not url:
+            # not echoed: the value may hold a URL with a password
+            raise ExecuteError("--mock expects NAME=URL, for example carts=http://127.0.0.1:8080")
+        if name in mocks:
+            raise ExecuteError(f"--mock {name!r} was given twice")
+        try:
+            check_mock(name, url)
+        except MockError as exc:
+            raise ExecuteError(str(exc)) from exc
+        mocks[name] = url
+    return mocks
+
+
 def _echo_changes(changes: list[SuiteChange]) -> None:
     if not changes:
         typer.echo("suite is up to date")
@@ -430,8 +449,20 @@ def run(
         bool, typer.Option("--generate", help="Update the suite from --spec before running it.")
     ] = False,
     timeout: Annotated[float, typer.Option(help="Per-request timeout in seconds.")] = 30.0,
+    mock: Annotated[
+        list[str] | None,
+        typer.Option(
+            help="A mock whose declared errors tests may switch on, as NAME=URL (repeatable): "
+            "the URL `hermetic up` printed for that dependency."
+        ),
+    ] = None,
 ) -> None:
-    """Run a suite against a target, record the run and publish reports."""
+    """Run a suite against a target, record the run and publish reports.
+
+    Tests reach the target only. With --mock, a test can also make that mock answer with an
+    error its spec declares, through the `hermetic_mocks` fixture; whatever it switched is
+    reset when the test ends.
+    """
     if docs is not None and spec is None:
         typer.echo("error: --docs needs --spec: the docs are read together with it", err=True)
         raise typer.Exit(code=2)
@@ -448,6 +479,7 @@ def run(
         # What a typo can break is checked before the step that pays for model calls and
         # rewrites the suite, so a bad `--report` does not cost a generation.
         check_target(target)
+        mocks = _parse_mocks(mock or [])
         sinks = load_sinks(report or ["stdout"], SinkContext(output_dir=report_dir))
         store = open_store(history_dir)
         if model is not None and author is not None:
@@ -463,6 +495,7 @@ def run(
             changes=changes,
             prompt_version=author.prompt_version if author else None,
             timeout=timeout,
+            mocks=mocks,
         )
     except (
         IngestError,

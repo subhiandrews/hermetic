@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
+from hermetic.execute.mocks import MockError, check_mock
 from hermetic.execute.plugin import HermeticPlugin, OriginError
 from hermetic.history.models import TestResult
 from hermetic.redact import redact_url
@@ -19,17 +20,26 @@ class ExecuteError(Exception):
     """The suite could not be run at all (as opposed to tests failing)."""
 
 
-def execute_suite(suite: Path, target: str, *, timeout: float = 30.0) -> list[TestResult]:
+def execute_suite(
+    suite: Path, target: str, *, timeout: float = 30.0, mocks: dict[str, str] | None = None
+) -> list[TestResult]:
     """Run the pytest suite at `suite` against `target` and return one result per test.
 
     Tests get an `hermetic_client` fixture (an httpx client for the target). It refuses any
-    request to another origin. Failing tests are results, not errors; ExecuteError means
-    the run itself broke (bad path, no tests, internal pytest error).
+    request to another origin. `mocks` maps a mock's name to its URL; a test can then make it
+    answer with a declared error through the `hermetic_mocks` fixture, which is the only way a
+    test reaches a mock. Failing tests are results, not errors; ExecuteError means the run
+    itself broke (bad path, no tests, internal pytest error, a mock name or URL that is unusable).
     """
     check_target(target)
+    for name, url in (mocks or {}).items():
+        try:
+            check_mock(name, url)
+        except MockError as exc:
+            raise ExecuteError(str(exc)) from exc
     if not suite.exists():
         raise ExecuteError(f"suite not found: {suite}")
-    plugin = HermeticPlugin(target, timeout=timeout)
+    plugin = HermeticPlugin(target, timeout=timeout, mocks=mocks)
     root = suite if suite.is_dir() else suite.parent
     args = [
         str(suite),

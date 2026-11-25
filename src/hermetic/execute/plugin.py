@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 import httpx
 import pytest
 
+from hermetic.execute.mocks import MockControl, Mocks
 from hermetic.history.models import Exchange, TestResult, TestStatus
 from hermetic.redact import (
     MAX_BODY_CHARS,
@@ -154,9 +155,12 @@ class _Recording:
 class HermeticPlugin:
     """Gives tests an `hermetic_client` fixture and turns pytest reports into TestResults."""
 
-    def __init__(self, target: str, *, timeout: float) -> None:
+    def __init__(self, target: str, *, timeout: float, mocks: dict[str, str] | None = None) -> None:
         self._target = target
         self._timeout = timeout
+        self._mocks = mocks or {}
+        # Only the target: the mocks are switched by this plugin (see `hermetic_mocks`), never
+        # called by a test.
         self._allowed = {origin_of(target)}
         self._recordings: dict[str, _Recording] = {}
         self._operations: dict[str, str] = {}
@@ -183,6 +187,24 @@ class HermeticPlugin:
             event_hooks={"request": [recording.on_request], "response": [recording.on_response]},
         ) as client:
             yield client
+
+    @pytest.fixture
+    def hermetic_mocks(self) -> Iterator[Mocks]:
+        """The mocks given with `--mock`; `hermetic_mocks["carts"].answer("getCart", 404)`.
+
+        Whatever a test switched is reset when it ends, also when it failed. The test never
+        gets a client or a URL for a mock; only this plugin calls them.
+        """
+        mocks = Mocks(
+            {
+                name: MockControl(name, url, timeout=self._timeout)
+                for name, url in self._mocks.items()
+            }
+        )
+        try:
+            yield mocks
+        finally:
+            mocks.finish()
 
     def pytest_collection_modifyitems(self, items: list[pytest.Item]) -> None:
         for item in items:
