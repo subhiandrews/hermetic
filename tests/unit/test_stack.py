@@ -370,6 +370,26 @@ def test_an_interrupt_during_up_is_cleaned_up(stack: tuple[Path, str]) -> None:
     assert any("down" in argv for argv in calls)
 
 
+def test_an_interrupt_while_reading_engine_logs_still_takes_the_stack_down(
+    stack: tuple[Path, str],
+) -> None:
+    path, text = stack
+    calls: list[list[str]] = []
+
+    def runner(argv: Sequence[str], *, stdin: str | None, timeout: float) -> CommandResult:
+        calls.append(list(argv))
+        if "up" in argv:
+            return CommandResult(1, "", "container hermetic-shop-db-main-1 is unhealthy")
+        if argv[1] == "ps" and "--format" in argv:  # the first read of what the engines said
+            raise KeyboardInterrupt
+        return CommandResult(0, "", "")
+
+    with pytest.raises(KeyboardInterrupt):
+        up("shop", path, text, runner)
+    interrupted = next(i for i, argv in enumerate(calls) if argv[1] == "ps" and "--format" in argv)
+    assert any("down" in argv for argv in calls[interrupted + 1 :])  # cleaned up afterwards
+
+
 def test_run_command_turns_os_errors_into_stack_errors(tmp_path: Path) -> None:
     script = tmp_path / "docker"
     script.write_text("#!/bin/sh\n")  # not executable
