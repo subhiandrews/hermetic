@@ -648,6 +648,31 @@ def test_an_engine_found_twice_or_without_health_checks_is_reported_once(
     assert reads == ["logs", "inspect"]  # once each
 
 
+def test_many_exited_engines_do_not_hide_an_unhealthy_one(stack: tuple[Path, str]) -> None:
+    path, text = stack
+    inspected: list[str] = []
+
+    def runner(argv: Sequence[str], *, stdin: str | None, timeout: float) -> CommandResult:
+        if "up" in argv:
+            return CommandResult(1, "", "boom")
+        if argv[1] == "ps" and "--format" in argv:
+            exited = "health=unhealthy" not in argv
+            return CommandResult(0, "e1 e2 e3 e4 e5 e6\n" if exited else "slow\n", "")
+        if argv[1] == "logs":
+            return CommandResult(0, f"log of {argv[-1]}", "")
+        if argv[1] == "inspect":
+            inspected.append(argv[-1])
+            return CommandResult(0, "exit 1: not ready", "")
+        return CommandResult(0, "", "")
+
+    with pytest.raises(StackError) as caught:
+        up("shop", path, text, runner)
+    message = str(caught.value)
+    assert "--- slow said:" in message and "--- slow health checks:" in message
+    assert "--- e5 said:" in message and "--- e6 said:" not in message  # five exited, then it
+    assert inspected == ["slow"]  # an engine that only exited has no health checks to read
+
+
 def test_a_health_check_read_failing_keeps_the_log(stack: tuple[Path, str]) -> None:
     path, text = stack
 

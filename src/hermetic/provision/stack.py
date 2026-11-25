@@ -193,6 +193,7 @@ def _failed_engines(runner: CommandRunner, project: str) -> str:
     for an unhealthy one, in what its last health checks printed.
     """
     names: list[str] = []
+    unhealthy: set[str] = set()
     for state in ("status=exited", "health=unhealthy"):
         try:
             listed = runner(
@@ -213,17 +214,23 @@ def _failed_engines(runner: CommandRunner, project: str) -> str:
         except StackError:  # the reason for the first failure is still worth reporting
             continue
         if listed.returncode == 0:
-            names += [name for name in listed.stdout.split() if name not in names]
+            # the cap is per state, so a stack of exited engines cannot hide an unhealthy one
+            found = listed.stdout.split()[:_MAX_ENGINE_LOGS]
+            if state == "health=unhealthy":
+                unhealthy.update(found)
+            names += [name for name in found if name not in names]
     out = []
-    for name in names[:_MAX_ENGINE_LOGS]:
+    for name in names:
         said = _said(runner, ["docker", "logs", "--tail", "15", name])
-        probes = _said(runner, ["docker", "inspect", "--format", _HEALTH_PROBES, name])
         if said:
             out.append(f"\n--- {printable(name)} said:\n{printable(said[-_MAX_OUTPUT_CHARS:])}")
-        if probes:
-            out.append(
-                f"\n--- {printable(name)} health checks:\n{printable(probes[-_MAX_OUTPUT_CHARS:])}"
-            )
+        if name in unhealthy:  # what the health checks printed is the reason it never passed
+            probes = _said(runner, ["docker", "inspect", "--format", _HEALTH_PROBES, name])
+            if probes:
+                out.append(
+                    f"\n--- {printable(name)} health checks:\n"
+                    f"{printable(probes[-_MAX_OUTPUT_CHARS:])}"
+                )
     return "".join(out)
 
 
