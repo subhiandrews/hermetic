@@ -75,7 +75,7 @@ def test_each_kind_alone_is_a_file_the_allowlist_accepts(tmp_path: Path, kind: s
     assert service["mem_limit"] == ENGINES[kind].memory  # type: ignore[index]
 
 
-def test_mysql_and_mongo_get_room_for_their_first_start() -> None:
+def test_mysql_and_mongo_get_more_memory_than_the_default() -> None:
     # Why these two get more is written at `Engine.memory` in provision/images.py.
     assert ENGINES["mysql"].memory == "1g" and ENGINES["mongo"].memory == "1g"
     assert {kind: e.memory for kind, e in ENGINES.items() if kind not in ("mysql", "mongo")} == (

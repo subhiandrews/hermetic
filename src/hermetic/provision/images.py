@@ -18,7 +18,8 @@ class Engine:
     port: int  # the port the engine listens on inside its container
     # What the container may use, tmpfs data included. Docker kills what goes over it, so it has
     # to cover the engine's start-up peak: MySQL's first-run server alone reaches about 660 MiB,
-    # and Mongo needs room for its health check (`mongosh`, a second process) beside the server.
+    # and Mongo gets 1g because its health check (`mongosh`, a second process) was SIGKILLed at
+    # 512m on CI (exit 137). That is the only evidence: Mongo stayed healthy at 512m locally.
     memory: str = "512m"
 
 
