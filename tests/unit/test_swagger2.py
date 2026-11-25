@@ -239,6 +239,30 @@ def test_optional_form_fields_leave_the_body_optional() -> None:
     assert request["required"] is False and "required" not in schema
 
 
+@pytest.mark.parametrize(
+    ("collection", "encoding"),
+    [
+        (None, {"style": "form", "explode": False}),
+        ("pipes", {"style": "pipeDelimited", "explode": False}),
+        ("multi", None),
+    ],
+)
+def test_array_form_fields_keep_their_collection_format(
+    collection: str | None, encoding: dict[str, Any] | None
+) -> None:
+    field: dict[str, Any] = {
+        "in": "formData",
+        "name": "ids",
+        "type": "array",
+        "items": {"type": "string"},
+    }
+    if collection:
+        field["collectionFormat"] = collection
+    media = only_operation(with_parameters(field))["requestBody"]["content"]
+    entry = media["application/x-www-form-urlencoded"]
+    assert entry.get("encoding") == ({"ids": encoding} if encoding else None)
+
+
 def test_a_file_field_makes_the_body_multipart() -> None:
     upload = {"in": "formData", "name": "f", "type": "file"}
     content = only_operation(with_parameters(upload))["requestBody"]["content"]
@@ -330,6 +354,12 @@ def test_a_response_schema_is_offered_in_every_media_type_the_operation_produces
     assert list(content) == ["application/json", "text/plain", "text/csv"]
     assert content["text/plain"] == {"schema": {"type": "string"}, "example": "hi"}
     assert content["application/json"] == {"schema": {"type": "string"}}
+
+
+def test_response_extensions_are_kept_and_not_read_as_responses() -> None:
+    get = {"responses": {"200": {"description": "ok"}, "x-note": {"a": 1}}}
+    got = only_operation(converted({"/a": {"get": get}}))["responses"]
+    assert got == {"200": {"description": "ok"}, "x-note": {"a": 1}}
 
 
 def test_a_response_without_a_schema_has_no_content() -> None:
@@ -481,8 +511,58 @@ def test_a_document_the_converter_does_not_expect_is_a_clear_error(
         ingest(write(tmp_path, SWAGGER_FILE))
 
 
-def test_a_converted_document_that_is_not_valid_3_x_is_reported(tmp_path: Path) -> None:
+def test_a_converted_document_that_is_not_valid_3_x_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The validator checks the converter's output, so its mistakes cannot reach the model."""
-    spec = dict(SWAGGER_FILE, definitions={"Cart": {"type": ["string", "integer"], "minimum": "x"}})
+    monkeypatch.setattr(ingest_module, "upgrade", lambda spec: {"openapi": "3.0.3"})
     with pytest.raises(IngestError, match="invalid OpenAPI document"):
-        ingest(write(tmp_path, spec))
+        ingest(write(tmp_path, SWAGGER_FILE))
+
+
+@pytest.mark.parametrize("key", ["swagger", "openapi"])
+def test_an_unquoted_version_gets_a_hint(tmp_path: Path, key: str) -> None:
+    number = "2.0" if key == "swagger" else "3.0"
+    path = tmp_path / "unquoted.yaml"
+    path.write_text(f"{key}: {number}\ninfo: {{title: T, version: '1'}}\npaths: {{}}\n")
+    with pytest.raises(IngestError, match="put the version in quotes"):
+        ingest(path)
+
+
+def test_a_file_with_no_version_names_both_formats(tmp_path: Path) -> None:
+    path = write(tmp_path, {"info": {"title": "T", "version": "1"}, "paths": {}})
+    with pytest.raises(IngestError, match=r"only OpenAPI 3\.x or Swagger 2\.0 is supported"):
+        ingest(path)
+
+
+# --- bounds ----------------------------------------------------------------------------------
+
+
+def test_a_schema_is_converted_once_and_shared_by_every_media_type() -> None:
+    body = {"in": "body", "name": "b", "schema": {"type": "object"}}
+    out = converted({"/a": {"get": operation(parameters=[body], consumes=["a/b", "c/d"])}})
+    content = only_operation(out)["requestBody"]["content"]
+    assert content["a/b"]["schema"] is content["c/d"]["schema"]
+
+
+def test_a_named_body_used_by_two_operations_is_converted_once() -> None:
+    use = [{"$ref": "#/parameters/payload"}]
+    paths = {"/a": {"get": operation(parameters=use), "put": operation(parameters=use)}}
+    out = converted(
+        paths, parameters={"payload": {"in": "body", "name": "p", "schema": {"type": "object"}}}
+    )
+    get, put = out["paths"]["/a"]["get"], out["paths"]["/a"]["put"]
+    schema = get["requestBody"]["content"]["application/json"]["schema"]
+    assert schema is put["requestBody"]["content"]["application/json"]["schema"]
+
+
+def test_a_small_file_cannot_expand_into_a_huge_converted_document() -> None:
+    schema = {
+        "type": "object",
+        "properties": {f"p{i}": {"type": "string"} for i in range(500)},
+    }
+    consumes = [f"application/x-{i}" for i in range(2000)]  # 2000 copies of a 1000-node schema
+    body = {"in": "body", "name": "b", "schema": schema}
+    spec = doc(paths={"/a": {"get": operation(parameters=[body], consumes=consumes)}})
+    with pytest.raises(IngestError, match="converted document is too large"):
+        upgrade(spec)

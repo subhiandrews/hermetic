@@ -4,21 +4,16 @@ The input is validated as Swagger 2.0 before this runs, and the output is valida
 after it, so a converter bug shows up as an invalid document and not as a wrong model. Pure
 functions over plain JSON types: no I/O.
 
-What is carried over: info, servers (from host, basePath and schemes), paths and operations,
-parameters (a body becomes a request body, form fields one object schema), responses with their
-headers and examples, definitions, security schemes and requirements, tags, external docs and `x-`
-extensions. What is not: top-level `parameters` (each use is inlined where it is referenced),
-per-operation `schemes`, `collectionFormat: tsv`, and response `examples` for a response with no
-schema.
+What is and is not carried over is listed in docs/architecture.md (Ingest).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from hermetic.ingest.errors import IngestError
 from hermetic.ingest.models import Json
-from hermetic.ingest.openapi import HTTP_METHODS
+from hermetic.ingest.openapi import HTTP_METHODS, MAX_SPEC_NODES, _Budget
 
 JSON_MEDIA = "application/json"
 FORM_MEDIA = "application/x-www-form-urlencoded"
@@ -78,6 +73,28 @@ class _Context:
     parameters: Json  # the document's named parameters, inlined where an operation uses one
     consumes: list[str]
     produces: list[str]
+    # A named body parameter used by many operations is converted once, not once per use.
+    bodies: dict[int, Json] = field(default_factory=dict)
+
+    def body_schema(self, body: Json) -> Json:
+        key = id(body)
+        if key not in self.bodies:
+            self.bodies[key] = _schema(body["schema"])
+        return self.bodies[key]
+
+
+def _check_size(out: Json) -> None:
+    """Bound the converted document. A schema is converted once and shared by every media type
+    that offers it, so the copies are cheap here but every later walk visits each one."""
+    budget = _Budget(MAX_SPEC_NODES, "the converted document")
+    stack: list[object] = [out]
+    while stack:
+        node = stack.pop()
+        budget.spend()
+        if isinstance(node, dict):
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
 
 
 def upgrade(spec: Json) -> Json:
@@ -111,6 +128,7 @@ def upgrade(spec: Json) -> Json:
     for key, value in spec.items():
         if key in ("security", "tags", "externalDocs") or key.startswith("x-"):
             out[key] = value
+    _check_size(out)
     return out
 
 
@@ -196,25 +214,37 @@ def _parameter(raw: Json) -> Json:
         if key in raw:
             out[key] = raw[key]
     out["schema"] = _simple_schema(raw)
-    if raw["in"] == "query" and raw.get("type") == "array":
-        out.update(_QUERY_STYLES.get(raw.get("collectionFormat", "csv"), {}))
+    if raw["in"] == "query":
+        out.update(_array_style(raw))
     return out
+
+
+def _array_style(raw: Json) -> Json:
+    """The 3.0 `style` and `explode` that say how an array is written, or nothing where the 3.0
+    default (one key per item) is what the file means."""
+    if raw.get("type") != "array":
+        return {}
+    return _QUERY_STYLES.get(raw.get("collectionFormat", "csv"), {})
 
 
 def _form_body(fields: list[Json], consumes: list[str]) -> Json:
     is_multipart = MULTIPART_MEDIA in consumes or any(f.get("type") == "file" for f in fields)
     properties: Json = {}
-    for field in fields:
-        schema = _simple_schema(field)
-        if "description" in field:
-            schema["description"] = field["description"]
-        properties[field["name"]] = schema
+    for parameter in fields:
+        schema = _simple_schema(parameter)
+        if "description" in parameter:
+            schema["description"] = parameter["description"]
+        properties[parameter["name"]] = schema
     body_schema: Json = {"type": "object", "properties": properties}
     required = [f["name"] for f in fields if f.get("required")]
     if required:
         body_schema["required"] = required
     media = MULTIPART_MEDIA if is_multipart else FORM_MEDIA
-    return {"required": bool(required), "content": {media: {"schema": body_schema}}}
+    entry: Json = {"schema": body_schema}
+    encoding = {f["name"]: style for f in fields if (style := _array_style(f))}
+    if encoding:
+        entry["encoding"] = encoding
+    return {"required": bool(required), "content": {media: entry}}
 
 
 def _operation(raw: Json, path_parameters: list[Json], context: _Context) -> Json:
@@ -235,9 +265,10 @@ def _operation(raw: Json, path_parameters: list[Json], context: _Context) -> Jso
     if others:
         out["parameters"] = [_parameter(p) for p in others]
     if body is not None:
+        schema = context.body_schema(body)
         request: Json = {
             "required": bool(body.get("required", False)),
-            "content": {media: {"schema": _schema(body["schema"])} for media in consumes},
+            "content": {media: {"schema": schema} for media in consumes},
         }
         if "description" in body:
             request["description"] = body["description"]
@@ -245,7 +276,7 @@ def _operation(raw: Json, path_parameters: list[Json], context: _Context) -> Jso
     elif fields:
         out["requestBody"] = _form_body(fields, consumes)
     out["responses"] = {
-        str(status): _response(response, produces)
+        str(status): response if str(status).startswith("x-") else _response(response, produces)
         for status, response in raw.get("responses", {}).items()
     }
     return out
@@ -269,9 +300,10 @@ def _response(raw: Json, produces: list[str]) -> Json:
     if "schema" in raw:
         examples = raw.get("examples", {})
         media_types = [*produces, *(media for media in examples if media not in produces)]
+        schema = _schema(raw["schema"])  # once: every media type offers the same one
         content: Json = {}
         for media in media_types:
-            entry: Json = {"schema": _schema(raw["schema"])}
+            entry: Json = {"schema": schema}
             if media in examples:
                 entry["example"] = examples[media]
             content[media] = entry

@@ -172,7 +172,10 @@ def validate_spec(spec: Json) -> None:
     """Reject anything that is not a valid OpenAPI 3.x document."""
     version = spec.get("openapi")
     if not isinstance(version, str) or not version.startswith("3."):
-        raise IngestError(f"only OpenAPI 3.x is supported (found openapi={version!r})")
+        raise IngestError(
+            f"only OpenAPI 3.x or Swagger 2.0 is supported (found openapi={version!r})"
+            f"{_QUOTE_HINT if isinstance(version, float) else ''}"
+        )
     _validate(spec)
 
 
@@ -180,8 +183,15 @@ def validate_swagger2(spec: Json) -> None:
     """Reject anything that is not a valid Swagger 2.0 document."""
     version = spec.get("swagger")
     if version != "2.0":
-        raise IngestError(f"only Swagger 2.0 is supported (found swagger={version!r})")
+        raise IngestError(
+            f"only Swagger 2.0 is supported (found swagger={version!r})"
+            f"{_QUOTE_HINT if isinstance(version, float) else ''}"
+        )
     _validate(spec)
+
+
+# YAML reads an unquoted 2.0 or 3.0 as a number, which is not the string the format requires.
+_QUOTE_HINT = "; put the version in quotes"
 
 
 def _validate(spec: Json) -> None:

@@ -23,8 +23,7 @@ __all__ = ["IngestError", "ServiceModel", "ingest"]
 
 def ingest(spec_path: Path, docs_dir: Path | None = None) -> ServiceModel:
     """Build a ServiceModel from an OpenAPI 3.x or Swagger 2.0 file and an optional docs
-    directory. A Swagger 2.0 file is validated, converted to OpenAPI 3.0.3 and validated again,
-    so everything after this point sees one format."""
+    directory (a 2.0 file is converted first; see docs/architecture.md)."""
     spec = load_spec_file(spec_path)
     if "swagger" in spec:
         validate_swagger2(spec)
