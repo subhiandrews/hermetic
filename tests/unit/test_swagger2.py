@@ -566,3 +566,25 @@ def test_a_small_file_cannot_expand_into_a_huge_converted_document() -> None:
     spec = doc(paths={"/a": {"get": operation(parameters=[body], consumes=consumes)}})
     with pytest.raises(IngestError, match="converted document is too large"):
         upgrade(spec)
+
+
+def test_a_huge_produces_list_fails_before_the_document_is_built() -> None:
+    produces = [f"application/x-{i}" for i in range(20_000)]
+    response = {"description": "ok", "schema": {"type": "string"}}
+    operations = {
+        f"/p{i}": {"get": operation(responses={"200": response, "201": response})}
+        for i in range(100)
+    }
+    with pytest.raises(IngestError, match="converted document is too large"):
+        upgrade(doc(paths=operations, produces=produces))
+
+
+def test_an_empty_operation_consumes_and_produces_clear_the_global_ones() -> None:
+    body = {"in": "body", "name": "b", "schema": {"type": "object"}}
+    response = {"description": "ok", "schema": {"type": "string"}}
+    get = operation(parameters=[body], responses={"200": response}, consumes=[], produces=[])
+    out = converted({"/a": {"get": get}}, consumes=["a/b"], produces=["c/d"])
+    assert only_operation(out)["requestBody"]["content"] == {}
+    assert "content" not in only_operation(out)["responses"]["200"] or (
+        only_operation(out)["responses"]["200"]["content"] == {}
+    )

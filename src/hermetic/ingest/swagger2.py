@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 from hermetic.ingest.errors import IngestError
 from hermetic.ingest.models import Json
-from hermetic.ingest.openapi import HTTP_METHODS, MAX_SPEC_NODES, _Budget
+from hermetic.ingest.openapi import HTTP_METHODS, MAX_SPEC_NODES, Budget
 
 JSON_MEDIA = "application/json"
 FORM_MEDIA = "application/x-www-form-urlencoded"
@@ -75,6 +75,9 @@ class _Context:
     produces: list[str]
     # A named body parameter used by many operations is converted once, not once per use.
     bodies: dict[int, Json] = field(default_factory=dict)
+    # Spent as media-type entries and parameters are created, so a small file that fans out
+    # (a huge `produces` list times many responses) stops early instead of after the fact.
+    budget: Budget = field(default_factory=lambda: Budget(MAX_SPEC_NODES, "the converted document"))
 
     def body_schema(self, body: Json) -> Json:
         key = id(body)
@@ -86,7 +89,7 @@ class _Context:
 def _check_size(out: Json) -> None:
     """Bound the converted document. A schema is converted once and shared by every media type
     that offers it, so the copies are cheap here but every later walk visits each one."""
-    budget = _Budget(MAX_SPEC_NODES, "the converted document")
+    budget = Budget(MAX_SPEC_NODES, "the converted document")
     stack: list[object] = [out]
     while stack:
         node = stack.pop()
@@ -117,7 +120,7 @@ def upgrade(spec: Json) -> Json:
         components["schemas"] = {name: _schema(s) for name, s in spec["definitions"].items()}
     if "responses" in spec:
         components["responses"] = {
-            name: _response(r, context.produces) for name, r in spec["responses"].items()
+            name: _response(r, context.produces, context) for name, r in spec["responses"].items()
         }
     if "securityDefinitions" in spec:
         components["securitySchemes"] = {
@@ -177,7 +180,7 @@ def _schema(node: Json) -> Json:
 def _set_type(out: Json, value: str | list[str]) -> None:
     """2.0 takes the JSON Schema draft 4 `type`: a list of names, `null` among them. 3.0 takes
     one name and marks null with `nullable`. (`file` is valid only for a form field, which
-    `_simple_schema` handles; the validator refuses it in a schema.)"""
+    `_simple_schema` handles; the validator refuses it in a schema, a response's included.)"""
     names = value if isinstance(value, list) else [value]
     if "null" in names:
         out["nullable"] = True
@@ -208,7 +211,8 @@ def _resolve_parameter(raw: Json, context: _Context) -> Json:
     return resolved
 
 
-def _parameter(raw: Json) -> Json:
+def _parameter(raw: Json, context: _Context) -> Json:
+    context.budget.spend()
     out: Json = {"name": raw["name"], "in": raw["in"]}
     for key in ("description", "required", "allowEmptyValue"):
         if key in raw:
@@ -248,8 +252,8 @@ def _form_body(fields: list[Json], consumes: list[str]) -> Json:
 
 
 def _operation(raw: Json, path_parameters: list[Json], context: _Context) -> Json:
-    consumes = raw.get("consumes") or context.consumes
-    produces = raw.get("produces") or context.produces
+    consumes = raw.get("consumes", context.consumes)  # an empty list clears the global value
+    produces = raw.get("produces", context.produces)
     merged: dict[tuple[str, str], Json] = {}
     for item in (*path_parameters, *raw.get("parameters", [])):  # the operation overrides the path
         resolved = _resolve_parameter(item, context)
@@ -263,12 +267,12 @@ def _operation(raw: Json, path_parameters: list[Json], context: _Context) -> Jso
         if key in _OPERATION_KEYS or key.startswith("x-"):
             out[key] = value
     if others:
-        out["parameters"] = [_parameter(p) for p in others]
+        out["parameters"] = [_parameter(p, context) for p in others]
     if body is not None:
         schema = context.body_schema(body)
         request: Json = {
             "required": bool(body.get("required", False)),
-            "content": {media: {"schema": schema} for media in consumes},
+            "content": _spend_all({media: {"schema": schema} for media in consumes}, context),
         }
         if "description" in body:
             request["description"] = body["description"]
@@ -276,7 +280,9 @@ def _operation(raw: Json, path_parameters: list[Json], context: _Context) -> Jso
     elif fields:
         out["requestBody"] = _form_body(fields, consumes)
     out["responses"] = {
-        str(status): response if str(status).startswith("x-") else _response(response, produces)
+        str(status): response
+        if str(status).startswith("x-")
+        else _response(response, produces, context)
         for status, response in raw.get("responses", {}).items()
     }
     return out
@@ -293,7 +299,13 @@ def _path_item(item: Json, context: _Context) -> Json:
     return out
 
 
-def _response(raw: Json, produces: list[str]) -> Json:
+def _spend_all(content: Json, context: _Context) -> Json:
+    for _ in content:
+        context.budget.spend()
+    return content
+
+
+def _response(raw: Json, produces: list[str], context: _Context) -> Json:
     if "$ref" in raw:
         return {"$ref": _ref(raw["$ref"])}
     out: Json = {"description": raw["description"]}
@@ -303,6 +315,7 @@ def _response(raw: Json, produces: list[str]) -> Json:
         schema = _schema(raw["schema"])  # once: every media type offers the same one
         content: Json = {}
         for media in media_types:
+            context.budget.spend()
             entry: Json = {"schema": schema}
             if media in examples:
                 entry["example"] = examples[media]
