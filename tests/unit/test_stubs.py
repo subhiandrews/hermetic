@@ -322,7 +322,11 @@ def test_an_error_body_comes_from_its_schema_and_other_codes_are_reported() -> N
         "jsonBody": {"code": "dup"},
     }
     assert stubs[f"{scenario}.503.json"]["response"] == {"status": 503}
-    assert skipped == ["GET /x: response 301, 4XX, default not mocked"]
+    assert skipped == [
+        "response 301 not mocked (1 operation)",
+        "response 4XX not mocked (1 operation)",
+        "response default not mocked (1 operation)",
+    ]
 
 
 def test_a_status_key_with_a_trailing_newline_is_not_a_status() -> None:
@@ -336,7 +340,45 @@ def test_a_status_key_with_a_trailing_newline_is_not_a_status() -> None:
     stubs, skipped = build_stubs(other)
     (only,) = stubs  # no file name carries a newline, and no scenario was made for the 404
     assert "\n" not in only and "scenarioName" not in stubs[only]
-    assert skipped == ["GET /x: response 201\n, 404\n not mocked"]
+    assert skipped == [
+        "response 201\n not mocked (1 operation)",
+        "response 404\n not mocked (1 operation)",
+    ]
+
+
+def test_a_status_key_in_another_script_is_not_a_status() -> None:
+    arabic = "4" + chr(0x660) + "4"  # an Arabic-Indic zero: `int()` reads it as 404
+    other = _model_with(
+        [
+            Response(status="200", description="", content={}),
+            Response(status=arabic, description="", content={}),
+        ]
+    )
+    stubs, skipped = build_stubs(other)
+    (only,) = stubs  # no client can name that state, so it gets no stub
+    assert "scenarioName" not in stubs[only]
+    assert skipped == [f"response {arabic} not mocked (1 operation)"]
+
+
+def test_an_unmocked_code_is_one_line_for_every_operation_that_declares_it() -> None:
+    first = _model_with(
+        [
+            Response(status="200", description="", content={}),
+            Response(status="default", description="", content={}),
+            Response(status="304", description="", content={}),
+        ]
+    )
+    second = first.operations[0].model_copy(update={"path": "/y", "operation_id": "second"})
+    third = second.model_copy(update={"path": "/z", "operation_id": "third"})
+    third = third.model_copy(
+        update={"responses": [Response(status="200", description="", content={})]}
+    )
+    other = first.model_copy(update={"operations": [first.operations[0], second, third]})
+    _, skipped = build_stubs(other)
+    assert skipped == [
+        "response 304 not mocked (2 operations)",
+        "response default not mocked (2 operations)",
+    ]
 
 
 def test_an_error_over_the_size_cap_is_left_out_and_the_success_stub_stays_plain(

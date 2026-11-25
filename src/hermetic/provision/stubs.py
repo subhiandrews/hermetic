@@ -22,6 +22,7 @@ import math
 import os
 import re
 import tempfile
+from collections import Counter
 from pathlib import Path
 from typing import Any, TypeGuard
 from urllib.parse import urlparse
@@ -35,9 +36,10 @@ MAX_DEPTH = 8
 MAX_KEYS = 64  # properties kept per object, so a wide schema cannot grow a body without bound
 METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
 MARKER = "hermetic"
-# Both are used with `fullmatch`: `$` would also accept a key that ends in a newline.
-_SUCCESS = re.compile(r"2(\d\d|XX)")  # OpenAPI also allows the range "2XX"
-_ERROR = re.compile(r"[45]\d\d")  # a concrete code; "4XX" and "default" have none to answer with
+# Both are used with `fullmatch` (`$` also accepts a key that ends in a newline) and spell out
+# `[0-9]` (`\d` also takes digits of other scripts: `int()` reads them, no client can name them).
+_SUCCESS = re.compile(r"2([0-9][0-9]|XX)")  # OpenAPI also allows the range "2XX"
+_ERROR = re.compile(r"[45][0-9][0-9]")  # a concrete code; "4XX" and "default" have none to use
 START_STATE = "Started"  # WireMock's own name for a scenario's first state
 _PARAM = re.compile(r"\{[^{}/]+\}")
 _REGEX_SPECIAL = set(".\\+*?^$()[]{}|")
@@ -254,10 +256,16 @@ def _too_big(mapping: dict[str, Any]) -> bool:
 
 
 def build_stubs(model: ServiceModel) -> tuple[dict[str, dict[str, Any]], list[str]]:
-    """File name to mapping, and a line for each stub or response that was left out and why."""
+    """File name to mapping, and a line for each stub or response that was left out and why.
+
+    A response code with no stub (a range, `default`, a 1xx or 3xx) is one line for the whole
+    spec with the number of operations that declare it, so a spec that declares `default`
+    everywhere does not print a line per operation.
+    """
     prefix = _prefix(model)
     stubs: dict[str, dict[str, Any]] = {}
     skipped: list[str] = []
+    not_mocked: Counter[str] = Counter()
     for operation in model.operations:
         label = f"{operation.method} {operation.path}"
         found = _success(operation)
@@ -300,8 +308,10 @@ def build_stubs(model: ServiceModel) -> tuple[dict[str, dict[str, Any]], list[st
                 f"{label}: response {code} not mocked, more than {MAX_STUBS} stubs"
                 for code, _ in dropped
             )
-            if left_out:
-                skipped.append(f"{label}: response {', '.join(left_out)} not mocked")
+            not_mocked.update(left_out)
+    for code in sorted(not_mocked):
+        count = not_mocked[code]
+        skipped.append(f"response {code} not mocked ({count} operation{'' if count == 1 else 's'})")
     return stubs, skipped
 
 
