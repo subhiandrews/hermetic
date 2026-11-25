@@ -173,6 +173,18 @@ def validate_spec(spec: Json) -> None:
     version = spec.get("openapi")
     if not isinstance(version, str) or not version.startswith("3."):
         raise IngestError(f"only OpenAPI 3.x is supported (found openapi={version!r})")
+    _validate(spec)
+
+
+def validate_swagger2(spec: Json) -> None:
+    """Reject anything that is not a valid Swagger 2.0 document."""
+    version = spec.get("swagger")
+    if version != "2.0":
+        raise IngestError(f"only Swagger 2.0 is supported (found swagger={version!r})")
+    _validate(spec)
+
+
+def _validate(spec: Json) -> None:
     _reject_external_refs(spec)
     foreign = _set_aside_foreign_patterns(spec)
     try:
