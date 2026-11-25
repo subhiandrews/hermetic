@@ -22,9 +22,11 @@ from hermetic.provision.validate import PROJECT_PREFIX, ComposeError, check_comp
 
 UP_TIMEOUT_SECONDS = 300.0  # image pulls included
 COMMAND_TIMEOUT_SECONDS = 60.0
+DIAGNOSTIC_TIMEOUT_SECONDS = 5.0  # reading engine logs for an error must not stall the cleanup
 WAIT_TIMEOUT_SECONDS = 180  # how long Compose waits for the health checks
 _ENDPOINT = re.compile(r"^127\.0\.0\.1:(\d{1,5})$")
 _MAX_OUTPUT_CHARS = 2000
+_MAX_ENGINE_LOGS = 5  # engines whose logs are added to a failed start's error
 _URLS: dict[DependencyKind, str] = {
     "postgres": "postgresql://hermetic:hermetic@127.0.0.1:{port}/hermetic",
     "mysql": "mysql://root:hermetic@127.0.0.1:{port}/hermetic",
@@ -163,13 +165,57 @@ def up(service: str, path: Path, text: str, runner: CommandRunner = run_command)
             raise StackError(f"docker compose up failed: {_say(started)}")
         return _endpoints(runner, project, text, document["services"])
     except BaseException as failure:  # a timeout or Ctrl-C can leave containers behind too
-        left = _take_down(runner, project)
+        # read what the engines said before taking them down: it is the only place the reason is
+        try:
+            engines = _exited_engines(runner, project) if isinstance(failure, StackError) else ""
+        finally:  # an interrupt while reading logs must still take the containers down
+            left = _take_down(runner, project)
+        hint = ""
         if left is not None:
             hint = f"cleaning up also failed ({left}); run `hermetic down --service {service}`"
-            if isinstance(failure, StackError):
-                raise StackError(f"{failure}; {hint}") from failure
+        if isinstance(failure, StackError):
+            message = f"{failure}{engines}" + (f"; {hint}" if hint else "")
+            if engines or hint:
+                raise StackError(message) from failure
+        elif hint:
             failure.add_note(hint)  # an interrupt or other error keeps its own type
         raise
+
+
+def _exited_engines(runner: CommandRunner, project: str) -> str:
+    """The last lines of each engine that exited, for the error: Compose only says "exited (1)"."""
+    try:
+        listed = runner(
+            [
+                "docker",
+                "ps",
+                "--all",
+                "--format",
+                "{{.Names}}",
+                "--filter",
+                f"label=com.docker.compose.project={project}",
+                "--filter",
+                "status=exited",
+            ],
+            stdin=None,
+            timeout=DIAGNOSTIC_TIMEOUT_SECONDS,
+        )
+    except StackError:  # the reason for the first failure is still worth reporting
+        return ""
+    out = []
+    for name in listed.stdout.split()[:_MAX_ENGINE_LOGS] if listed.returncode == 0 else []:
+        try:
+            logs = runner(
+                ["docker", "logs", "--tail", "15", name],
+                stdin=None,
+                timeout=DIAGNOSTIC_TIMEOUT_SECONDS,
+            )
+        except StackError:  # keep what the other engines said
+            continue
+        text = (logs.stdout + logs.stderr).strip()
+        if text:
+            out.append(f"\n--- {printable(name)} said:\n{printable(text[-_MAX_OUTPUT_CHARS:])}")
+    return "".join(out)
 
 
 def _refuse_if_running(runner: CommandRunner, project: str, service: str) -> None:

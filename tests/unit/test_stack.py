@@ -40,10 +40,16 @@ class FakeDocker:
         running: str = "",
         ps_code: int = 0,
         networks: str = "",
+        exited: str = "",
+        engine_logs: str = "",
+        exited_code: int = 0,
         net_ls_code: int = 0,
         net_rm_code: int = 0,
     ):
         self.networks = networks
+        self.exited = exited
+        self.engine_logs = engine_logs
+        self.exited_code = exited_code
         self.net_ls_code = net_ls_code
         self.net_rm_code = net_rm_code
         self.running = running
@@ -56,6 +62,10 @@ class FakeDocker:
 
     def __call__(self, argv: Sequence[str], *, stdin: str | None, timeout: float) -> CommandResult:
         self.calls.append((list(argv), stdin))
+        if argv[1] == "logs":
+            return CommandResult(0, "", self.engine_logs)
+        if argv[1] == "ps" and "--format" in argv:
+            return CommandResult(self.exited_code, self.exited, "")
         if argv[1] == "ps":
             return CommandResult(self.ps_code, self.running, "ps broke" if self.ps_code else "")
         if argv[1] == "network":
@@ -553,3 +563,72 @@ def test_the_end_of_long_docker_output_is_what_is_reported(stack: tuple[Path, st
         up("shop", path, text, runner)
     assert str(caught.value).endswith("is unhealthy")
     assert len(str(caught.value)) < 4200  # 2000 characters, newlines shown as \\n
+
+
+def test_a_failed_start_says_what_the_engine_that_exited_said(stack: tuple[Path, str]) -> None:
+    path, text = stack
+    docker = FakeDocker(
+        up_code=1,
+        exited="hermetic-shop-db-1\n",
+        engine_logs="[ERROR] cannot allocate memory\x1b[2J",
+    )
+    with pytest.raises(StackError) as caught:
+        up("shop", path, text, docker)
+    message = str(caught.value)
+    assert "--- hermetic-shop-db-1 said:" in message
+    assert "cannot allocate memory" in message
+    assert "\x1b" not in message
+    assert docker.verbs()[-1] == "down"  # read first, then removed
+
+
+@pytest.mark.parametrize(
+    "docker",
+    [
+        FakeDocker(up_code=1),  # nothing exited
+        FakeDocker(up_code=1, exited="a\n", engine_logs=""),  # it said nothing
+        FakeDocker(up_code=1, exited="a\n", exited_code=1),  # the listing failed
+    ],
+)
+def test_a_failed_start_without_engine_output_is_just_the_first_error(
+    stack: tuple[Path, str], docker: FakeDocker
+) -> None:
+    path, text = stack
+    with pytest.raises(StackError) as caught:
+        up("shop", path, text, docker)
+    assert str(caught.value) == "docker compose up failed: pull failed"
+
+
+def test_one_engine_log_failing_keeps_what_the_others_said(stack: tuple[Path, str]) -> None:
+    path, text = stack
+
+    def runner(argv: Sequence[str], *, stdin: str | None, timeout: float) -> CommandResult:
+        if "up" in argv:
+            return CommandResult(1, "", "boom")
+        if argv[1] == "ps" and "--format" in argv:
+            assert timeout < 10  # diagnostics get a short timeout of their own
+            return CommandResult(0, "a\nb\n", "")
+        if argv[1] == "logs":
+            if argv[-1] == "a":
+                raise StackError("docker timed out")
+            return CommandResult(0, "", "b is out of memory")
+        return CommandResult(0, "", "")
+
+    with pytest.raises(StackError) as caught:
+        up("shop", path, text, runner)
+    assert "--- b said:" in str(caught.value)
+
+
+def test_a_failed_start_survives_docker_failing_while_it_explains(
+    stack: tuple[Path, str],
+) -> None:
+    path, text = stack
+
+    def runner(argv: Sequence[str], *, stdin: str | None, timeout: float) -> CommandResult:
+        if "up" in argv:
+            return CommandResult(1, "", "boom")
+        if argv[1] == "ps" and "--format" in argv:
+            raise StackError("docker is gone")
+        return CommandResult(0, "", "")
+
+    with pytest.raises(StackError, match=r"up failed: boom$"):
+        up("shop", path, text, runner)

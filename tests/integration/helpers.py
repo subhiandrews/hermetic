@@ -12,7 +12,10 @@ import pytest
 def docker_ready() -> bool:
     if shutil.which("docker") is None:
         return False
-    done = subprocess.run(["docker", "info"], capture_output=True, check=False, timeout=30)
+    try:
+        done = subprocess.run(["docker", "info"], capture_output=True, check=False, timeout=30)
+    except subprocess.TimeoutExpired:  # a hung daemon is "not ready", so both branches below run
+        return False
     return done.returncode == 0
 
 
