@@ -1,6 +1,6 @@
 # Writing a sink
 
-A **sink** is where a finished run goes: a file, the terminal, an issue tracker, a chat channel. Hermetic
+A **sink** is where a finished run goes: a file, the terminal, an issue tracker (Linear, Jira), a chat channel. Hermetic
 ships four (`markdown`, `html`, `json`, `stdout`). Anyone can add another as a separate Python package;
 Hermetic finds it through an entry point and runs it with `--report NAME`.
 
@@ -78,8 +78,7 @@ hermetic run --target http://localhost:8080 --report stdout --report failures
   If either step raises, the run stops before any test runs, with a message naming the sink.
 - **Failing.** If `publish` raises, the other sinks still run, the error is printed, and the exit code is
   what the tests decided: 1 if any failed, otherwise 2 (the sink's failure). The run is already in the
-  history either way.
-- **Exit codes** are not the sink's to set (see Execute and report in `docs/architecture.md`).
+  history either way. Exit codes are not the sink's to set (see Execute and report in `docs/architecture.md`).
 
 ## Testing a sink
 
@@ -91,6 +90,4 @@ in `tests/unit/test_report.py` do this). To test the registration, install the p
 
 - `publish` is synchronous and has no timeout of its own: a sink that calls a network service should set
   one, or a slow service delays the exit of `hermetic run`.
-- A sink receives the whole record, which can be large for a big suite. Write or send what you need, not a
-  copy of everything.
-- Issue-tracker sinks (Linear, Jira) are not part of Hermetic; they are meant to be packages like this one.
+- A sink receives the whole record, which can be large for a big suite.

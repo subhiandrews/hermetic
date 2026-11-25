@@ -51,7 +51,7 @@ To keep one history for many machines, set `HERMETIC_API_TOKEN` (32 or more char
 
 [`examples/sockshop`](examples/sockshop): the Sock Shop orders service, which has a database and calls three other services, all described by Swagger 2.0 files.
 
-The tests in `tests/unit/test_petclinic.py` and `tests/unit/test_sockshop.py` run each example offline and compare Hermetic's output with the files in its `expected/` folder.
+How the examples are checked is in `docs/architecture.md` (Examples).
 
 ## Develop
 
