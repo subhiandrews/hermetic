@@ -110,8 +110,8 @@ def test_each_mock_answers_from_its_converted_spec(project: Path, name: str) -> 
     folder = project / ".hermetic" / "provision" / "orders" / "mocks" / name
     files = sorted(folder.glob("*.json"))
     written = {p.name: json.loads(p.read_text(encoding="utf-8")) for p in files}
-    golden(f"{name}-stubs.json", json.dumps(written, indent=2, sort_keys=True) + "\n")
     assert written
+    golden(f"{name}-stubs.json", json.dumps(written, indent=2, sort_keys=True) + "\n")
 
 
 def test_running_the_pipeline_again_changes_nothing(project: Path) -> None:
