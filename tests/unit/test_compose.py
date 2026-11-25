@@ -72,6 +72,15 @@ def test_each_kind_alone_is_a_file_the_allowlist_accepts(tmp_path: Path, kind: s
     service = check_compose(text, tmp_path)["services"]["thing"]
     assert service["image"] == ENGINES[kind].image  # type: ignore[index]
     assert service["ports"] == [f"127.0.0.1::{ENGINES[kind].port}"]  # type: ignore[index]
+    assert service["mem_limit"] == ENGINES[kind].memory  # type: ignore[index]
+
+
+def test_mysql_gets_room_for_its_first_start() -> None:
+    # Its first-run server peaks near 660 MiB; at 512m Docker killed it about half the time.
+    assert ENGINES["mysql"].memory == "1g"
+    assert {kind: e.memory for kind, e in ENGINES.items() if kind != "mysql"} == dict.fromkeys(
+        ["postgres", "redis", "mongo", "http"], "512m"
+    )
 
 
 def test_everything_generated_is_local_and_unprivileged(tmp_path: Path) -> None:

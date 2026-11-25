@@ -68,7 +68,7 @@ def _service(dependency: Dependency) -> dict[str, Any]:
         service["volumes"] = [f"./{MOCKS_DIR}/{dependency.name}:/home/wiremock/mappings:ro"]
     service["ports"] = [f"127.0.0.1::{engine.port}"]
     service["security_opt"] = ["no-new-privileges:true"]
-    service["mem_limit"] = "512m"
+    service["mem_limit"] = engine.memory
     service["pids_limit"] = 512
     service["restart"] = "no"
     return service
