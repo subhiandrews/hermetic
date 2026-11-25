@@ -25,8 +25,8 @@ class MySink:
   grows only by adding fields, so a sink written today keeps working.
 - `RunRecord` is a frozen Pydantic model: the service, run id, times, target, spec and document hashes,
   `results` (one `TestResult` per test) and `changes` (tests added, modified or dropped since the run
-  before, each with a reason). A failed or errored `TestResult` carries its `message`, its `exchanges`
-  and a `curl` that reproduces the failing request. See `src/hermetic/history/models.py` for every field.
+  before, each with a reason). A failed or errored `TestResult` carries its `message` and its `exchanges`,
+  and a `curl` that reproduces the failing request when the test made one (`curl` is `None` otherwise). See `src/hermetic/history/models.py` for every field.
 
 Secrets are masked before a record exists: headers, URL credentials and secret-looking body fields are
 already redacted in `exchanges` and `curl`. A sink should still send only what its destination needs, and
@@ -49,7 +49,7 @@ class FailuresSink:
     def publish(self, record: RunRecord) -> None:
         failed = [r for r in record.results if r.status in ("failed", "error")]
         lines = [f"{record.service} {record.run_id}: {len(failed)} failing"]
-        lines += [f"{r.test_id}\n  {r.curl}" for r in failed]
+        lines += [f"{r.test_id}\n  {r.curl or '(no request made)'}" for r in failed]
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 ```
@@ -72,22 +72,20 @@ hermetic run --target http://localhost:8080 --report stdout --report failures
 
 ## What Hermetic does for you
 
-- **Names.** A built-in name (`markdown`, `html`, `json`, `stdout`) cannot be replaced by a plugin, so
-  installing a package never changes what an existing command does. An unknown name is an error that lists
-  the names available.
+- **Names.** A built-in name cannot be replaced by a plugin, so installing a package never changes what
+  an existing command does. An unknown name is an error that lists the names available.
 - **Loading.** The entry point is imported and the factory called only when a run asks for that sink.
   If either step raises, the run stops before any test runs, with a message naming the sink.
 - **Failing.** If `publish` raises, the other sinks still run, the error is printed, and the exit code is
   what the tests decided: 1 if any failed, otherwise 2 (the sink's failure). The run is already in the
   history either way.
-- **Exit codes** are not the sink's to set. 0 means every test passed, 1 some failed or errored, 2 the run
-  could not happen.
+- **Exit codes** are not the sink's to set (see Execute and report in `docs/architecture.md`).
 
 ## Testing a sink
 
-Build a `RunRecord` by hand and call `publish`; no Hermetic process is needed. Hermetic's own sink tests
-(`tests/unit/test_report.py`) do this, and `load_sinks` accepts a name only if the entry point resolves,
-so test the registration by installing the package, not by importing the class.
+Build a `RunRecord` by hand and call `publish`; no Hermetic process is needed (Hermetic's own sink tests
+in `tests/unit/test_report.py` do this). To test the registration, install the package and run
+`hermetic run --report <name>`.
 
 ## Limits to know
 
