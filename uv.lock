@@ -444,7 +444,7 @@ wheels = [
 ]
 
 [[package]]
-name = "hermetic"
+name = "hermetic-agent"
 source = { editable = "." }
 dependencies = [
     { name = "claude-agent-sdk" },

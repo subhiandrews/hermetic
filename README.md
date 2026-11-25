@@ -9,7 +9,7 @@ Each run is kept in a local history. A small web UI shows past runs, which tests
 ## Install
 
 ```bash
-pip install hermetic          # once published
+pip install hermetic-agent    # once published; the command it installs is `hermetic`
 # or run the container
 docker run --rm ghcr.io/subhiandrews/hermetic --help
 ```
