@@ -141,13 +141,13 @@ def test_patterns_in_lists_and_non_string_patterns_are_walked_past() -> None:
         {},
         components={
             "schemas": {
-                "Tagged": {"type": "string", "x-notes": [{"pattern": r"\p{L}"}, 3]},
+                "Tagged": {"allOf": [{"type": "string", "pattern": r"\p{L}"}]},
                 "Holder": {"type": "object", "properties": {"pattern": {"type": "string"}}},
             }
         },
     )
     validate_spec(spec)
-    assert spec["components"]["schemas"]["Tagged"]["x-notes"][0]["pattern"] == r"\p{L}"
+    assert spec["components"]["schemas"]["Tagged"]["allOf"][0]["pattern"] == r"\p{L}"
 
 
 # --- $ref handling ----------------------------------------------------------------------
