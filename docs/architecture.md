@@ -13,8 +13,8 @@ hermetic run --spec openapi.yaml --docs ./docs --target http://svc:8080
   5. Diff        compare spec/doc hashes against the test manifest; regenerate only what changed
   6. Execute     run the suite against the target; capture request/response
   7. Record      write the run to the run-history store
-  8. Report      Markdown / HTML / JSON summary, with a curl repro per failure
-  9. Publish     optional pluggable sinks (interface only in v1)
+  8. Report      Markdown / HTML / JSON / stdout sinks, with a curl repro per failure; others plug in (docs/writing-sinks.md)
+  9. Publish     hand the suite to a publisher (a directory or a GitHub pull request)
 ```
 
 ## Ingest
@@ -63,7 +63,7 @@ hermetic run --spec openapi.yaml --docs ./docs --target http://svc:8080
 - **The run itself can fail.** `--target` must be `http(s)://host[:port]`; error messages show it without credentials. A run that pytest interrupted (`pytest.exit`, Ctrl-C) is an error, never a partial pass; a collection error is the exception and is reported as an errored test.
 - **A failure carries a repro.** For a failed or errored test the record holds a `curl` for the last request it made. If that request's body was binary or cut short, the curl omits the body and says so rather than sending something different. Redacted headers become double-quoted `$NAME` placeholders so the command works once the variable is set. A body field that was redacted stays `[REDACTED]` in the command.
 - **Status.** A failing assertion or any exception in the test body is `failed`. A setup or teardown error, or a module that cannot be imported, is `error`. A teardown error after a failed call keeps the assertion text and appends the teardown error; after a setup error the first message is kept. Skips and expected failures are `skipped`. A test marked `@pytest.mark.operation("id")` is tied to that `operationId`, which the diff stage will use.
-- **Sinks.** A sink is a factory `(SinkContext) -> ReportSink` and a sink publishes a finished `RunRecord`. `markdown`, `html`, `json` and `stdout` are built in. Others register under the `hermetic.sinks` entry-point group; a built-in name cannot be replaced by a plugin. The HTML report is one file with no script and escapes everything recorded. Exit code is 0 when all tests pass, 1 when any fail or error, 2 when the run itself could not happen. A sink that fails to publish does not hide that: the run is already saved, the other sinks still run, the error is printed, and the exit code is still 1 if tests failed (2 otherwise).
+- **Sinks.** A sink is a factory `(SinkContext) -> ReportSink` and a sink publishes a finished `RunRecord`. `markdown`, `html`, `json` and `stdout` are built in. Others register under the `hermetic.sinks` entry-point group (`docs/writing-sinks.md` is the guide); a built-in name cannot be replaced by a plugin. The HTML report is one file with no script and escapes everything recorded. Exit code is 0 when all tests pass, 1 when any fail or error, 2 when the run itself could not happen. A sink that fails to publish does not hide that: the run is already saved, the other sinks still run, the error is printed, and the exit code is still 1 if tests failed (2 otherwise).
 
 ## Generate and diff
 
@@ -119,6 +119,27 @@ A run record holds metadata (target, spec/doc hashes, prompt and tool versions),
 
 - Tests only reach `--target` and the generated mocks, never real downstream hosts. API keys are never logged.
 - Provisioning mounts the host Docker socket, which is root-equivalent on the host. Every compose file, generated or user-supplied, is validated in deterministic code before it runs (see Provision). Rejected: privileged containers, host network/PID/IPC, added capabilities, device mounts, bind mounts outside the workdir, the Docker socket itself, and images outside the approved list. A rootless Docker or Podman socket is the recommended hardened setup.
+
+## Examples
+
+`examples/` holds two complete inputs and the files Hermetic must produce from them, checked by unit tests that run the offline stages (discover, compose, stubs) with a fake agent:
+
+- **`petclinic`**: one service with one database and no other services (the REST backend of Spring PetClinic, OpenAPI 3).
+- **`sockshop`**: the Sock Shop orders service, which keeps its orders in MongoDB and calls three other services (carts, user, payment). All four APIs are Swagger 2.0, so it also exercises the conversion in Ingest. Each called service gets a WireMock container whose stubs come from its own spec.
+
+Each folder's README says where its files came from, at which commit, and under which licence.
+
+## Known limits
+
+These are gaps in v0.1 that are known and not yet planned in detail:
+
+- **Mocks answer the success case only.** `hermetic stubs` writes one stub per operation with a 2xx response, so a downstream's error responses are not mocked.
+- **No lock around `up`.** Two `hermetic up` runs for the same service at once can interfere; run one at a time.
+- **Images are pinned by tag, not digest** (see Provision).
+- **GitHub publishing takes a token, not an App.** A GitHub App would replace the token source (see Publishing to GitHub).
+- **`/api/services` is not paginated and the page has no browser test.** See Run history.
+- **Swagger 2.0 and patterns.** A 2.0 `host` with no `schemes` becomes an `http://` server. A pattern with ECMA-only syntax is recognised from a short list kept in `ingest/openapi.py`, so a rare construct outside it is reported as an invalid spec; in OpenAPI 3.1 this also applies to `patternProperties` keys.
+- **Memory limits.** Every engine container is capped at 512 MiB except MySQL (1 GiB), whose first start needs more.
 
 ## Distribution
 

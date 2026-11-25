@@ -4,7 +4,7 @@ Hermetic is an open-source, agentic tester for REST microservices. Give it an Op
 
 Each run is kept in a local history. A small web UI shows past runs, which tests failed and why, and which tests were added, modified, or dropped since the last run, and why.
 
-> **Status:** pre-alpha. The scaffold exists; features land milestone by milestone. See `docs/architecture.md`.
+> **Status:** early (v0.1). Every stage in the pipeline works end to end: ingest, discover, provision, generate, run, report and history. It is young, so read `docs/architecture.md` (Known limits) before you rely on it. To add your own report destination, see `docs/writing-sinks.md`.
 
 ## Install
 
@@ -50,6 +50,8 @@ To keep one history for many machines, set `HERMETIC_API_TOKEN` (32 or more char
 [`examples/petclinic`](examples/petclinic): a real OpenAPI spec (Spring PetClinic REST) with a design note and the files Hermetic produces from them.
 
 [`examples/sockshop`](examples/sockshop): the Sock Shop orders service, which has a database and calls three other services, all described by Swagger 2.0 files.
+
+The tests in `tests/unit/test_petclinic.py` and `tests/unit/test_sockshop.py` run each example offline and compare Hermetic's output with the files in its `expected/` folder.
 
 ## Develop
 
