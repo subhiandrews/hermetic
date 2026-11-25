@@ -166,8 +166,10 @@ def up(service: str, path: Path, text: str, runner: CommandRunner = run_command)
         return _endpoints(runner, project, text, document["services"])
     except BaseException as failure:  # a timeout or Ctrl-C can leave containers behind too
         # read what the engines said before taking them down: it is the only place the reason is
-        engines = _exited_engines(runner, project) if isinstance(failure, StackError) else ""
-        left = _take_down(runner, project)
+        try:
+            engines = _exited_engines(runner, project) if isinstance(failure, StackError) else ""
+        finally:  # an interrupt while reading logs must still take the containers down
+            left = _take_down(runner, project)
         hint = ""
         if left is not None:
             hint = f"cleaning up also failed ({left}); run `hermetic down --service {service}`"
