@@ -4,7 +4,7 @@ Hermetic is an open-source, agentic tester for REST microservices. Give it an Op
 
 Each run is kept in a local history. A small web UI shows past runs, which tests failed and why, and which tests were added, modified, or dropped since the last run, and why.
 
-> **Status:** early (v0.1). Every stage in the pipeline works end to end: ingest, discover, provision, generate, run, report and history. It is young, so read `docs/architecture.md` (Known limits) before you rely on it. To add your own report destination, see `docs/writing-sinks.md`.
+> **Status:** early (v0.1). Every stage in the pipeline works end to end: ingest, discover, provision, generate, run, report and history. It is young, so read [`docs/architecture.md`](https://github.com/subhiandrews/hermetic/blob/main/docs/architecture.md) (Known limits) before you rely on it. To add your own report destination, see [`docs/writing-sinks.md`](https://github.com/subhiandrews/hermetic/blob/main/docs/writing-sinks.md).
 
 ## Install
 
@@ -43,15 +43,15 @@ docker run --rm -p 127.0.0.1:8000:8000 -v "$PWD/.hermetic:/work/.hermetic" \
 
 It then answers to `localhost`. For any other name (a reverse proxy, a team hostname) add `--allowed-host <name>`; without it that name gets a `421`. `--host 0.0.0.0` prints a warning because anyone who can reach the port can read the history.
 
-To keep one history for many machines, set `HERMETIC_API_TOKEN` (32 or more characters) on the server and `hermetic run --history-dir https://your-server` on each client, which reads the same variable. Put a TLS proxy in front of it. See `docs/architecture.md` (Central history).
+To keep one history for many machines, set `HERMETIC_API_TOKEN` (32 or more characters) on the server and `hermetic run --history-dir https://your-server` on each client, which reads the same variable. Put a TLS proxy in front of it. See [`docs/architecture.md`](https://github.com/subhiandrews/hermetic/blob/main/docs/architecture.md) (Central history).
 
 ## Examples
 
-[`examples/petclinic`](examples/petclinic): a real OpenAPI spec (Spring PetClinic REST) with a design note and the files Hermetic produces from them.
+[`examples/petclinic`](https://github.com/subhiandrews/hermetic/tree/main/examples/petclinic): a real OpenAPI spec (Spring PetClinic REST) with a design note and the files Hermetic produces from them.
 
-[`examples/sockshop`](examples/sockshop): the Sock Shop orders service, which has a database and calls three other services, all described by Swagger 2.0 files.
+[`examples/sockshop`](https://github.com/subhiandrews/hermetic/tree/main/examples/sockshop): the Sock Shop orders service, which has a database and calls three other services, all described by Swagger 2.0 files.
 
-How the examples are checked is in `docs/architecture.md` (Examples).
+How the examples are checked is in [`docs/architecture.md`](https://github.com/subhiandrews/hermetic/blob/main/docs/architecture.md) (Examples).
 
 ## Develop
 
@@ -64,7 +64,7 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy
 uv run hermetic version
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](https://github.com/subhiandrews/hermetic/blob/main/CONTRIBUTING.md).
 
 ## License
 
