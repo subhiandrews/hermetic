@@ -325,6 +325,20 @@ def test_an_error_body_comes_from_its_schema_and_other_codes_are_reported() -> N
     assert skipped == ["GET /x: response 301, 4XX, default not mocked"]
 
 
+def test_a_status_key_with_a_trailing_newline_is_not_a_status() -> None:
+    other = _model_with(
+        [
+            Response(status="200", description="", content={}),
+            Response(status="201\n", description="", content={}),
+            Response(status="404\n", description="", content={}),
+        ]
+    )
+    stubs, skipped = build_stubs(other)
+    (only,) = stubs  # no file name carries a newline, and no scenario was made for the 404
+    assert "\n" not in only and "scenarioName" not in stubs[only]
+    assert skipped == ["GET /x: response 201\n, 404\n not mocked"]
+
+
 def test_an_error_over_the_size_cap_is_left_out_and_the_success_stub_stays_plain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

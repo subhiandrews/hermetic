@@ -9,9 +9,9 @@ ones alone.
 An operation that also declares concrete 4xx or 5xx responses gets a WireMock scenario named
 like its stub file. The scenario starts in `Started`, where the success stub answers, and has
 one more state per declared status (`404`) with a stub that answers with that error. A client
-of the mock's admin API moves the scenario between states; nothing here does. Each stub's
-`metadata` names its operation, scenario and state, so the set of scenarios can be read back
-from the files. Ranges (`4XX`), `default`, and 1xx and 3xx codes are left out and reported.
+of the mock's admin API moves the scenario between states; nothing here does. A stub that is
+part of a scenario names it and its state in `metadata`, so the scenarios can be read back from
+the files. Ranges (`4XX`), `default`, and 1xx and 3xx codes are left out and reported.
 """
 
 from __future__ import annotations
@@ -35,8 +35,9 @@ MAX_DEPTH = 8
 MAX_KEYS = 64  # properties kept per object, so a wide schema cannot grow a body without bound
 METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
 MARKER = "hermetic"
-_SUCCESS = re.compile(r"^2(\d\d|XX)$")  # OpenAPI also allows the range "2XX"
-_ERROR = re.compile(r"^[45]\d\d$")  # a concrete code; "4XX" and "default" have none to answer with
+# Both are used with `fullmatch`: `$` would also accept a key that ends in a newline.
+_SUCCESS = re.compile(r"2(\d\d|XX)")  # OpenAPI also allows the range "2XX"
+_ERROR = re.compile(r"[45]\d\d")  # a concrete code; "4XX" and "default" have none to answer with
 START_STATE = "Started"  # WireMock's own name for a scenario's first state
 _PARAM = re.compile(r"\{[^{}/]+\}")
 _REGEX_SPECIAL = set(".\\+*?^$()[]{}|")
@@ -184,7 +185,7 @@ def _json_schema(response: Response) -> Json | bool | None:
 
 
 def _success(operation: Operation) -> tuple[str, Json | bool | None] | None:
-    codes = sorted(r.status for r in operation.responses if _SUCCESS.match(r.status))
+    codes = sorted(r.status for r in operation.responses if _SUCCESS.fullmatch(r.status))
     if not codes:
         return None
     response = next(r for r in operation.responses if r.status == codes[0])
@@ -196,9 +197,9 @@ def _errors(operation: Operation) -> tuple[list[tuple[str, Json | bool | None]],
     wanted: list[tuple[str, Json | bool | None]] = []
     left_out: list[str] = []
     for response in sorted(operation.responses, key=lambda r: r.status):
-        if _SUCCESS.match(response.status):
+        if _SUCCESS.fullmatch(response.status):
             continue
-        if _ERROR.match(response.status):
+        if _ERROR.fullmatch(response.status):
             wanted.append((response.status, _json_schema(response)))
         else:  # "default", a range such as "4XX", or a 1xx or 3xx code
             left_out.append(response.status)
