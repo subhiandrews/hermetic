@@ -115,6 +115,57 @@ def test_invalid_document_is_rejected() -> None:
         validate_spec({"openapi": "3.0.3", "info": {"title": "T"}, "paths": {}})
 
 
+def test_a_pattern_python_cannot_compile_is_still_a_valid_spec_and_is_kept() -> None:
+    ecma = r"^[\p{L}][\p{L}\s\-&/]{0,79}$"  # Java and JavaScript syntax; Python's re rejects it
+    spec = make_spec({}, components={"schemas": {"Name": {"type": "string", "pattern": ecma}}})
+    validate_spec(spec)
+    assert spec["components"]["schemas"]["Name"]["pattern"] == ecma
+
+
+def test_the_pattern_is_put_back_when_the_spec_is_invalid() -> None:
+    spec = make_spec({}, components={"schemas": {"Name": {"type": "string", "pattern": r"\p{L}"}}})
+    del spec["info"]["version"]
+    with pytest.raises(IngestError, match="invalid OpenAPI document"):
+        validate_spec(spec)
+    assert spec["components"]["schemas"]["Name"]["pattern"] == r"\p{L}"
+
+
+@pytest.mark.parametrize("pattern", ["[", "(abc", "*a"])
+def test_a_pattern_that_is_broken_in_ecma_too_is_still_rejected(pattern: str) -> None:
+    spec = make_spec({}, components={"schemas": {"Name": {"type": "string", "pattern": pattern}}})
+    with pytest.raises(IngestError, match="invalid OpenAPI document"):
+        validate_spec(spec)
+    assert spec["components"]["schemas"]["Name"]["pattern"] == pattern
+
+
+@pytest.mark.parametrize("pattern", [r"\u{1F600}", r"^(?<year>\d{4})-\k<year>$", r"\P{L}+"])
+def test_other_ecma_only_syntax_is_accepted(pattern: str) -> None:
+    spec = make_spec({}, components={"schemas": {"Name": {"type": "string", "pattern": pattern}}})
+    validate_spec(spec)
+    assert spec["components"]["schemas"]["Name"]["pattern"] == pattern
+
+
+@pytest.mark.parametrize("pattern", ["^a+$", r"\\p{L}"])  # the second only looks ECMA-only
+def test_a_pattern_that_compiles_is_left_alone(pattern: str) -> None:
+    spec = make_spec({}, components={"schemas": {"Name": {"type": "string", "pattern": pattern}}})
+    validate_spec(spec)
+    assert spec["components"]["schemas"]["Name"]["pattern"] == pattern
+
+
+def test_patterns_in_lists_and_non_string_patterns_are_walked_past() -> None:
+    spec = make_spec(
+        {},
+        components={
+            "schemas": {
+                "Tagged": {"allOf": [{"type": "string", "pattern": r"\p{L}"}]},
+                "Holder": {"type": "object", "properties": {"pattern": {"type": "string"}}},
+            }
+        },
+    )
+    validate_spec(spec)
+    assert spec["components"]["schemas"]["Tagged"]["allOf"][0]["pattern"] == r"\p{L}"
+
+
 # --- $ref handling ----------------------------------------------------------------------
 
 
