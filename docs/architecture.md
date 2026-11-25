@@ -144,3 +144,11 @@ These are gaps in v0.1 that are known and not yet planned in detail:
 ## Distribution
 
 Releases are tag-driven and defined in `.github/workflows/release.yml`, which reuses `.github/workflows/ci.yml` as its gate. They publish a container image to GHCR and the package to PyPI via trusted publishing.
+
+To cut a release:
+
+1. In a pull request, set `__version__` in `src/hermetic/__init__.py` (the only place the version lives) and merge it.
+2. From an up-to-date `main`, tag that commit and push the tag: `git tag v0.1.0 && git push origin v0.1.0`. The `check-version` job refuses a tag that differs from `__version__`, and nothing is published unless the whole CI workflow passes on the tagged commit.
+3. The workflow publishes the image, the package and a GitHub release. PyPI never accepts the same version twice, so fix a bad release with the next version, not a re-tag.
+
+The `pypi` job runs in a GitHub environment named `pypi` and needs a trusted publisher registered on PyPI for this repository, workflow `release.yml` and that environment. Both are set up once, by hand, before the first tag. Protect them: limit the `pypi` environment to `v*` tags and consider a required reviewer (it gates only the PyPI upload; the `image` job has no environment and pushes to GHCR without approval), and add a tag ruleset so only maintainers can create `v*` tags (the only guard on the image), because the workflow publishes whatever commit a pushed `v*` tag points at (it checks the version and CI, not that the commit is on `main`). The image is published to `ghcr.io/<owner>/hermetic`; after the first push, check the package's visibility in its settings.
