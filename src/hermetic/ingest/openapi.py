@@ -33,8 +33,8 @@ MAX_EXPANDED_NODES = 500_000  # one path item, after its $refs are inlined
 MAX_TOTAL_EXPANDED_NODES = 2_000_000  # all path items together: bounds total memory
 
 
-class _Budget:
-    def __init__(self, limit: int, what: str, parent: _Budget | None = None) -> None:
+class Budget:
+    def __init__(self, limit: int, what: str, parent: Budget | None = None) -> None:
         self._limit = limit
         self._left = limit
         self._what = what
@@ -62,7 +62,7 @@ def canonical_hash(value: Any) -> str:
         raise IngestError(f"cannot hash document: {exc}") from exc
 
 
-def _normalise(node: Any, budget: _Budget) -> Any:
+def _normalise(node: Any, budget: Budget) -> Any:
     """Turn what YAML can produce into plain JSON types: integer keys become strings (``200:``
     next to ``default:``), dates become ISO strings, anything else non-JSON is rejected.
 
@@ -143,7 +143,7 @@ def load_spec_file(path: Path) -> Json:
             data = yaml.load(text, Loader=_UniqueKeyLoader)  # a SafeLoader subclass
         if not isinstance(data, dict):
             raise IngestError(f"spec {path} must be a JSON/YAML object at the top level")
-        normalised: Json = _normalise(data, _Budget(MAX_SPEC_NODES, "spec"))
+        normalised: Json = _normalise(data, Budget(MAX_SPEC_NODES, "spec"))
     except (ValueError, yaml.YAMLError, RecursionError) as exc:
         # ValueError covers JSONDecodeError and also an integer literal over Python's
         # 4300-digit limit, which both parsers raise as a plain ValueError.
@@ -172,7 +172,29 @@ def validate_spec(spec: Json) -> None:
     """Reject anything that is not a valid OpenAPI 3.x document."""
     version = spec.get("openapi")
     if not isinstance(version, str) or not version.startswith("3."):
-        raise IngestError(f"only OpenAPI 3.x is supported (found openapi={version!r})")
+        raise IngestError(
+            f"only OpenAPI 3.x or Swagger 2.0 is supported (found openapi={version!r})"
+            f"{_QUOTE_HINT if isinstance(version, float) else ''}"
+        )
+    _validate(spec)
+
+
+def validate_swagger2(spec: Json) -> None:
+    """Reject anything that is not a valid Swagger 2.0 document."""
+    version = spec.get("swagger")
+    if version != "2.0":
+        raise IngestError(
+            f"only Swagger 2.0 is supported (found swagger={version!r})"
+            f"{_QUOTE_HINT if isinstance(version, float) else ''}"
+        )
+    _validate(spec)
+
+
+# YAML reads an unquoted 2.0 or 3.0 as a number, which is not the string the format requires.
+_QUOTE_HINT = "; put the version in quotes"
+
+
+def _validate(spec: Json) -> None:
     _reject_external_refs(spec)
     foreign = _set_aside_foreign_patterns(spec)
     try:
@@ -265,12 +287,12 @@ def deref(
     node: Any,
     root: Json,
     _stack: tuple[str, ...] = (),
-    _budget: _Budget | None = None,
+    _budget: Budget | None = None,
 ) -> Any:
     """Inline local ``$ref`` pointers. A reference to a schema already being expanded
     (a recursive schema) is left as ``{"$ref": ...}`` instead of looping forever, and the
     total size of the expansion is capped at ``MAX_EXPANDED_NODES``."""
-    budget = _budget or _Budget(MAX_EXPANDED_NODES, "operation after inlining references")
+    budget = _budget or Budget(MAX_EXPANDED_NODES, "operation after inlining references")
     budget.spend()
     if isinstance(node, dict):
         ref = node.get("$ref")
@@ -334,7 +356,7 @@ def _content(raw: Json) -> dict[str, Json | bool]:
     return {media: body.get("schema", {}) for media, body in raw.items()}
 
 
-def _resolve_security_schemes(spec: Json, total: _Budget) -> Json:
+def _resolve_security_schemes(spec: Json, total: Budget) -> Json:
     """Resolve ``components.securitySchemes`` once, charged to the document-wide budget."""
     defined = spec.get("components", {}).get("securitySchemes", {})
     try:
@@ -343,7 +365,7 @@ def _resolve_security_schemes(spec: Json, total: _Budget) -> Json:
             deref(
                 defined,
                 spec,
-                _budget=_Budget(MAX_EXPANDED_NODES, "security schemes after inlining", total),
+                _budget=Budget(MAX_EXPANDED_NODES, "security schemes after inlining", total),
             ),
         )
     except RecursionError as exc:
@@ -363,7 +385,7 @@ def build_operations(spec: Json) -> list[Operation]:
     operations: list[Operation] = []
     seen_ids: set[str] = set()
     default_security = spec.get("security", [])
-    total = _Budget(MAX_TOTAL_EXPANDED_NODES, "document after inlining references")
+    total = Budget(MAX_TOTAL_EXPANDED_NODES, "document after inlining references")
     schemes = _resolve_security_schemes(spec, total)
     scheme_digests = {name: canonical_hash(definition) for name, definition in schemes.items()}
     for path, raw_item in spec.get("paths", {}).items():
@@ -373,7 +395,7 @@ def build_operations(spec: Json) -> list[Operation]:
             item = deref(
                 raw_item,
                 spec,
-                _budget=_Budget(MAX_EXPANDED_NODES, "operation after inlining references", total),
+                _budget=Budget(MAX_EXPANDED_NODES, "operation after inlining references", total),
             )
         except RecursionError as exc:
             raise IngestError(f"{path}: references are nested too deeply") from exc

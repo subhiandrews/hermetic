@@ -14,14 +14,26 @@ from hermetic.ingest.openapi import (
     canonical_hash,
     load_spec_file,
     validate_spec,
+    validate_swagger2,
 )
+from hermetic.ingest.swagger2 import upgrade
 
 __all__ = ["IngestError", "ServiceModel", "ingest"]
 
 
 def ingest(spec_path: Path, docs_dir: Path | None = None) -> ServiceModel:
-    """Build a ServiceModel from an OpenAPI file and an optional docs directory."""
+    """Build a ServiceModel from an OpenAPI 3.x or Swagger 2.0 file and an optional docs
+    directory (a 2.0 file is converted first; see docs/architecture.md)."""
     spec = load_spec_file(spec_path)
+    if "swagger" in spec:
+        validate_swagger2(spec)
+        try:
+            spec = upgrade(spec)
+        except (KeyError, TypeError, ValueError, AttributeError, RecursionError) as exc:
+            # A valid 2.0 document the converter did not expect; say so, not a traceback.
+            raise IngestError(
+                f"cannot convert the Swagger 2.0 document ({type(exc).__name__}: {exc})"
+            ) from exc
     validate_spec(spec)
     try:
         return ServiceModel(

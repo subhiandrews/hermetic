@@ -83,7 +83,7 @@ def version() -> None:
 
 @app.command()
 def ingest(
-    spec: Annotated[Path, typer.Argument(help="OpenAPI 3.x file (JSON or YAML).")],
+    spec: Annotated[Path, typer.Argument(help="OpenAPI 3.x or Swagger 2.0 file (JSON or YAML).")],
     docs: Annotated[
         Path | None, typer.Option(help="Directory of design/architecture documents.")
     ] = None,
@@ -109,7 +109,7 @@ def make_inferrer() -> DependencyInferrer:
 
 @app.command()
 def discover(
-    spec: Annotated[Path, typer.Argument(help="OpenAPI 3.x file (JSON or YAML).")],
+    spec: Annotated[Path, typer.Argument(help="OpenAPI 3.x or Swagger 2.0 file (JSON or YAML).")],
     docs: Annotated[Path, typer.Option(help="Directory of design/architecture documents to read.")],
     suite: Annotated[
         Path | None,
@@ -301,7 +301,7 @@ def stubs(
 
 @app.command()
 def generate(
-    spec: Annotated[Path, typer.Argument(help="OpenAPI 3.x file (JSON or YAML).")],
+    spec: Annotated[Path, typer.Argument(help="OpenAPI 3.x or Swagger 2.0 file (JSON or YAML).")],
     suite: Annotated[
         Path | None,
         typer.Option(help="Directory the test suite is written to; default tests/<service>."),
