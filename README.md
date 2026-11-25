@@ -45,6 +45,10 @@ It then answers to `localhost`. For any other name (a reverse proxy, a team host
 
 To keep one history for many machines, set `HERMETIC_API_TOKEN` (32 or more characters) on the server and `hermetic run --history-dir https://your-server` on each client, which reads the same variable. Put a TLS proxy in front of it. See `docs/architecture.md` (Central history).
 
+## Examples
+
+[`examples/petclinic`](examples/petclinic): a real OpenAPI spec (Spring PetClinic REST) with a design note and the files Hermetic produces from them.
+
 ## Develop
 
 Requires [uv](https://docs.astral.sh/uv/) and Python 3.12+.
