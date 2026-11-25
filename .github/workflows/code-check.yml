@@ -29,7 +29,7 @@ jobs:
     steps:
       - uses: subhiandrews/code-check-action@c7ea220d8033092d50d1ff10306d84dd24d64aac # v1 (v0.1.3)
         with:
-          code-check-ref: a50ddf4ac2511cd7d997d0dc55f44d59679f935b # v1.5.0
+          code-check-ref: 7e461176def14a5a2ff592646ca46405c54f1c31 # v1.5.3
           # Token from `claude setup-token`, stored as a repository secret.
           # To bill API credits instead, pass `anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}`.
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
