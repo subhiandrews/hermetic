@@ -1,0 +1,446 @@
+{
+  "delete-address-2fcf7726.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "Delete address"
+    },
+    "priority": 2,
+    "request": {
+      "method": "DELETE",
+      "urlPathPattern": "/addresses/[^/]+"
+    },
+    "response": {
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "jsonBody": {
+        "status": true
+      },
+      "status": 200
+    }
+  },
+  "delete-card-892aebc1.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "Delete card"
+    },
+    "priority": 2,
+    "request": {
+      "method": "DELETE",
+      "urlPathPattern": "/cards/[^/]+"
+    },
+    "response": {
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "jsonBody": {
+        "status": true
+      },
+      "status": 200
+    }
+  },
+  "delete-customer-6e7fb7e3.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "Delete customer"
+    },
+    "priority": 2,
+    "request": {
+      "method": "DELETE",
+      "urlPathPattern": "/customers/[^/]+"
+    },
+    "response": {
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "jsonBody": {
+        "status": true
+      },
+      "status": 200
+    }
+  },
+  "get-address-f17d62df.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "Get address"
+    },
+    "priority": 2,
+    "request": {
+      "method": "GET",
+      "urlPathPattern": "/addresses/[^/]+"
+    },
+    "response": {
+      "status": 200
+    }
+  },
+  "get-addresses-ddfb03d8.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "Get addresses"
+    },
+    "priority": 1,
+    "request": {
+      "method": "GET",
+      "urlPathPattern": "/addresses"
+    },
+    "response": {
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "jsonBody": {
+        "_embedded": {
+          "address": [
+            {
+              "_links": {
+                "address": {
+                  "href": "string"
+                },
+                "self": {
+                  "href": "string"
+                }
+              },
+              "city": "string",
+              "country": "string",
+              "number": "string",
+              "postcode": "string",
+              "street": "string"
+            }
+          ]
+        },
+        "_links": {},
+        "page": {}
+      },
+      "status": 200
+    }
+  },
+  "get-card-aa5a6857.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "Get card"
+    },
+    "priority": 2,
+    "request": {
+      "method": "GET",
+      "urlPathPattern": "/cards/[^/]+"
+    },
+    "response": {
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "jsonBody": {
+        "_links": {
+          "card": {
+            "href": "string"
+          },
+          "self": {
+            "href": "string"
+          }
+        },
+        "ccv": "string",
+        "expires": "string",
+        "longNum": "string"
+      },
+      "status": 200
+    }
+  },
+  "get-cards-7dd2f9f3.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "Get cards"
+    },
+    "priority": 1,
+    "request": {
+      "method": "GET",
+      "urlPathPattern": "/cards"
+    },
+    "response": {
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "jsonBody": {
+        "_embedded": {
+          "card": [
+            {
+              "_links": {
+                "card": {
+                  "href": "string"
+                },
+                "self": {
+                  "href": "string"
+                }
+              },
+              "ccv": "string",
+              "expires": "string",
+              "longNum": "string"
+            }
+          ]
+        },
+        "_links": {},
+        "page": {}
+      },
+      "status": 200
+    }
+  },
+  "get-customer-2c79165f.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "Get customer"
+    },
+    "priority": 2,
+    "request": {
+      "method": "GET",
+      "urlPathPattern": "/customers/[^/]+"
+    },
+    "response": {
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "jsonBody": {
+        "_links": {
+          "addresses": {
+            "href": "string"
+          },
+          "cards": {
+            "href": "string"
+          },
+          "customer": {
+            "href": "string"
+          },
+          "self": {
+            "href": "string"
+          }
+        },
+        "firstName": "string",
+        "lastName": "string",
+        "username": "string"
+      },
+      "status": 200
+    }
+  },
+  "get-customer-addresses-df8b46cf.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "Get customer addresses"
+    },
+    "priority": 2,
+    "request": {
+      "method": "GET",
+      "urlPathPattern": "/customers/[^/]+/addresses"
+    },
+    "response": {
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "jsonBody": {
+        "_embedded": {
+          "address": [
+            {
+              "_links": {
+                "address": {
+                  "href": "string"
+                },
+                "self": {
+                  "href": "string"
+                }
+              },
+              "city": "string",
+              "country": "string",
+              "number": "string",
+              "postcode": "string",
+              "street": "string"
+            }
+          ]
+        },
+        "_links": {},
+        "page": {}
+      },
+      "status": 200
+    }
+  },
+  "get-customer-cards-0aeb8a89.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "Get customer cards"
+    },
+    "priority": 2,
+    "request": {
+      "method": "GET",
+      "urlPathPattern": "/customers/[^/]+/cards"
+    },
+    "response": {
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "jsonBody": {
+        "_embedded": {
+          "card": [
+            {
+              "_links": {
+                "card": {
+                  "href": "string"
+                },
+                "self": {
+                  "href": "string"
+                }
+              },
+              "ccv": "string",
+              "expires": "string",
+              "longNum": "string"
+            }
+          ]
+        },
+        "_links": {},
+        "page": {}
+      },
+      "status": 200
+    }
+  },
+  "get-customers-39b41663.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "Get customers"
+    },
+    "priority": 1,
+    "request": {
+      "method": "GET",
+      "urlPathPattern": "/customers"
+    },
+    "response": {
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "jsonBody": {
+        "_embedded": {
+          "customer": [
+            {
+              "_links": {
+                "addresses": {
+                  "href": "string"
+                },
+                "cards": {
+                  "href": "string"
+                },
+                "customer": {
+                  "href": "string"
+                },
+                "self": {
+                  "href": "string"
+                }
+              },
+              "firstName": "string",
+              "lastName": "string",
+              "username": "string"
+            }
+          ]
+        },
+        "_links": {},
+        "page": {}
+      },
+      "status": 200
+    }
+  },
+  "get-login-7db4b8bf.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "Get Login"
+    },
+    "priority": 1,
+    "request": {
+      "method": "GET",
+      "urlPathPattern": "/login"
+    },
+    "response": {
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "jsonBody": {
+        "_embedded": {
+          "customer": [
+            {
+              "_links": {
+                "addresses": {
+                  "href": "string"
+                },
+                "cards": {
+                  "href": "string"
+                },
+                "customer": {
+                  "href": "string"
+                },
+                "self": {
+                  "href": "string"
+                }
+              },
+              "firstName": "string",
+              "lastName": "string",
+              "username": "string"
+            }
+          ]
+        },
+        "_links": {},
+        "page": {}
+      },
+      "status": 200
+    }
+  },
+  "set-address-b1621a43.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "Set Address"
+    },
+    "priority": 1,
+    "request": {
+      "method": "POST",
+      "urlPathPattern": "/addresses"
+    },
+    "response": {
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "jsonBody": {
+        "id": "string"
+      },
+      "status": 200
+    }
+  },
+  "set-card-0d74eba2.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "Set Card"
+    },
+    "priority": 1,
+    "request": {
+      "method": "POST",
+      "urlPathPattern": "/cards"
+    },
+    "response": {
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "jsonBody": {
+        "id": "string"
+      },
+      "status": 200
+    }
+  },
+  "set-user-3364d6b0.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "Set User"
+    },
+    "priority": 1,
+    "request": {
+      "method": "POST",
+      "urlPathPattern": "/register"
+    },
+    "response": {
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "jsonBody": {
+        "id": "string"
+      },
+      "status": 200
+    }
+  }
+}

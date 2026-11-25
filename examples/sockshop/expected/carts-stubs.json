@@ -1,0 +1,86 @@
+{
+  "add-an-item-to-the-cart-1d90c474.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "Add an item to the cart"
+    },
+    "priority": 2,
+    "request": {
+      "method": "POST",
+      "urlPathPattern": "/carts/[^/]+/items"
+    },
+    "response": {
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "jsonBody": {
+        "itemId": "string",
+        "quantity": 0,
+        "unitPrice": 0.0
+      },
+      "status": 201
+    }
+  },
+  "delete-9c03fba4.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "delete"
+    },
+    "priority": 3,
+    "request": {
+      "method": "DELETE",
+      "urlPathPattern": "/carts/[^/]+/items/[^/]+"
+    },
+    "response": {
+      "status": 202
+    }
+  },
+  "delete-cart-dbfe636c.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "Delete cart"
+    },
+    "priority": 2,
+    "request": {
+      "method": "DELETE",
+      "urlPathPattern": "/carts/[^/]+"
+    },
+    "response": {
+      "status": 202
+    }
+  },
+  "get-cart-3a431822.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "Get cart"
+    },
+    "priority": 2,
+    "request": {
+      "method": "GET",
+      "urlPathPattern": "/carts/[^/]+"
+    },
+    "response": {
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "jsonBody": {
+        "customerId": "string"
+      },
+      "status": 200
+    }
+  },
+  "update-item-58b83ae1.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "Update item"
+    },
+    "priority": 2,
+    "request": {
+      "method": "PATCH",
+      "urlPathPattern": "/carts/[^/]+/items"
+    },
+    "response": {
+      "status": 200
+    }
+  }
+}

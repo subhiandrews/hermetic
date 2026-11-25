@@ -1,0 +1,48 @@
+{
+  "health-get-74fac65f.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "/health > GET"
+    },
+    "priority": 1,
+    "request": {
+      "method": "GET",
+      "urlPathPattern": "/health"
+    },
+    "response": {
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "jsonBody": {
+        "health": [
+          {
+            "service": "string",
+            "status": "string",
+            "time": "string"
+          }
+        ]
+      },
+      "status": 200
+    }
+  },
+  "paymentauth-post-af1b6292.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "/paymentAuth > POST"
+    },
+    "priority": 1,
+    "request": {
+      "method": "POST",
+      "urlPathPattern": "/paymentAuth"
+    },
+    "response": {
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "jsonBody": {
+        "authorised": true
+      },
+      "status": 200
+    }
+  }
+}

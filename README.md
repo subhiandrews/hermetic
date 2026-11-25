@@ -49,6 +49,8 @@ To keep one history for many machines, set `HERMETIC_API_TOKEN` (32 or more char
 
 [`examples/petclinic`](examples/petclinic): a real OpenAPI spec (Spring PetClinic REST) with a design note and the files Hermetic produces from them.
 
+[`examples/sockshop`](examples/sockshop): the Sock Shop orders service, which has a database and calls three other services, all described by Swagger 2.0 files.
+
 ## Develop
 
 Requires [uv](https://docs.astral.sh/uv/) and Python 3.12+.
