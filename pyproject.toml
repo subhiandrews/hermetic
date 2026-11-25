@@ -1,12 +1,15 @@
+# Release builds install these through build-constraints.txt, which pins every build requirement
+# by hash. After changing them, regenerate it:
+#   uv pip compile build-constraints.in --universal --generate-hashes --python-version 3.12 \
+#     -o build-constraints.txt
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-fancy-pypi-readme==25.1.0"]
 build-backend = "hatchling.build"
 
 [project]
 name = "hermetic-agent"
-dynamic = ["version"]
+dynamic = ["version", "readme"]
 description = "Agentic tester for REST microservices: infers dependencies, provisions mocks, generates and runs tests."
-readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
@@ -50,6 +53,18 @@ dev = [
 
 [tool.hatch.version]
 path = "src/hermetic/__init__.py"
+
+# The README on GitHub links to main so it stays current. The copy that ships in the package
+# (and so the PyPI page) links to the release tag, so later renames cannot break it.
+[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "README.md"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = 'https://github\.com/subhiandrews/hermetic/(blob|tree)/main/'
+replacement = 'https://github.com/subhiandrews/hermetic/\1/v$HFPR_VERSION/'
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hermetic"]
