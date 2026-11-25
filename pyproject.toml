@@ -3,7 +3,7 @@
 #   uv pip compile build-constraints.in --universal --generate-hashes --python-version 3.12 \
 #     -o build-constraints.txt
 [build-system]
-requires =["hatchling", "hatch-fancy-pypi-readme==25.1.0"]
+requires = ["hatchling", "hatch-fancy-pypi-readme==25.1.0"]
 build-backend = "hatchling.build"
 
 [project]
