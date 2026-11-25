@@ -70,14 +70,15 @@ def test_discovery_finds_only_the_database(project: Path) -> None:
     )
     assert "added: postgres" in output
     assert "redis" not in output
-    golden("dependencies.json", (project / "suite" / ".hermetic" / "dependencies.json").read_text())
+    written = project / "suite" / ".hermetic" / "dependencies.json"
+    golden("dependencies.json", written.read_text(encoding="utf-8"))
 
 
 def test_the_compose_file_holds_the_database_alone(project: Path) -> None:
     run("discover", "openapi.yml", "--docs", "docs", "--suite", "suite", "--service", "petclinic")
     run("compose", "--service", "petclinic", "--suite", "suite")
     path = project / ".hermetic" / "provision" / "petclinic" / COMPOSE_NAME
-    golden(COMPOSE_NAME, path.read_text())
+    golden(COMPOSE_NAME, path.read_text(encoding="utf-8"))
     document = check_compose(read_compose_file(path), path.parent)
     assert list(document["services"]) == ["postgres"]
     assert "ok:" in run("check-compose", str(path))
