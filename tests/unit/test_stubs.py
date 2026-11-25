@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 from hermetic.cli import app
 from hermetic.discover import Dependency, DependencySet, write_dependencies
 from hermetic.ingest import ServiceModel, ingest
-from hermetic.ingest.models import Operation, Response
+from hermetic.ingest.models import Json, Operation, Response
 from hermetic.provision import ProvisionError, build_stubs, write_stubs
 from hermetic.provision import stubs as stubs_module
 from hermetic.provision.stubs import sample
@@ -157,7 +157,7 @@ def test_sample_keeps_a_bounded_number_of_properties() -> None:
 
 def test_one_stub_per_operation_with_a_success_response(model: ServiceModel) -> None:
     stubs, skipped = build_stubs(model)
-    by_op = {m["metadata"]["operation"]: m for m in stubs.values()}
+    by_op = {m["metadata"]["operation"]: m for m in stubs.values() if m["response"]["status"] < 400}
     assert set(by_op) == {"getCharge", "createCharge", "dropAll", "dotted"}
     assert skipped == ["GET /broken: no 2xx response"]
     get = by_op["getCharge"]
@@ -173,7 +173,16 @@ def test_one_stub_per_operation_with_a_success_response(model: ServiceModel) -> 
         },
     }
     assert get["priority"] == 2
-    assert get["metadata"] == {"hermetic": True, "operation": "getCharge"}
+    scenario = get["scenarioName"]  # it has a declared 404, so it starts a scenario
+    assert get["requiredScenarioState"] == "Started"
+    assert get["metadata"] == {
+        "hermetic": True,
+        "operation": "getCharge",
+        "scenario": scenario,
+        "state": "Started",
+    }
+    assert "scenarioName" not in by_op["createCharge"]  # no declared error, so no scenario
+    assert by_op["createCharge"]["metadata"] == {"hermetic": True, "operation": "createCharge"}
     assert by_op["createCharge"]["response"]["status"] == 201
     assert by_op["createCharge"]["response"]["jsonBody"] == {"id": "ch_1"}
     assert by_op["createCharge"]["priority"] == 1
@@ -185,7 +194,7 @@ def test_the_same_spec_gives_the_same_files(model: ServiceModel) -> None:
     first, _ = build_stubs(model)
     second, _ = build_stubs(model)
     assert first == second
-    assert all(re.fullmatch(r"[a-z0-9-]+-[0-9a-f]{8}\.json", name) for name in first)
+    assert all(re.fullmatch(r"[a-z0-9-]+-[0-9a-f]{8}(\.\d{3})?\.json", name) for name in first)
 
 
 def test_without_servers_there_is_no_prefix(tmp_path: Path) -> None:
@@ -240,7 +249,19 @@ def test_the_number_of_stubs_is_capped(
     monkeypatch.setattr(stubs_module, "MAX_STUBS", 1)
     stubs, skipped = build_stubs(model)
     assert len(stubs) == 1
-    assert any("more than 1 operations" in line for line in skipped)
+    assert "scenarioName" not in next(iter(stubs.values()))  # no room for its 404, so no scenario
+    assert "GET /charges/{id}: response 404 not mocked, more than 1 stubs" in skipped
+    assert "POST /charges: more than 1 stubs" in skipped
+
+
+def test_the_cap_counts_error_stubs_too(
+    model: ServiceModel, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(stubs_module, "MAX_STUBS", 2)
+    stubs, skipped = build_stubs(model)
+    assert len(stubs) == 2  # getCharge and its 404
+    assert {m["metadata"]["state"] for m in stubs.values()} == {"Started", "404"}
+    assert "POST /charges: more than 2 stubs" in skipped
 
 
 def test_a_body_over_the_cap_is_skipped(
@@ -250,6 +271,131 @@ def test_a_body_over_the_cap_is_skipped(
     stubs, skipped = build_stubs(model)
     assert any("stub larger than 5 bytes" in line for line in skipped)
     assert all(m["metadata"]["operation"] != "getCharge" for m in stubs.values())
+
+
+def _model_with(responses: list[Response]) -> ServiceModel:
+    operation = _operation("GET").model_copy(update={"responses": responses})
+    return ServiceModel(
+        title="t", version="1", openapi_version="3.0.3", servers=[], operations=[operation],
+        docs=[], spec_hash="h",
+    )  # fmt: skip
+
+
+def test_a_declared_error_gets_a_stub_in_its_own_scenario_state(model: ServiceModel) -> None:
+    stubs, _ = build_stubs(model)
+    start = next(m for m in stubs.values() if m["metadata"].get("state") == "Started")
+    scenario = start["metadata"]["scenario"]
+    assert f"{scenario}.json" in stubs  # the success stub keeps its usual file name
+    error = stubs[f"{scenario}.404.json"]
+    assert error["scenarioName"] == scenario
+    assert error["requiredScenarioState"] == "404"
+    assert error["request"] == start["request"] and error["priority"] == start["priority"]
+    assert error["response"] == {"status": 404}  # the spec gives this one no body
+    assert error["metadata"] == {
+        "hermetic": True,
+        "operation": "getCharge",
+        "scenario": scenario,
+        "state": "404",
+    }
+
+
+def test_an_error_body_comes_from_its_schema_and_other_codes_are_reported() -> None:
+    json_body: dict[str, Json | bool] = {
+        "application/json": {"type": "object", "example": {"code": "dup"}}
+    }
+    other = _model_with(
+        [
+            Response(status="200", description="", content={}),
+            Response(status="409", description="", content=json_body),
+            Response(status="503", description="", content={}),
+            Response(status="301", description="", content={}),
+            Response(status="4XX", description="", content={}),
+            Response(status="default", description="", content={}),
+        ]
+    )
+    stubs, skipped = build_stubs(other)
+    scenario = next(iter(stubs)).removesuffix(".json")
+    assert sorted(stubs) == [f"{scenario}.409.json", f"{scenario}.503.json", f"{scenario}.json"]
+    assert stubs[f"{scenario}.409.json"]["response"] == {
+        "status": 409,
+        "headers": {"Content-Type": "application/json"},
+        "jsonBody": {"code": "dup"},
+    }
+    assert stubs[f"{scenario}.503.json"]["response"] == {"status": 503}
+    assert skipped == [
+        "response 301 not mocked (1 operation)",
+        "response 4XX not mocked (1 operation)",
+        "response default not mocked (1 operation)",
+    ]
+
+
+def test_a_status_key_with_a_trailing_newline_is_not_a_status() -> None:
+    other = _model_with(
+        [
+            Response(status="200", description="", content={}),
+            Response(status="201\n", description="", content={}),
+            Response(status="404\n", description="", content={}),
+        ]
+    )
+    stubs, skipped = build_stubs(other)
+    (only,) = stubs  # no file name carries a newline, and no scenario was made for the 404
+    assert "\n" not in only and "scenarioName" not in stubs[only]
+    assert skipped == [
+        "response 201\n not mocked (1 operation)",
+        "response 404\n not mocked (1 operation)",
+    ]
+
+
+def test_a_status_key_in_another_script_is_not_a_status() -> None:
+    arabic = "4" + chr(0x660) + "4"  # an Arabic-Indic zero: `int()` reads it as 404
+    other = _model_with(
+        [
+            Response(status="200", description="", content={}),
+            Response(status=arabic, description="", content={}),
+        ]
+    )
+    stubs, skipped = build_stubs(other)
+    (only,) = stubs  # no client can name that state, so it gets no stub
+    assert "scenarioName" not in stubs[only]
+    assert skipped == [f"response {arabic} not mocked (1 operation)"]
+
+
+def test_an_unmocked_code_is_one_line_for_every_operation_that_declares_it() -> None:
+    first = _model_with(
+        [
+            Response(status="200", description="", content={}),
+            Response(status="default", description="", content={}),
+            Response(status="304", description="", content={}),
+        ]
+    )
+    second = first.operations[0].model_copy(update={"path": "/y", "operation_id": "second"})
+    third = second.model_copy(update={"path": "/z", "operation_id": "third"})
+    third = third.model_copy(
+        update={"responses": [Response(status="200", description="", content={})]}
+    )
+    other = first.model_copy(update={"operations": [first.operations[0], second, third]})
+    _, skipped = build_stubs(other)
+    assert skipped == [
+        "response 304 not mocked (2 operations)",
+        "response default not mocked (2 operations)",
+    ]
+
+
+def test_an_error_over_the_size_cap_is_left_out_and_the_success_stub_stays_plain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    big: dict[str, Json | bool] = {"application/json": {"type": "string", "example": "x" * 2000}}
+    other = _model_with(
+        [
+            Response(status="200", description="", content={}),
+            Response(status="500", description="", content=big),
+        ]
+    )
+    monkeypatch.setattr(stubs_module, "MAX_STUB_BYTES", 1500)
+    stubs, skipped = build_stubs(other)
+    assert skipped == ["GET /x: response 500 is larger than 1500 bytes"]
+    (only,) = stubs.values()
+    assert "scenarioName" not in only and only["response"] == {"status": 200}
 
 
 def test_a_json_flavoured_media_type_counts(model: ServiceModel) -> None:
@@ -450,10 +596,10 @@ def test_stubs_command_writes_the_mock_folder(project: Path) -> None:
         app, ["stubs", "--service", "shop", "--name", "payments", "--spec", "payments.yaml"]
     )
     assert result.exit_code == 0, result.output
-    assert "wrote 4 stubs" in result.output
+    assert "wrote 5 stubs" in result.output  # four operations and the declared 404
     assert "skipped: GET /broken: no 2xx response" in result.output
     folder = project / ".hermetic" / "provision" / "shop" / "mocks" / "payments"
-    assert len(list(folder.glob("*.json"))) == 4
+    assert len(list(folder.glob("*.json"))) == 5
 
 
 def test_stubs_command_honours_output(project: Path) -> None:
@@ -464,7 +610,7 @@ def test_stubs_command_honours_output(project: Path) -> None:
          "--output", str(out)],
     )  # fmt: skip
     assert result.exit_code == 0
-    assert len(list(out.glob("*.json"))) == 4
+    assert len(list(out.glob("*.json"))) == 5
 
 
 @pytest.mark.parametrize(

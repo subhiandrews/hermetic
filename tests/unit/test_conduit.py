@@ -51,7 +51,9 @@ def test_the_real_spec_is_read_and_every_operation_can_be_mocked() -> None:
     assert model.title == "RealWorld Conduit API"
     assert len(model.operations) == 19
     stubs, skipped = build_stubs(model)
-    assert len(stubs) == 19 and skipped == []
+    answers = [m for m in stubs.values() if m["metadata"].get("state") in (None, "Started")]
+    assert len(answers) == 19 and len(stubs) == 70  # 19 operations and 51 declared errors
+    assert skipped == []
     assert {m["request"]["method"] for m in stubs.values()} == {"GET", "POST", "PUT", "DELETE"}
 
 
@@ -82,7 +84,7 @@ def test_the_mail_stubs_answer_from_its_spec(project: Path) -> None:
     folder = project / ".hermetic" / "provision" / "conduit" / "mocks" / "mail"
     written = {p.name: json.loads(p.read_text()) for p in sorted(folder.glob("*.json"))}
     golden("mail-stubs.json", json.dumps(written, indent=2, sort_keys=True) + "\n")
-    patterns = sorted(m["request"]["urlPathPattern"] for m in written.values())
+    patterns = sorted({m["request"]["urlPathPattern"] for m in written.values()})
     assert patterns == ["/v2/health", "/v2/messages", "/v2/messages/[^/]+"]
 
 

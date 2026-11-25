@@ -60,7 +60,9 @@ def test_the_real_spec_is_read_and_every_operation_can_be_mocked() -> None:
     assert model.title == "Spring PetClinic"
     assert len(model.operations) == 37
     stubs, skipped = build_stubs(model)
-    assert len(stubs) == 37 and skipped == []
+    answers = [m for m in stubs.values() if m["metadata"].get("state") in (None, "Started")]
+    assert len(answers) == 37 and len(stubs) == 131  # 37 operations and 94 declared errors
+    assert skipped == ["response 304 not mocked (31 operations)"]  # the only code left out
     assert {m["request"]["method"] for m in stubs.values()} == {"GET", "POST", "PUT", "DELETE"}
 
 
