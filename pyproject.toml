@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "hermetic"
+name = "hermetic-agent"
 dynamic = ["version"]
 description = "Agentic tester for REST microservices: infers dependencies, provisions mocks, generates and runs tests."
 readme = "README.md"
