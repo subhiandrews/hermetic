@@ -1,0 +1,19 @@
+{
+  "dependencies": [
+    {
+      "evidence": [
+        {
+          "line": 9,
+          "source": "architecture.md"
+        }
+      ],
+      "kind": "postgres",
+      "name": "postgres",
+      "origin": "hint"
+    }
+  ],
+  "docs_hash": "ef4d38a52623877cf69f4472a8d0148743963ed329d1ff9b9145b35f013b1541",
+  "prompt_version": "golden",
+  "service": "petclinic",
+  "version": 1
+}
