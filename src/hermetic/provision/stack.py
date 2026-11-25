@@ -27,6 +27,10 @@ WAIT_TIMEOUT_SECONDS = 180  # how long Compose waits for the health checks
 _ENDPOINT = re.compile(r"^127\.0\.0\.1:(\d{1,5})$")
 _MAX_OUTPUT_CHARS = 2000
 _MAX_ENGINE_LOGS = 5  # engines whose logs are added to a failed start's error
+# the exit code and output of an engine's last health checks; empty for one that has none
+_HEALTH_PROBES = (
+    "{{if .State.Health}}{{range .State.Health.Log}}exit {{.ExitCode}}: {{.Output}}\n{{end}}{{end}}"
+)
 _URLS: dict[DependencyKind, str] = {
     "postgres": "postgresql://hermetic:hermetic@127.0.0.1:{port}/hermetic",
     "mysql": "mysql://root:hermetic@127.0.0.1:{port}/hermetic",
@@ -167,7 +171,7 @@ def up(service: str, path: Path, text: str, runner: CommandRunner = run_command)
     except BaseException as failure:  # a timeout or Ctrl-C can leave containers behind too
         # read what the engines said before taking them down: it is the only place the reason is
         try:
-            engines = _exited_engines(runner, project) if isinstance(failure, StackError) else ""
+            engines = _failed_engines(runner, project) if isinstance(failure, StackError) else ""
         finally:  # an interrupt while reading logs must still take the containers down
             left = _take_down(runner, project)
         hint = ""
@@ -182,40 +186,54 @@ def up(service: str, path: Path, text: str, runner: CommandRunner = run_command)
         raise
 
 
-def _exited_engines(runner: CommandRunner, project: str) -> str:
-    """The last lines of each engine that exited, for the error: Compose only says "exited (1)"."""
-    try:
-        listed = runner(
-            [
-                "docker",
-                "ps",
-                "--all",
-                "--format",
-                "{{.Names}}",
-                "--filter",
-                f"label=com.docker.compose.project={project}",
-                "--filter",
-                "status=exited",
-            ],
-            stdin=None,
-            timeout=DIAGNOSTIC_TIMEOUT_SECONDS,
-        )
-    except StackError:  # the reason for the first failure is still worth reporting
-        return ""
-    out = []
-    for name in listed.stdout.split()[:_MAX_ENGINE_LOGS] if listed.returncode == 0 else []:
+def _failed_engines(runner: CommandRunner, project: str) -> str:
+    """What each engine that exited or never became healthy said, for the error.
+
+    Compose only says "exited (1)" or "is unhealthy", and the reason is in the engine's logs and,
+    for an unhealthy one, in what its last health checks printed.
+    """
+    names: list[str] = []
+    for state in ("status=exited", "health=unhealthy"):
         try:
-            logs = runner(
-                ["docker", "logs", "--tail", "15", name],
+            listed = runner(
+                [
+                    "docker",
+                    "ps",
+                    "--all",
+                    "--format",
+                    "{{.Names}}",
+                    "--filter",
+                    f"label=com.docker.compose.project={project}",
+                    "--filter",
+                    state,
+                ],
                 stdin=None,
                 timeout=DIAGNOSTIC_TIMEOUT_SECONDS,
             )
-        except StackError:  # keep what the other engines said
+        except StackError:  # the reason for the first failure is still worth reporting
             continue
-        text = (logs.stdout + logs.stderr).strip()
-        if text:
-            out.append(f"\n--- {printable(name)} said:\n{printable(text[-_MAX_OUTPUT_CHARS:])}")
+        if listed.returncode == 0:
+            names += [name for name in listed.stdout.split() if name not in names]
+    out = []
+    for name in names[:_MAX_ENGINE_LOGS]:
+        said = _said(runner, ["docker", "logs", "--tail", "15", name])
+        probes = _said(runner, ["docker", "inspect", "--format", _HEALTH_PROBES, name])
+        if said:
+            out.append(f"\n--- {printable(name)} said:\n{printable(said[-_MAX_OUTPUT_CHARS:])}")
+        if probes:
+            out.append(
+                f"\n--- {printable(name)} health checks:\n{printable(probes[-_MAX_OUTPUT_CHARS:])}"
+            )
     return "".join(out)
+
+
+def _said(runner: CommandRunner, argv: list[str]) -> str:
+    """One diagnostic command's output, or nothing: its failure must not hide the real one."""
+    try:
+        result = runner(argv, stdin=None, timeout=DIAGNOSTIC_TIMEOUT_SECONDS)
+    except StackError:  # keep what the other engines said
+        return ""
+    return (result.stdout + result.stderr).strip() if result.returncode == 0 else ""
 
 
 def _refuse_if_running(runner: CommandRunner, project: str, service: str) -> None:
