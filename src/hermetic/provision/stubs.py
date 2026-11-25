@@ -5,6 +5,13 @@ spec (`example`, `default`, `enum`, or a value made from the schema's types). No
 an agent: the same spec always gives the same files, and the files hold only what the spec
 says. Stubs made here carry a marker so a later run replaces them and leaves hand-written
 ones alone.
+
+An operation that also declares concrete 4xx or 5xx responses gets a WireMock scenario named
+like its stub file. The scenario starts in `Started`, where the success stub answers, and has
+one more state per declared status (`404`) with a stub that answers with that error. A client
+of the mock's admin API moves the scenario between states; nothing here does. Each stub's
+`metadata` names its operation, scenario and state, so the set of scenarios can be read back
+from the files. Ranges (`4XX`), `default`, and 1xx and 3xx codes are left out and reported.
 """
 
 from __future__ import annotations
@@ -19,7 +26,7 @@ from pathlib import Path
 from typing import Any, TypeGuard
 from urllib.parse import urlparse
 
-from hermetic.ingest.models import Json, Operation, ServiceModel
+from hermetic.ingest.models import Json, Operation, Response, ServiceModel
 from hermetic.provision.compose import ProvisionError, refuse_links
 
 MAX_STUBS = 500
@@ -29,6 +36,8 @@ MAX_KEYS = 64  # properties kept per object, so a wide schema cannot grow a body
 METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
 MARKER = "hermetic"
 _SUCCESS = re.compile(r"^2(\d\d|XX)$")  # OpenAPI also allows the range "2XX"
+_ERROR = re.compile(r"^[45]\d\d$")  # a concrete code; "4XX" and "default" have none to answer with
+START_STATE = "Started"  # WireMock's own name for a scenario's first state
 _PARAM = re.compile(r"\{[^{}/]+\}")
 _REGEX_SPECIAL = set(".\\+*?^$()[]{}|")
 _FORMATS = {
@@ -167,15 +176,33 @@ def _prefix(model: ServiceModel) -> str:
     return path if path.startswith("/") else ""
 
 
+def _json_schema(response: Response) -> Json | bool | None:
+    for media_type, schema in response.content.items():
+        if _is_json(media_type):
+            return schema
+    return None
+
+
 def _success(operation: Operation) -> tuple[str, Json | bool | None] | None:
     codes = sorted(r.status for r in operation.responses if _SUCCESS.match(r.status))
     if not codes:
         return None
     response = next(r for r in operation.responses if r.status == codes[0])
-    for media_type, schema in response.content.items():
-        if _is_json(media_type):
-            return codes[0], schema
-    return codes[0], None
+    return codes[0], _json_schema(response)
+
+
+def _errors(operation: Operation) -> tuple[list[tuple[str, Json | bool | None]], list[str]]:
+    """The concrete 4xx and 5xx responses in status order, and the other non-2xx codes."""
+    wanted: list[tuple[str, Json | bool | None]] = []
+    left_out: list[str] = []
+    for response in sorted(operation.responses, key=lambda r: r.status):
+        if _SUCCESS.match(response.status):
+            continue
+        if _ERROR.match(response.status):
+            wanted.append((response.status, _json_schema(response)))
+        else:  # "default", a range such as "4XX", or a 1xx or 3xx code
+            left_out.append(response.status)
+    return wanted, left_out
 
 
 def _file_name(operation: Operation) -> str:
@@ -189,8 +216,44 @@ def render(mapping: dict[str, Any]) -> str:
     return json.dumps(mapping, indent=2, sort_keys=True) + "\n"
 
 
+def _mapping(
+    operation: Operation,
+    prefix: str,
+    status: int,
+    schema: Json | bool | None,
+    scenario: tuple[str, str] | None,
+) -> dict[str, Any]:
+    """One stub: the operation's request answered with `status`, in a scenario state if given."""
+    response: dict[str, Any] = {"status": status}
+    if schema is not None:
+        response["headers"] = {"Content-Type": "application/json"}
+        response["jsonBody"] = sample(schema)
+    metadata: dict[str, Any] = {MARKER: True, "operation": operation.operation_id}
+    mapping: dict[str, Any] = {
+        "priority": min(1 + len(_PARAM.findall(operation.path)), 9),
+        "request": {
+            "method": operation.method,
+            "urlPathPattern": _regex_for(prefix + operation.path),
+        },
+        "response": response,
+        "metadata": metadata,
+    }
+    if scenario is not None:
+        name, state = scenario
+        mapping["scenarioName"] = name
+        mapping["requiredScenarioState"] = state
+        metadata["scenario"] = name
+        metadata["state"] = state
+    return mapping
+
+
+def _too_big(mapping: dict[str, Any]) -> bool:
+    # measured exactly as it will be written, so what is made is what `_ours` can read
+    return len(render(mapping).encode()) > MAX_STUB_BYTES
+
+
 def build_stubs(model: ServiceModel) -> tuple[dict[str, dict[str, Any]], list[str]]:
-    """File name to mapping, and a line for each operation that got no stub and why."""
+    """File name to mapping, and a line for each stub or response that was left out and why."""
     prefix = _prefix(model)
     stubs: dict[str, dict[str, Any]] = {}
     skipped: list[str] = []
@@ -202,27 +265,42 @@ def build_stubs(model: ServiceModel) -> tuple[dict[str, dict[str, Any]], list[st
         elif found is None:
             skipped.append(f"{label}: no 2xx response")
         elif len(stubs) >= MAX_STUBS:
-            skipped.append(f"{label}: more than {MAX_STUBS} operations")
+            skipped.append(f"{label}: more than {MAX_STUBS} stubs")
         else:
             status, schema = found
-            response: dict[str, Any] = {"status": 200 if status == "2XX" else int(status)}
-            if schema is not None:
-                response["headers"] = {"Content-Type": "application/json"}
-                response["jsonBody"] = sample(schema)
-            mapping = {
-                "priority": min(1 + len(_PARAM.findall(operation.path)), 9),
-                "request": {
-                    "method": operation.method,
-                    "urlPathPattern": _regex_for(prefix + operation.path),
-                },
-                "response": response,
-                "metadata": {MARKER: True, "operation": operation.operation_id},
-            }
-            # measured exactly as it will be written, so what is made is what `_ours` can read
-            if len(render(mapping).encode()) > MAX_STUB_BYTES:
+            file_name = _file_name(operation)
+            scenario = file_name.removesuffix(".json")
+            errors, left_out = _errors(operation)
+            candidates: list[tuple[str, dict[str, Any]]] = []
+            for code, error_schema in errors:
+                error = _mapping(operation, prefix, int(code), error_schema, (scenario, code))
+                if _too_big(error):
+                    skipped.append(
+                        f"{label}: response {code} is larger than {MAX_STUB_BYTES} bytes"
+                    )
+                else:
+                    candidates.append((code, error))
+            room = max(MAX_STUBS - len(stubs) - 1, 0)  # the success stub takes one place
+            kept, dropped = candidates[:room], candidates[room:]
+            main = _mapping(
+                operation,
+                prefix,
+                200 if status == "2XX" else int(status),
+                schema,
+                (scenario, START_STATE) if kept else None,
+            )
+            if _too_big(main):
                 skipped.append(f"{label}: stub larger than {MAX_STUB_BYTES} bytes")
                 continue
-            stubs[_file_name(operation)] = mapping
+            stubs[file_name] = main
+            for code, error in kept:
+                stubs[f"{scenario}.{code}.json"] = error
+            skipped.extend(
+                f"{label}: response {code} not mocked, more than {MAX_STUBS} stubs"
+                for code, _ in dropped
+            )
+            if left_out:
+                skipped.append(f"{label}: response {', '.join(left_out)} not mocked")
     return stubs, skipped
 
 

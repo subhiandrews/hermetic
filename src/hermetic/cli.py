@@ -278,6 +278,8 @@ def stubs(
     """Write WireMock stubs for an HTTP dependency from its OpenAPI spec.
 
     Each operation with a 2xx response gets one stub answering with an example from the spec.
+    A declared 4xx or 5xx response also gets a stub, in a WireMock scenario state named after
+    its status; the mock answers the 2xx until something switches the state.
     Stubs a former run wrote are replaced; files you wrote yourself are left alone.
     """
     try:

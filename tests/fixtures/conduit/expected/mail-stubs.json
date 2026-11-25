@@ -1,14 +1,35 @@
 {
-  "getmessage-d46fa129.json": {
+  "getmessage-d46fa129.404.json": {
     "metadata": {
       "hermetic": true,
-      "operation": "getMessage"
+      "operation": "getMessage",
+      "scenario": "getmessage-d46fa129",
+      "state": "404"
     },
     "priority": 2,
     "request": {
       "method": "GET",
       "urlPathPattern": "/v2/messages/[^/]+"
     },
+    "requiredScenarioState": "404",
+    "response": {
+      "status": 404
+    },
+    "scenarioName": "getmessage-d46fa129"
+  },
+  "getmessage-d46fa129.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "getMessage",
+      "scenario": "getmessage-d46fa129",
+      "state": "Started"
+    },
+    "priority": 2,
+    "request": {
+      "method": "GET",
+      "urlPathPattern": "/v2/messages/[^/]+"
+    },
+    "requiredScenarioState": "Started",
     "response": {
       "headers": {
         "Content-Type": "application/json"
@@ -19,7 +40,8 @@
         "status": "sent"
       },
       "status": 200
-    }
+    },
+    "scenarioName": "getmessage-d46fa129"
   },
   "health-74fac65f.json": {
     "metadata": {
@@ -35,16 +57,37 @@
       "status": 204
     }
   },
-  "sendmessage-cfde5869.json": {
+  "sendmessage-cfde5869.422.json": {
     "metadata": {
       "hermetic": true,
-      "operation": "sendMessage"
+      "operation": "sendMessage",
+      "scenario": "sendmessage-cfde5869",
+      "state": "422"
     },
     "priority": 1,
     "request": {
       "method": "POST",
       "urlPathPattern": "/v2/messages"
     },
+    "requiredScenarioState": "422",
+    "response": {
+      "status": 422
+    },
+    "scenarioName": "sendmessage-cfde5869"
+  },
+  "sendmessage-cfde5869.json": {
+    "metadata": {
+      "hermetic": true,
+      "operation": "sendMessage",
+      "scenario": "sendmessage-cfde5869",
+      "state": "Started"
+    },
+    "priority": 1,
+    "request": {
+      "method": "POST",
+      "urlPathPattern": "/v2/messages"
+    },
+    "requiredScenarioState": "Started",
     "response": {
       "headers": {
         "Content-Type": "application/json"
@@ -54,6 +97,7 @@
         "status": "queued"
       },
       "status": 202
-    }
+    },
+    "scenarioName": "sendmessage-cfde5869"
   }
 }

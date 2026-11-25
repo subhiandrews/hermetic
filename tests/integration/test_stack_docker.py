@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import socket
 import subprocess
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -80,3 +81,61 @@ def test_every_kind_comes_up_healthy_answers_and_goes_away(tmp_path: Path) -> No
             check=True,
         )
         assert listed.stdout.strip() == "", kind
+
+
+def _admin(base: str, method: str, path: str, body: dict[str, str] | None = None) -> int:
+    request = urllib.request.Request(
+        base + path,
+        method=method,
+        data=None if body is None else json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return int(response.status)
+    except urllib.error.HTTPError as error:
+        return int(error.code)
+
+
+def test_a_declared_error_is_answered_after_its_scenario_is_switched(tmp_path: Path) -> None:
+    require_docker()
+    deps = DependencySet(
+        service="hermetic-scn",
+        prompt_version="1",
+        docs_hash="h",
+        dependencies=[Dependency(name="payments", kind="http", origin="manual")],
+    )
+    spec = tmp_path / "payments.yaml"
+    spec.write_text(
+        "openapi: 3.0.3\ninfo: {title: p, version: '1'}\nservers: [{url: 'https://p.example/v1'}]\n"
+        "paths:\n  /charges/{id}:\n    get:\n      operationId: getCharge\n"
+        "      parameters: [{name: id, in: path, required: true, schema: {type: string}}]\n"
+        "      responses:\n"
+        "        '200': {description: ok}\n"
+        "        '404':\n          description: missing\n          content:\n"
+        "            application/json:\n"
+        "              schema: {type: object, example: {error: gone}}\n"
+    )
+    stubs = build_stubs(ingest(spec))[0]
+    scenario = next(m["metadata"]["scenario"] for m in stubs.values())
+    write_stubs(tmp_path / MOCKS_DIR / "payments", stubs)
+    path = tmp_path / COMPOSE_NAME
+    text = generate_compose(deps, tmp_path)
+    path.write_text(text)
+    try:
+        (endpoint,) = up("hermetic-scn", path, text)
+        base = endpoint.url
+        charge = base + "/v1/charges/ch_1"
+        assert _admin(base, "GET", "/v1/charges/ch_1") == 200  # the scenario starts in `Started`
+        state = f"/__admin/scenarios/{scenario}/state"
+        assert _admin(base, "PUT", state, {"state": "404"}) == 200
+        request = urllib.request.Request(charge)
+        with pytest.raises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(request, timeout=10)
+        assert caught.value.code == 404
+        assert json.load(caught.value) == {"error": "gone"}
+        assert _admin(base, "PUT", state, {"state": "nonsense"}) == 422  # only declared states
+        assert _admin(base, "POST", "/__admin/scenarios/reset") == 200
+        assert _admin(base, "GET", "/v1/charges/ch_1") == 200
+    finally:
+        down("hermetic-scn")
