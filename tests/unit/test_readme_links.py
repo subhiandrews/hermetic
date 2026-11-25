@@ -37,3 +37,27 @@ def test_every_main_link_is_rewritten_to_the_release_tag() -> None:
 def test_version_placeholder_is_the_one_the_plugin_expands() -> None:
     _, replacement = _substitution()
     assert "$HFPR_VERSION" in replacement
+
+
+def _constraint_blocks() -> dict[str, str]:
+    """Map each pinned package in build-constraints.txt to its text (the pin plus its hashes)."""
+    text = (ROOT / "build-constraints.txt").read_text(encoding="utf-8")
+    blocks = re.findall(r"^([A-Za-z0-9._-]+)==(\S+) \\\n((?:\s+--hash=\S+(?: \\)?\n)+)", text, re.M)
+    return {name.lower(): f"{version}\n{hashes}" for name, version, hashes in blocks}
+
+
+def test_build_requirements_are_pinned_by_hash() -> None:
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pinned = _constraint_blocks()
+    assert pinned, "build-constraints.txt has no hash-pinned packages"
+    for requirement in config["build-system"]["requires"]:
+        name, _, version = requirement.partition("==")
+        assert name.lower() in pinned, f"{name} is not pinned in build-constraints.txt"
+        if version:
+            assert pinned[name.lower()].startswith(f"{version}\n"), f"{name} pin differs"
+
+
+def test_every_pinned_build_package_has_a_hash() -> None:
+    text = (ROOT / "build-constraints.txt").read_text(encoding="utf-8")
+    pins = re.findall(r"^[A-Za-z0-9._-]+==\S+", text, re.M)
+    assert len(pins) == len(_constraint_blocks())

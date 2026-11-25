@@ -78,7 +78,8 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with: { enable-cache: false } # never restore a cache written by CI into the publishing build
-      - run: uv build
+      # Build requirements (hatchling and the README plugin) are hash-pinned, like the runtime ones.
+      - run: uv build --build-constraints build-constraints.txt --require-hashes
       # The PyPI page is built from the wheel's README, whose links must point at this release's tag.
       - name: Check the built README links to the release tag
         shell: python -I {0}
