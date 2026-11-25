@@ -139,7 +139,7 @@ These are gaps in v0.1 that are known and not yet planned in detail:
 - **GitHub publishing takes a token, not an App.** A GitHub App would replace the token source (see Publishing to GitHub).
 - **`/api/services` is not paginated and the page has no browser test.** See Run history.
 - **Swagger 2.0 and patterns.** A 2.0 `host` with no `schemes` becomes an `http://` server. A pattern with ECMA-only syntax is recognised from a short list kept in `ingest/openapi.py`, so a rare construct outside it is reported as an invalid spec; in OpenAPI 3.1 this also applies to `patternProperties` keys.
-- **Memory limits.** Every engine container is capped at 512 MiB except MySQL (1 GiB), whose first start needs more.
+- **Memory limits.** Every engine container is capped at 512 MiB except MySQL and Mongo (1 GiB each): MySQL's first start needs more, and Mongo's health check (`mongosh`, a second process beside the server) was killed at 512 MiB on CI.
 
 ## Distribution
 
