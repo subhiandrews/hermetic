@@ -598,6 +598,26 @@ def test_a_failed_start_without_engine_output_is_just_the_first_error(
     assert str(caught.value) == "docker compose up failed: pull failed"
 
 
+def test_one_engine_log_failing_keeps_what_the_others_said(stack: tuple[Path, str]) -> None:
+    path, text = stack
+
+    def runner(argv: Sequence[str], *, stdin: str | None, timeout: float) -> CommandResult:
+        if "up" in argv:
+            return CommandResult(1, "", "boom")
+        if argv[1] == "ps" and "--format" in argv:
+            assert timeout < 10  # diagnostics get a short timeout of their own
+            return CommandResult(0, "a\nb\n", "")
+        if argv[1] == "logs":
+            if argv[-1] == "a":
+                raise StackError("docker timed out")
+            return CommandResult(0, "", "b is out of memory")
+        return CommandResult(0, "", "")
+
+    with pytest.raises(StackError) as caught:
+        up("shop", path, text, runner)
+    assert "--- b said:" in str(caught.value)
+
+
 def test_a_failed_start_survives_docker_failing_while_it_explains(
     stack: tuple[Path, str],
 ) -> None:

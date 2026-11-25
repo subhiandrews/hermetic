@@ -22,6 +22,7 @@ from hermetic.provision.validate import PROJECT_PREFIX, ComposeError, check_comp
 
 UP_TIMEOUT_SECONDS = 300.0  # image pulls included
 COMMAND_TIMEOUT_SECONDS = 60.0
+DIAGNOSTIC_TIMEOUT_SECONDS = 5.0  # reading engine logs for an error must not stall the cleanup
 WAIT_TIMEOUT_SECONDS = 180  # how long Compose waits for the health checks
 _ENDPOINT = re.compile(r"^127\.0\.0\.1:(\d{1,5})$")
 _MAX_OUTPUT_CHARS = 2000
@@ -195,21 +196,24 @@ def _exited_engines(runner: CommandRunner, project: str) -> str:
                 "status=exited",
             ],
             stdin=None,
-            timeout=COMMAND_TIMEOUT_SECONDS,
+            timeout=DIAGNOSTIC_TIMEOUT_SECONDS,
         )
-        out = []
-        for name in listed.stdout.split()[:_MAX_ENGINE_LOGS] if listed.returncode == 0 else []:
+    except StackError:  # the reason for the first failure is still worth reporting
+        return ""
+    out = []
+    for name in listed.stdout.split()[:_MAX_ENGINE_LOGS] if listed.returncode == 0 else []:
+        try:
             logs = runner(
                 ["docker", "logs", "--tail", "15", name],
                 stdin=None,
-                timeout=COMMAND_TIMEOUT_SECONDS,
+                timeout=DIAGNOSTIC_TIMEOUT_SECONDS,
             )
-            text = (logs.stdout + logs.stderr).strip()
-            if text:
-                out.append(f"\n--- {printable(name)} said:\n{printable(text[-_MAX_OUTPUT_CHARS:])}")
-        return "".join(out)
-    except StackError:  # the reason for the first failure is still worth reporting
-        return ""
+        except StackError:  # keep what the other engines said
+            continue
+        text = (logs.stdout + logs.stderr).strip()
+        if text:
+            out.append(f"\n--- {printable(name)} said:\n{printable(text[-_MAX_OUTPUT_CHARS:])}")
+    return "".join(out)
 
 
 def _refuse_if_running(runner: CommandRunner, project: str, service: str) -> None:
