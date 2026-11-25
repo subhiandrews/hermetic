@@ -96,6 +96,11 @@ jobs:
             echo "::error::A bump needs the repository secret GH_TOKEN_PERSONAL (fine-grained PAT or app token for this repository only, with Contents, Pull requests and Workflows write)."
             exit 1
           fi
+          # Fail closed on classic PATs (ghp_), which cannot be limited to one repository.
+          case "$GH_TOKEN" in
+            github_pat_*|ghs_*) ;;
+            *) echo "::error::GH_TOKEN_PERSONAL must be a fine-grained PAT or an app token, not a classic PAT."; exit 1 ;;
+          esac
           url="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
