@@ -203,13 +203,23 @@ def _set_aside_foreign_patterns(spec: Json) -> list[tuple[dict[str, Any], str]]:
         node = stack.pop()
         if isinstance(node, dict):
             pattern = node.get("pattern")
-            if isinstance(pattern, str) and not _compiles(pattern):
+            if isinstance(pattern, str) and _ecma_only(pattern) and not _compiles(pattern):
                 foreign.append((node, pattern))
                 node["pattern"] = ".*"
             stack.extend(node.values())
         elif isinstance(node, list):
             stack.extend(node)
     return foreign
+
+
+# Syntax that ECMA 262 (and Java) accept and Python's `re` does not: Unicode property escapes
+# (`\p{L}`), code point escapes (`\u{1F600}`), and `(?<name>...)` / `\k<name>` named groups.
+# A pattern that fails to compile without any of these is broken in ECMA too and stays an error.
+_ECMA_ONLY = re.compile(r"\\[pP]\{|\\u\{|\(\?<[A-Za-z_$]|\\k<")
+
+
+def _ecma_only(pattern: str) -> bool:
+    return _ECMA_ONLY.search(pattern) is not None
 
 
 def _compiles(pattern: str) -> bool:

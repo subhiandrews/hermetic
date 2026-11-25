@@ -130,10 +130,26 @@ def test_the_pattern_is_put_back_when_the_spec_is_invalid() -> None:
     assert spec["components"]["schemas"]["Name"]["pattern"] == r"\p{L}"
 
 
-def test_a_pattern_that_compiles_is_left_alone() -> None:
-    spec = make_spec({}, components={"schemas": {"Name": {"type": "string", "pattern": "^a+$"}}})
+@pytest.mark.parametrize("pattern", ["[", "(abc", "*a"])
+def test_a_pattern_that_is_broken_in_ecma_too_is_still_rejected(pattern: str) -> None:
+    spec = make_spec({}, components={"schemas": {"Name": {"type": "string", "pattern": pattern}}})
+    with pytest.raises(IngestError, match="invalid OpenAPI document"):
+        validate_spec(spec)
+    assert spec["components"]["schemas"]["Name"]["pattern"] == pattern
+
+
+@pytest.mark.parametrize("pattern", [r"\u{1F600}", r"^(?<year>\d{4})-\k<year>$", r"\P{L}+"])
+def test_other_ecma_only_syntax_is_accepted(pattern: str) -> None:
+    spec = make_spec({}, components={"schemas": {"Name": {"type": "string", "pattern": pattern}}})
     validate_spec(spec)
-    assert spec["components"]["schemas"]["Name"]["pattern"] == "^a+$"
+    assert spec["components"]["schemas"]["Name"]["pattern"] == pattern
+
+
+@pytest.mark.parametrize("pattern", ["^a+$", r"\\p{L}"])  # the second only looks ECMA-only
+def test_a_pattern_that_compiles_is_left_alone(pattern: str) -> None:
+    spec = make_spec({}, components={"schemas": {"Name": {"type": "string", "pattern": pattern}}})
+    validate_spec(spec)
+    assert spec["components"]["schemas"]["Name"]["pattern"] == pattern
 
 
 def test_patterns_in_lists_and_non_string_patterns_are_walked_past() -> None:
