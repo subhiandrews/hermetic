@@ -36,5 +36,5 @@ CI (`.github/workflows/ci.yml`) runs the lint, mypy and pytest-with-coverage ste
 
 - `docs/architecture.md` is the committed design doc. `docs/PLAN.md` is a local, uncommitted working plan (excluded via `.git/info/exclude`); never commit it. `CHANGELOG.md` is intentionally absent until the initial planned work is done.
 - PRs are reviewed by the `code-check` GitHub workflow in full mode (every reviewer, including security and performance); draft PRs are skipped. It needs the `CLAUDE_CODE_OAUTH_TOKEN` repository secret and silently skips without it.
-- `.github/workflows/code-check-pin.yml` opens draft PRs that bump `code-check-ref`; it needs the `CI_PIN_BOT_TOKEN` secret (scopes are listed in the workflow).
+- `.github/workflows/code-check-pin.yml` opens draft PRs that bump `code-check-ref`; it needs the `GH_TOKEN_PERSONAL` secret (scopes are listed in the workflow).
 - Releases are tag-driven (`v*`); see `.github/workflows/release.yml`.

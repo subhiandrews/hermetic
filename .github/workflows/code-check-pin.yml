@@ -80,10 +80,12 @@ jobs:
       - name: Commit, push and open or update the draft PR
         if: steps.bump.outputs.action == 'bump'
         env:
-          # A fine-grained PAT (or app token) with Contents, Pull requests and Workflows write on
-          # this repository. The default GITHUB_TOKEN cannot push changes under .github/workflows,
-          # and a PR it opens would not trigger CI.
-          GH_TOKEN: ${{ secrets.CI_PIN_BOT_TOKEN }}
+          # A fine-grained PAT limited to THIS repository, with Contents, Pull requests
+          # and Workflows write. It is the owner's personal token, so the bot's pushes and PRs are made
+          # as that account; a classic PAT or one covering every repository would give this scheduled
+          # job write access to all of them. The default GITHUB_TOKEN cannot push changes under
+          # .github/workflows, and a PR it opens would not trigger CI.
+          GH_TOKEN: ${{ secrets.GH_TOKEN_PERSONAL }}
           REPO: ${{ github.repository }}
           FROM: ${{ steps.bump.outputs.from }}
           TO: ${{ steps.bump.outputs.to }}
@@ -91,9 +93,14 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$GH_TOKEN" ]; then
-            echo "::error::A bump needs the repository secret CI_PIN_BOT_TOKEN (fine-grained PAT or app token with Contents, Pull requests and Workflows write)."
+            echo "::error::A bump needs the repository secret GH_TOKEN_PERSONAL (a fine-grained PAT for this repository only, with Contents, Pull requests and Workflows write)."
             exit 1
           fi
+          # Fail closed on classic PATs (ghp_), which cannot be limited to one repository.
+          case "$GH_TOKEN" in
+            github_pat_*) ;;
+            *) echo "::error::GH_TOKEN_PERSONAL must be a fine-grained PAT (github_pat_...), not a classic PAT."; exit 1 ;;
+          esac
           url="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
