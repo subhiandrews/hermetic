@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 import hermetic.ingest as ingest_module
+import hermetic.ingest.swagger2 as swagger2_module
 from hermetic.ingest import IngestError, ingest
 from hermetic.ingest.openapi import validate_spec, validate_swagger2
 from hermetic.ingest.swagger2 import upgrade
@@ -566,6 +567,45 @@ def test_a_small_file_cannot_expand_into_a_huge_converted_document() -> None:
     spec = doc(paths={"/a": {"get": operation(parameters=[body], consumes=consumes)}})
     with pytest.raises(IngestError, match="converted document is too large"):
         upgrade(spec)
+
+
+def _nested_items(depth: int) -> dict[str, Any]:
+    items: dict[str, Any] = {"type": "string"}
+    for _ in range(depth):
+        items = {"type": "array", "items": items}
+    return items
+
+
+@pytest.mark.parametrize("route", ["named-parameter", "form-field", "response-header"])
+def test_a_deeply_nested_items_reused_by_many_operations_stops_early(
+    route: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    limit = 2000
+    monkeypatch.setattr(swagger2_module, "MAX_SPEC_NODES", limit)
+    calls = 0
+    real = swagger2_module._simple_schema
+
+    def counting(raw: dict[str, Any], budget: Any) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return real(raw, budget)
+
+    monkeypatch.setattr(swagger2_module, "_simple_schema", counting)
+    nested = {"name": "n", "in": "query", "type": "array", **_nested_items(40)}
+    parameters: dict[str, Any] = {}
+    responses: dict[str, Any] = OK
+    if route == "named-parameter":
+        parameters = {"p": nested}
+        refs = [{"$ref": "#/parameters/p"}]
+    elif route == "form-field":
+        refs = [{**nested, "in": "formData"}]
+    else:
+        refs = []
+        responses = {"200": {"description": "ok", "headers": {"h": nested}}}
+    paths = {f"/p{i}": {"get": operation(parameters=refs, responses=responses)} for i in range(500)}
+    with pytest.raises(IngestError, match="converted document is too large"):
+        upgrade(doc(paths=paths, parameters=parameters))
+    assert calls <= limit + 1
 
 
 def test_a_huge_produces_list_fails_before_the_document_is_built() -> None:

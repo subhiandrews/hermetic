@@ -191,11 +191,13 @@ def _set_type(out: Json, value: str | list[str]) -> None:
         out["anyOf"] = [{"type": kind} for kind in kinds]
 
 
-def _simple_schema(raw: Json) -> Json:
-    """The schema of a non-body parameter, a header or an `items` object."""
+def _simple_schema(raw: Json, budget: Budget) -> Json:
+    """The schema of a non-body parameter, a header or an `items` object. Each dict built is
+    spent against the budget, so a deeply nested `items` reused by many operations stops early."""
+    budget.spend()
     schema = {key: raw[key] for key in _SCHEMA_KEYWORDS if key in raw}
     if "items" in raw:
-        schema["items"] = _simple_schema(raw["items"])
+        schema["items"] = _simple_schema(raw["items"], budget)
     if schema.get("type") == "file":
         schema["type"], schema["format"] = "string", "binary"
     return schema
@@ -217,7 +219,7 @@ def _parameter(raw: Json, context: _Context) -> Json:
     for key in ("description", "required", "allowEmptyValue"):
         if key in raw:
             out[key] = raw[key]
-    out["schema"] = _simple_schema(raw)
+    out["schema"] = _simple_schema(raw, context.budget)
     if raw["in"] == "query":
         out.update(_array_style(raw))
     return out
@@ -231,11 +233,11 @@ def _array_style(raw: Json) -> Json:
     return _QUERY_STYLES.get(raw.get("collectionFormat", "csv"), {})
 
 
-def _form_body(fields: list[Json], consumes: list[str]) -> Json:
+def _form_body(fields: list[Json], consumes: list[str], budget: Budget) -> Json:
     is_multipart = MULTIPART_MEDIA in consumes or any(f.get("type") == "file" for f in fields)
     properties: Json = {}
     for parameter in fields:
-        schema = _simple_schema(parameter)
+        schema = _simple_schema(parameter, budget)
         if "description" in parameter:
             schema["description"] = parameter["description"]
         properties[parameter["name"]] = schema
@@ -278,7 +280,7 @@ def _operation(raw: Json, path_parameters: list[Json], context: _Context) -> Jso
             request["description"] = body["description"]
         out["requestBody"] = request
     elif fields:
-        out["requestBody"] = _form_body(fields, consumes)
+        out["requestBody"] = _form_body(fields, consumes, context.budget)
     out["responses"] = {
         str(status): response
         if str(status).startswith("x-")
@@ -325,7 +327,7 @@ def _response(raw: Json, produces: list[str], context: _Context) -> Json:
         out["headers"] = {
             name: {
                 **({"description": header["description"]} if "description" in header else {}),
-                "schema": _simple_schema(header),
+                "schema": _simple_schema(header, context.budget),
             }
             for name, header in raw["headers"].items()
         }
