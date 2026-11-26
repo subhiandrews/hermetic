@@ -45,11 +45,16 @@ def _client(name: str, url: str, timeout: float) -> httpx.Client:
         raise MockError(f"invalid URL for mock {name!r}: {redact_url(url)!r}") from exc
 
 
-def check_mock(name: str, url: str) -> None:
-    """Refuse a mock name or URL that could not be used, before any test runs."""
+def check_mock_name(name: str) -> None:
+    """Refuse a mock name a test could not use."""
     if not _MOCK_NAME.fullmatch(name):
         # not echoed: with a forgotten NAME= the "name" is the front of the URL, password and all
         raise MockError("invalid mock name: use letters, digits, '-' and '_' (expected NAME=URL)")
+
+
+def check_mock(name: str, url: str) -> None:
+    """Refuse a mock name or URL that could not be used, before any test runs."""
+    check_mock_name(name)
     try:
         parts = urlsplit(url)
         parts.port  # noqa: B018  (raises ValueError on a bad port)

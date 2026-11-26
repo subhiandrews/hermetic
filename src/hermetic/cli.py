@@ -22,8 +22,15 @@ from hermetic.discover import (
 )
 from hermetic.discover import discover as run_discovery
 from hermetic.execute import ExecuteError, check_target
-from hermetic.execute.mocks import MockError, check_mock
-from hermetic.generate import GenerateError, ManifestError, SuiteAuthor, generate_suite
+from hermetic.execute.mocks import MockError, check_mock, check_mock_name
+from hermetic.generate import (
+    GenerateError,
+    ManifestError,
+    MockSurface,
+    SuiteAuthor,
+    generate_suite,
+    mock_surface,
+)
 from hermetic.history import (
     API_TOKEN_ENV,
     RunRecord,
@@ -317,13 +324,22 @@ def generate(
         Path | None, typer.Option(help="Directory of design/architecture documents.")
     ] = None,
     force: Annotated[bool, typer.Option(help="Rewrite every test, not only changed ones.")] = False,
+    mock_spec: Annotated[
+        list[str] | None,
+        typer.Option(
+            help="A downstream's OpenAPI file, as NAME=FILE (repeatable; NAME is the one given "
+            "to `hermetic run --mock`): tests may then switch that mock to an error it "
+            "declares. Changing it rewrites no test by itself; use --force."
+        ),
+    ] = None,
 ) -> None:
     """Write or update the test suite for the spec; only changed operations are rewritten."""
     try:
         model = run_ingest(spec, docs)
         service_id = resolve_service(model.title, service)
         suite_dir = suite or _default_suite(service_id)
-        changes = generate_suite(model, make_author(), suite_dir, force=force)
+        surfaces = _parse_mock_specs(mock_spec or [])
+        changes = generate_suite(model, make_author(), suite_dir, force=force, mocks=surfaces)
     except (IngestError, InvalidServiceError, GenerateError, ManifestError, OSError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
@@ -333,6 +349,33 @@ def generate(
 def _default_suite(service: str) -> Path:
     """Generated tests are kept per microservice."""
     return Path("tests") / service
+
+
+def _parse_mock_specs(values: list[str]) -> list[MockSurface]:
+    """`--mock-spec NAME=FILE` values as what the author may tell a test; a mock whose spec
+    declares no error has nothing to switch and is reported, not listed."""
+    surfaces: list[MockSurface] = []
+    seen: set[str] = set()
+    for value in values:
+        name, separator, path = value.partition("=")
+        if not separator or not name or not path:
+            raise GenerateError("--mock-spec expects NAME=FILE, for example carts=carts.yaml")
+        try:
+            check_mock_name(name)
+        except MockError as exc:
+            raise GenerateError(str(exc)) from exc
+        if name in seen:
+            raise GenerateError(f"--mock-spec {name!r} was given twice")
+        seen.add(name)
+        try:
+            surface = mock_surface(name, run_ingest(Path(path), None))
+        except ProvisionError as exc:  # a spec the stubs cannot be built from
+            raise GenerateError(f"--mock-spec {name!r}: {exc}") from exc
+        if surface is None:
+            typer.echo(f"note: {path} declares no error a mock could answer with", err=True)
+        else:
+            surfaces.append(surface)
+    return surfaces
 
 
 def _parse_mocks(values: list[str]) -> dict[str, str]:
@@ -458,6 +501,15 @@ def run(
             "the URL `hermetic up` printed for that dependency."
         ),
     ] = None,
+    mock_spec: Annotated[
+        list[str] | None,
+        typer.Option(
+            help="With --generate: a downstream's OpenAPI file, as NAME=FILE (repeatable), so "
+            "the tests written may switch that mock to an error it declares. Tests already "
+            "written are kept: rewrite them with `hermetic generate --force`, and pass --mock "
+            "for every mock a kept test switches."
+        ),
+    ] = None,
 ) -> None:
     """Run a suite against a target, record the run and publish reports.
 
@@ -471,6 +523,9 @@ def run(
     if generate_first and spec is None:
         typer.echo("error: --generate needs --spec: the tests are written from it", err=True)
         raise typer.Exit(code=2)
+    if mock_spec and not generate_first:
+        typer.echo("error: --mock-spec needs --generate: it informs the tests written", err=True)
+        raise typer.Exit(code=2)
     record: RunRecord | None = None
     try:
         model: ServiceModel | None = run_ingest(spec, docs) if spec is not None else None
@@ -482,10 +537,16 @@ def run(
         # rewrites the suite, so a bad `--report` does not cost a generation.
         check_target(target)
         mocks = _parse_mocks(mock or [])
+        surfaces = _parse_mock_specs(mock_spec or [])
+        for surface in surfaces:
+            if surface.name not in mocks:  # its tests would fail with "no mock named"
+                raise GenerateError(
+                    f"--mock-spec {surface.name!r} needs a matching --mock {surface.name}=URL"
+                )
         sinks = load_sinks(report or ["stdout"], SinkContext(output_dir=report_dir))
         store = open_store(history_dir)
         if model is not None and author is not None:
-            changes = generate_suite(model, author, suite_dir)
+            changes = generate_suite(model, author, suite_dir, mocks=surfaces)
             _echo_changes(changes)
         record = run_suite(
             suite_dir,
