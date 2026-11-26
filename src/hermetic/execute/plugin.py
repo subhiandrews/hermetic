@@ -160,6 +160,7 @@ class HermeticPlugin:
         self._timeout = timeout
         self._mocks = mocks or {}
         self._listings: dict[str, Declared] = {}  # what each mock declares, read once per run
+        self._unreset: set[str] = set()  # mocks a test switched and that could not be reset
         # Only the target: the mocks are switched by this plugin (see `hermetic_mocks`), never
         # called by a test.
         self._allowed = {origin_of(target)}
@@ -205,7 +206,23 @@ class HermeticPlugin:
         try:
             yield mocks
         finally:
-            mocks.finish()
+            try:
+                mocks.finish()
+            finally:
+                self._unreset |= mocks.pending()  # retried before the next test
+
+    def pytest_runtest_setup(self) -> None:
+        """Put back a mock whose reset failed, so one failure does not spoil the tests after it.
+
+        A retry that fails too is an error on the test about to run, not a silent leftover.
+        """
+        for name in sorted(self._unreset):
+            control = MockControl(name, self._mocks[name], timeout=self._timeout)
+            try:
+                control.reset()
+            finally:
+                control.close()
+            self._unreset.discard(name)
 
     def pytest_collection_modifyitems(self, items: list[pytest.Item]) -> None:
         for item in items:

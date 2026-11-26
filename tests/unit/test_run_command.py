@@ -554,6 +554,7 @@ def test_a_token_that_cannot_be_sent_is_an_error_line_not_a_traceback(
         ("=http://127.0.0.1:1", "--mock expects NAME=URL"),
         ("carts=", "--mock expects NAME=URL"),
         ("bad name=http://127.0.0.1:1", "invalid mock name"),
+        ("http://u:hunter2@host/?a=b", "invalid mock name"),  # NAME= forgotten: splits at `?a=`
         ("carts=ftp://127.0.0.1:21", "expected http"),
         ("carts=http://u:hunter2@[bad", "invalid URL for mock 'carts'"),
     ],
@@ -606,4 +607,4 @@ def test_a_run_with_a_mock_lets_a_test_switch_it(
     )
     assert result.exit_code == 0, result.output
     assert mock_admin.paths("PUT") == ["/__admin/scenarios/getcart-1/state"]
-    assert mock_admin.paths("POST") == ["/__admin/scenarios/reset"]
+    assert mock_admin.paths("POST") == ["/__admin/scenarios/reset"] * 2  # the start, then the test

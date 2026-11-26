@@ -343,12 +343,14 @@ def _parse_mocks(values: list[str]) -> dict[str, str]:
         if not separator or not name or not url:
             # not echoed: the value may hold a URL with a password
             raise ExecuteError("--mock expects NAME=URL, for example carts=http://127.0.0.1:8080")
-        if name in mocks:
-            raise ExecuteError(f"--mock {name!r} was given twice")
         try:
-            check_mock(name, url)
+            check_mock(
+                name, url
+            )  # first, so a name that is really the front of a URL is not echoed
         except MockError as exc:
             raise ExecuteError(str(exc)) from exc
+        if name in mocks:
+            raise ExecuteError(f"--mock {name!r} was given twice")
         mocks[name] = url
     return mocks
 

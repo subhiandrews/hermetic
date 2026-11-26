@@ -48,7 +48,8 @@ def _client(name: str, url: str, timeout: float) -> httpx.Client:
 def check_mock(name: str, url: str) -> None:
     """Refuse a mock name or URL that could not be used, before any test runs."""
     if not _MOCK_NAME.fullmatch(name):
-        raise MockError(f"invalid mock name {name!r}: use letters, digits, '-' and '_'")
+        # not echoed: with a forgotten NAME= the "name" is the front of the URL, password and all
+        raise MockError("invalid mock name: use letters, digits, '-' and '_' (expected NAME=URL)")
     try:
         parts = urlsplit(url)
         parts.port  # noqa: B018  (raises ValueError on a bad port)
@@ -57,6 +58,19 @@ def check_mock(name: str, url: str) -> None:
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise MockError(f"invalid URL for mock {name!r}: expected http(s)://host[:port]")
     _client(name, url, 1.0).close()  # what the run will build, so what it refuses is the same
+
+
+def reset_all(urls: dict[str, str], *, timeout: float) -> None:
+    """Return every mock to its first state, so nothing an earlier run left behind leaks in.
+
+    It also finds a mock that cannot be reached before the first test, not inside it.
+    """
+    for name, url in urls.items():
+        control = MockControl(name, url, timeout=timeout)
+        try:
+            control.reset()
+        finally:
+            control.close()
 
 
 def _listed(names: Iterable[str]) -> str:
@@ -86,10 +100,11 @@ class MockControl:
         self._timeout = timeout
         self._listings = {} if listings is None else listings
         self.touched = False  # a state was switched, so it needs a reset
-        self._client = _client(name, url, timeout)
+        self._client: httpx.Client | None = None  # made on the first call: most tests use none
 
     def close(self) -> None:
-        self._client.close()
+        if self._client is not None:
+            self._client.close()
 
     def answer(self, operation: str, status: int) -> None:
         """Make the mock answer `operation` with the declared error `status` until reset."""
@@ -118,6 +133,8 @@ class MockControl:
     ) -> bytes:
         """The reply's raw bytes; an error if it is not a 200, too long, or too slow."""
         cap = MAX_REPLY_BYTES if limit is None else limit
+        if self._client is None:
+            self._client = _client(self.name, self._url, self._timeout)
         deadline = time.monotonic() + self._timeout
         try:
             # Identity asked for, and raw bytes read: a compressed reply is never expanded here.
@@ -153,7 +170,7 @@ class MockControl:
             document = json.loads(raw)
             stubs = document["mappings"]
             total = document["meta"]["total"]
-        except (ValueError, KeyError, TypeError) as exc:
+        except (ValueError, KeyError, TypeError, RecursionError) as exc:  # nesting can be deep
             raise MockError(f"mock {self.name!r} did not return a stub listing") from exc
         if not isinstance(stubs, list) or not isinstance(total, int) or total > len(stubs):
             raise MockError(f"mock {self.name!r} did not list all of its stubs")
@@ -192,6 +209,10 @@ class Mocks:
             raise MockError(
                 f"no mock named {name!r}; known: {known}. Pass --mock NAME=URL to `hermetic run`"
             ) from None
+
+    def pending(self) -> set[str]:
+        """The mocks still switched: after `finish`, the ones whose reset failed."""
+        return {name for name, control in self._controls.items() if control.touched}
 
     def finish(self) -> None:
         """Reset every mock a test switched, close the connections, then report a failure."""

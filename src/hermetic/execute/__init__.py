@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from hermetic.execute.mocks import MockError, check_mock
+from hermetic.execute.mocks import MockError, check_mock, reset_all
 from hermetic.execute.plugin import HermeticPlugin, OriginError
 from hermetic.history.models import TestResult
 from hermetic.redact import redact_url
@@ -39,6 +39,10 @@ def execute_suite(
             raise ExecuteError(str(exc)) from exc
     if not suite.exists():
         raise ExecuteError(f"suite not found: {suite}")
+    try:  # also finds a mock that is down before the first test, not inside it
+        reset_all(mocks or {}, timeout=timeout)
+    except MockError as exc:
+        raise ExecuteError(str(exc)) from exc
     plugin = HermeticPlugin(target, timeout=timeout, mocks=mocks)
     root = suite if suite.is_dir() else suite.parent
     args = [

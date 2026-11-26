@@ -366,8 +366,28 @@ def test_an_unusable_mock_is_refused_before_a_run(name: str, url: str, message: 
 
 
 def test_a_control_for_a_url_the_client_refuses_is_a_mock_error() -> None:
+    mock = MockControl("carts", "http://999.1.1.1:8080", timeout=1)  # made lazily, so no error yet
     with pytest.raises(MockError, match="invalid URL for mock 'carts'"):
-        MockControl("carts", "http://999.1.1.1:8080", timeout=1)
+        mock.answer("getCart", 404)
+    mock.close()
+
+
+def test_an_unused_control_makes_no_connection_and_closes_cleanly() -> None:
+    MockControl("carts", "http://127.0.0.1:1", timeout=1).close()
+
+
+def test_a_forgotten_name_does_not_echo_the_url_password() -> None:
+    with pytest.raises(MockError) as caught:
+        check_mock("http://u:hunter2@host/?a", "http://127.0.0.1:1")  # `--mock` split at the `?a=`
+    assert "hunter2" not in str(caught.value) and "expected NAME=URL" in str(caught.value)
+
+
+def test_a_deeply_nested_listing_is_an_error_not_a_traceback(mock_admin: FakeAdmin) -> None:
+    mock_admin.listing_raw = b"[" * 3000 + b"]" * 3000
+    mock = control(mock_admin)
+    with pytest.raises(MockError, match="did not return a stub listing"):
+        mock.answer("getCart", 404)
+    mock.close()
 
 
 def test_a_url_with_a_password_is_not_echoed_when_refused() -> None:
@@ -415,9 +435,10 @@ def test_plain(hermetic_client):
     assert {r.status for r in results} == {"passed"}
     scenario = scenario_of(stubs, "getCart")
     assert [(m, p) for m, p, _ in mock_admin.calls] == [
+        ("POST", "/__admin/scenarios/reset"),  # at the start of the run
         ("GET", "/__admin/mappings"),
         ("PUT", f"/__admin/scenarios/{scenario}/state"),
-        ("POST", "/__admin/scenarios/reset"),  # one reset, for the one test that switched
+        ("POST", "/__admin/scenarios/reset"),  # once, for the one test that switched
     ]
 
 
@@ -438,7 +459,8 @@ def test_two(hermetic_mocks):
     results = execute_suite(suite, server, mocks={"carts": mock_admin.url})
     assert {r.status for r in results} == {"passed"}
     assert mock_admin.paths("GET") == ["/__admin/mappings"]  # not once per test
-    assert len(mock_admin.paths("PUT")) == 2 and len(mock_admin.paths("POST")) == 2
+    assert len(mock_admin.paths("PUT")) == 2
+    assert len(mock_admin.paths("POST")) == 3  # the start of the run, then one per test
 
 
 def test_a_failing_test_still_resets_the_mock(
@@ -455,24 +477,75 @@ def test_fails(hermetic_client, hermetic_mocks):
     )
     (result,) = execute_suite(suite, server, mocks={"carts": mock_admin.url})
     assert result.status == "failed"
-    assert mock_admin.paths("POST") == ["/__admin/scenarios/reset"]
+    assert mock_admin.paths("POST") == ["/__admin/scenarios/reset"] * 2  # start, then the test
 
 
-def test_a_reset_that_fails_is_an_error_on_that_test(
+SWITCH_THEN_PLAIN = """
+def test_switches(hermetic_mocks):
+    hermetic_mocks["carts"].answer("getCart", 404)
+
+def test_plain_one(hermetic_client):
+    assert hermetic_client.get("/ok").status_code == 200
+
+def test_plain_two(hermetic_client):
+    assert hermetic_client.get("/ok").status_code == 200
+"""
+
+
+def by_test(results: list[Any]) -> dict[str, Any]:
+    return {r.test_id.rpartition("::")[2]: r for r in results}
+
+
+def test_a_reset_that_fails_is_an_error_on_that_test_and_is_retried_before_the_next(
     server: str, tmp_path: Path, mock_admin: FakeAdmin, stubs: list[dict[str, Any]]
 ) -> None:
     serve(mock_admin, stubs)
+    mock_admin.fail_on["POST"] = {2}  # the run's first reset works; the test's own does not
+    suite = write_suite(tmp_path, SWITCH_THEN_PLAIN)
+    results = by_test(execute_suite(suite, server, mocks={"carts": mock_admin.url}))
+    switched = results["test_switches"]
+    assert switched.status == "error"
+    assert switched.message is not None
+    assert "answered POST /__admin/scenarios/reset" in switched.message
+    assert results["test_plain_one"].status == "passed"  # the mock was put back before it ran
+    assert results["test_plain_two"].status == "passed"
+    assert len(mock_admin.paths("POST")) == 3  # start, the failed one, the retry; then no more
+
+
+def test_a_retry_that_fails_too_is_an_error_on_the_test_it_would_have_spoiled(
+    server: str, tmp_path: Path, mock_admin: FakeAdmin, stubs: list[dict[str, Any]]
+) -> None:
+    serve(mock_admin, stubs)
+    mock_admin.fail_on["POST"] = {2, 3}
+    suite = write_suite(tmp_path, SWITCH_THEN_PLAIN)
+    results = by_test(execute_suite(suite, server, mocks={"carts": mock_admin.url}))
+    assert results["test_switches"].status == "error"
+    assert results["test_plain_one"].status == "error"  # not a pass against a mock left in 404
+    assert results["test_plain_two"].status == "passed"  # the next retry worked
+    assert len(mock_admin.paths("POST")) == 4
+
+
+def test_every_mock_is_reset_before_the_first_test(
+    server: str, tmp_path: Path, mock_admin: FakeAdmin
+) -> None:
+    suite = write_suite(tmp_path, "def test_a(hermetic_client):\n    pass\n")
+    execute_suite(suite, server, mocks={"carts": mock_admin.url})
+    assert mock_admin.calls[0][:2] == ("POST", "/__admin/scenarios/reset")
+
+
+def test_a_mock_that_is_down_stops_the_run_before_any_test(server: str, tmp_path: Path) -> None:
+    suite = write_suite(tmp_path, "def test_a(hermetic_client):\n    raise SystemExit(3)\n")
+    with pytest.raises(ExecuteError, match=r"cannot reach mock 'carts'"):
+        execute_suite(suite, server, mocks={"carts": "http://127.0.0.1:1"})
+
+
+def test_a_mock_that_refuses_the_reset_stops_the_run(
+    server: str, tmp_path: Path, mock_admin: FakeAdmin
+) -> None:
     mock_admin.statuses["POST"] = 500
-    suite = write_suite(
-        tmp_path,
-        """
-def test_switches(hermetic_mocks):
-    hermetic_mocks["carts"].answer("getCart", 404)
-""",
-    )
-    (result,) = execute_suite(suite, server, mocks={"carts": mock_admin.url})
-    assert result.status == "error"
-    assert result.message is not None and "answered POST /__admin/scenarios/reset" in result.message
+    suite = write_suite(tmp_path, "def test_a(hermetic_client):\n    pass\n")
+    with pytest.raises(ExecuteError, match=r"answered POST /__admin/scenarios/reset with 500"):
+        execute_suite(suite, server, mocks={"carts": mock_admin.url})
 
 
 def test_a_test_cannot_reach_a_mock_itself(
@@ -488,7 +561,7 @@ def test_direct(hermetic_client):
     (result,) = execute_suite(suite, server, mocks={"carts": mock_admin.url})
     assert result.status == "failed"
     assert result.message is not None and "tests may only call the target" in result.message
-    assert mock_admin.calls == []
+    assert not mock_admin.paths("GET") and not mock_admin.paths("PUT")  # only the run's own reset
 
 
 def test_a_test_naming_a_mock_that_was_not_given_fails_with_the_flag_to_use(

@@ -16,6 +16,7 @@ class FakeAdmin:
         self.listing_raw: bytes | None = None  # sent instead of `listing` when set
         self.listing_headers: dict[str, str] = {}  # extra headers on that reply
         self.statuses = {"GET": 200, "PUT": 200, "POST": 200}
+        self.fail_on: dict[str, set[int]] = {}  # method -> numbers (from 1) of the calls to fail
         self.calls: list[tuple[str, str, Any]] = []  # method, path, JSON body
         admin = self
 
@@ -28,7 +29,9 @@ class FakeAdmin:
                     body = admin.listing_raw
                 else:
                     body = json.dumps(admin.listing if method == "GET" else {}).encode()
-                self.send_response(admin.statuses[method])
+                count = sum(1 for verb, _, _ in admin.calls if verb == method)
+                failing = count in admin.fail_on.get(method, set())
+                self.send_response(500 if failing else admin.statuses[method])
                 self.send_header("Content-Type", "application/json")
                 if method == "GET":
                     for name, value in admin.listing_headers.items():
