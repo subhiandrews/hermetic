@@ -14,7 +14,7 @@ from hermetic import cli
 from hermetic.cli import app
 from hermetic.discover import Dependency, DependencySet
 from hermetic.provision import COMPOSE_NAME, Endpoint, StackError, down, generate_compose, up
-from hermetic.provision.stack import LOCK_NAME, CommandResult, run_command
+from hermetic.provision.stack import CommandResult, lock_path, run_command
 
 cli_runner = CliRunner()
 
@@ -441,11 +441,11 @@ def test_a_stack_that_is_already_running_is_left_alone(stack: tuple[Path, str]) 
     assert docker.verbs() == []  # no up, and above all no down
 
 
-def hold_lock(folder: Path) -> int:
+def hold_lock(path: Path) -> int:
     """Take the lock another `hermetic up` would hold; the caller closes the descriptor."""
     import fcntl  # not on Windows, so not at the top: the rest of this module still runs there
 
-    fd = os.open(folder / LOCK_NAME, os.O_RDWR | os.O_CREAT, 0o600)
+    fd = os.open(lock_path(path), os.O_RDWR | os.O_CREAT, 0o600)
     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     return fd
 
@@ -455,13 +455,24 @@ def test_a_second_up_for_the_same_stack_is_refused_without_touching_docker(
 ) -> None:
     path, text = stack
     docker = FakeDocker()
-    fd = hold_lock(path.parent)
+    fd = hold_lock(path)
     try:
-        with pytest.raises(StackError, match="another `hermetic up` for 'shop' is running"):
+        with pytest.raises(StackError, match="another `hermetic up` is running for"):
             up("shop", path, text, docker)
     finally:
         os.close(fd)
     assert docker.calls == []  # not even the running check, and so never a `down`
+
+
+def test_the_lock_is_per_compose_file_not_per_folder(stack: tuple[Path, str]) -> None:
+    path, text = stack
+    other = path.parent / "other-stack.yml"  # another file in the same folder
+    fd = hold_lock(path)
+    try:
+        assert len(up("shop", other, text, FakeDocker())) == 3
+        assert lock_path(other) != lock_path(path)
+    finally:
+        os.close(fd)
 
 
 def test_the_lock_is_released_after_a_start_and_after_a_failed_start(
@@ -492,7 +503,7 @@ def test_two_ups_at_once_cannot_both_start(stack: tuple[Path, str]) -> None:
     try:
         assert inside.wait(timeout=30)
         second = FakeDocker()
-        with pytest.raises(StackError, match="another `hermetic up`"):
+        with pytest.raises(StackError, match="another `hermetic up` is running for"):
             up("shop", path, text, second)
         assert second.calls == []
     finally:
@@ -505,7 +516,7 @@ def test_a_lock_file_that_is_a_link_is_refused(stack: tuple[Path, str], tmp_path
     path, text = stack
     target = tmp_path / "elsewhere"
     target.write_text("")
-    (path.parent / LOCK_NAME).symlink_to(target)
+    lock_path(path).symlink_to(target)
     docker = FakeDocker()
     with pytest.raises(StackError, match=r"cannot open .*\.up\.lock"):
         up("shop", path, text, docker)

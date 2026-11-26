@@ -22,7 +22,14 @@ from hermetic.provision.images import ENGINES
 from hermetic.provision.validate import PROJECT_PREFIX, ComposeError, check_compose, printable
 
 UP_TIMEOUT_SECONDS = 300.0  # image pulls included
-LOCK_NAME = ".up.lock"  # beside the compose file; holds nothing, only the lock
+LOCK_SUFFIX = ".up.lock"  # `.<file name>.up.lock` beside the compose file; holds only the lock
+
+
+def lock_path(path: Path) -> Path:
+    """The lock file of the compose file at `path`: one per file, not one per folder."""
+    return path.parent / f".{path.name}{LOCK_SUFFIX}"
+
+
 COMMAND_TIMEOUT_SECONDS = 60.0
 DIAGNOSTIC_TIMEOUT_SECONDS = 5.0  # reading engine logs for an error must not stall the cleanup
 WAIT_TIMEOUT_SECONDS = 180  # how long Compose waits for the health checks
@@ -125,7 +132,7 @@ def project_name(service: str) -> str:
 
 
 @contextmanager
-def _exclusive(folder: Path, service: str) -> Iterator[None]:
+def _exclusive(path: Path) -> Iterator[None]:
     """Hold a lock beside the compose file, so two `up` runs for it cannot overlap.
 
     The checks in `up` (is it running? do the mount folders exist?) and the start itself are
@@ -135,7 +142,7 @@ def _exclusive(folder: Path, service: str) -> Iterator[None]:
     """
     import fcntl  # not on Windows; imported here so that only `up` needs it
 
-    lock = folder / LOCK_NAME
+    lock = lock_path(path)
     try:
         # no link is followed: the folder chain was checked, and the file itself must not be one
         fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -146,8 +153,8 @@ def _exclusive(folder: Path, service: str) -> Iterator[None]:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise StackError(
-                f"another `hermetic up` for {service!r} is running (it holds {lock}); wait for it "
-                f"to finish or run `hermetic down --service {service}`"
+                f"another `hermetic up` is running for {path} (it holds {lock}); "
+                "wait for it to finish"
             ) from exc
         except OSError as exc:  # for example a file system with no locks
             raise StackError(f"cannot lock {lock}: {exc.strerror}") from exc
@@ -160,7 +167,8 @@ def up(service: str, path: Path, text: str, runner: CommandRunner = run_command)
     """Check `text` (the content of the file at `path`), start it, and say where it listens.
 
     The file must be the stack of `service`: `down` and the next `up` find it by that name.
-    Only one `up` for a compose file runs at a time; another is refused, not queued.
+    Only one `up` for a compose file runs at a time; another is refused, not queued. The lock is
+    per file, so a second file for the same service is not stopped by it (a running stack is).
 
     On any failure after the start has begun, what was started is taken down again.
     """
@@ -168,7 +176,7 @@ def up(service: str, path: Path, text: str, runner: CommandRunner = run_command)
         refuse_links(path)  # before anything is created in the folder, the lock file included
     except ProvisionError as exc:
         raise StackError(str(exc)) from exc
-    with _exclusive(path.parent, service):
+    with _exclusive(path):
         return _up(service, path, text, runner)
 
 
@@ -176,7 +184,7 @@ def _up(service: str, path: Path, text: str, runner: CommandRunner) -> list[Endp
     try:
         document = check_compose(text, path.parent)
         project = str(document["name"])
-        if project != project_name(service):  # before anything is created on disk
+        if project != project_name(service):  # before any mount folder is made
             raise StackError(f"{path} is the stack {project!r}, not {project_name(service)!r}")
         # Compose reads a `.env` beside the file, where COMPOSE_* settings could steer it again.
         if (path.parent / ".env").exists():
