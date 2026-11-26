@@ -1,18 +1,20 @@
 """Lets a test make a mock answer with an error the downstream's spec declares.
 
-`hermetic stubs` writes each declared error as a state of a WireMock scenario (see Provision in
-docs/architecture.md). This module switches those states. A test gets `hermetic_mocks["carts"]
-.answer("getCart", 404)`; the call is made here, on the host, to three fixed admin paths. The
-test never holds a client or a URL for the mock, so "tests may only call the target" still holds.
+A test is handed a control object, never a client or a URL for the mock, and this module makes
+the few admin calls itself on the host. That is why "tests may only call the target" still
+holds, and why a test cannot register a stub or proxy elsewhere. What can be switched is read
+from the running mock (the `metadata` of the stubs Hermetic wrote), so nothing depends on files
+on disk. A name or state the mock does not declare is an error that lists what it does.
 
-What can be switched is read from the running mock, from the `metadata` of the stubs Hermetic
-wrote, so nothing depends on files on disk. A name or state that mock does not declare is an
-error that lists what it does declare.
+Everything a mock sends back is untrusted: a reply is read as raw bytes, never decoded, and
+stops at a size and a time limit.
 """
 
 from __future__ import annotations
 
+import json
 import re
+import time
 from collections.abc import Iterable
 from urllib.parse import urlsplit
 
@@ -22,14 +24,25 @@ from hermetic.redact import redact_url
 
 START_STATE = "Started"  # WireMock's name for a scenario's first state; the success stub answers
 MAX_LISTING_BYTES = 10_000_000  # the most of a mock's stub listing that is read
+MAX_REPLY_BYTES = 65_536  # the most of any other reply; they are small and only their status counts
 MAX_NAMES_SHOWN = 20  # operations or states named in an error message
 _SLUG = re.compile(r"[a-z0-9-]+")  # the scenario names `hermetic stubs` writes; safe in a path
 _STATUS = re.compile(r"[45][0-9][0-9]")
 _MOCK_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 
+Declared = dict[str, tuple[str, set[str]]]  # operation id -> its scenario and its error states
+
 
 class MockError(Exception):
     """A test asked a mock for something it cannot do, or the mock could not be reached."""
+
+
+def _client(name: str, url: str, timeout: float) -> httpx.Client:
+    # No proxy settings from the environment, no redirects: the mock is where it was told to be.
+    try:
+        return httpx.Client(base_url=url, timeout=timeout, follow_redirects=False, trust_env=False)
+    except httpx.InvalidURL as exc:  # for example an IPv4 address with a part over 255
+        raise MockError(f"invalid URL for mock {name!r}: {redact_url(url)!r}") from exc
 
 
 def check_mock(name: str, url: str) -> None:
@@ -43,6 +56,7 @@ def check_mock(name: str, url: str) -> None:
         raise MockError(f"invalid URL for mock {name!r}: {redact_url(url)!r}") from exc
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise MockError(f"invalid URL for mock {name!r}: expected http(s)://host[:port]")
+    _client(name, url, 1.0).close()  # what the run will build, so what it refuses is the same
 
 
 def _listed(names: Iterable[str]) -> str:
@@ -53,17 +67,26 @@ def _listed(names: Iterable[str]) -> str:
 
 
 class MockControl:
-    """One mock, which a test may switch between the error states its stubs declare."""
+    """One mock, which a test may switch between the error states its stubs declare.
 
-    def __init__(self, name: str, url: str, *, timeout: float) -> None:
+    `listings` holds what each mock declares and may be shared by the controls of a run: the
+    stubs do not change while it runs, so the listing is fetched once per mock, not per test.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        url: str,
+        *,
+        timeout: float,
+        listings: dict[str, Declared] | None = None,
+    ) -> None:
         self.name = name
         self._url = url
+        self._timeout = timeout
+        self._listings = {} if listings is None else listings
         self.touched = False  # a state was switched, so it needs a reset
-        self._declared: dict[str, tuple[str, set[str]]] | None = None
-        # No proxy settings from the environment, no redirects: the mock is where it was told to be.
-        self._client = httpx.Client(
-            base_url=url, timeout=timeout, follow_redirects=False, trust_env=False
-        )
+        self._client = _client(name, url, timeout)
 
     def close(self) -> None:
         self._client.close()
@@ -90,38 +113,51 @@ class MockControl:
         self._call("POST", "/__admin/scenarios/reset", None)
         self.touched = False
 
-    def _call(self, method: str, path: str, body: dict[str, str] | None) -> httpx.Response:
+    def _call(
+        self, method: str, path: str, body: dict[str, str] | None, *, limit: int | None = None
+    ) -> bytes:
+        """The reply's raw bytes; an error if it is not a 200, too long, or too slow."""
+        cap = MAX_REPLY_BYTES if limit is None else limit
+        deadline = time.monotonic() + self._timeout
         try:
-            response = self._client.request(method, path, json=body)
+            # Identity asked for, and raw bytes read: a compressed reply is never expanded here.
+            with self._client.stream(
+                method, path, json=body, headers={"Accept-Encoding": "identity"}
+            ) as response:
+                if response.status_code != 200:
+                    raise MockError(
+                        f"mock {self.name!r} answered {method} {path} with {response.status_code}"
+                    )
+                received = bytearray()
+                for chunk in response.iter_raw():
+                    received += chunk
+                    if len(received) > cap:
+                        raise MockError(f"mock {self.name!r} sent more than {cap} bytes")
+                    if time.monotonic() > deadline:  # the client's timeout is per read
+                        raise MockError(f"mock {self.name!r} answered too slowly")
+                return bytes(received)
         except httpx.HTTPError as exc:
             raise MockError(
                 f"cannot reach mock {self.name!r} at {redact_url(self._url)}: {type(exc).__name__}"
             ) from exc
-        if response.status_code != 200:
-            raise MockError(
-                f"mock {self.name!r} answered {method} {path} with {response.status_code}"
-            )
-        return response
 
-    def _operations(self) -> dict[str, tuple[str, set[str]]]:
-        """Operation id to its scenario and the error states it has, read once from the mock."""
-        if self._declared is None:
-            self._declared = self._read_listing()
-        return self._declared
+    def _operations(self) -> Declared:
+        """What the mock declares, read from it once per run."""
+        if self.name not in self._listings:
+            self._listings[self.name] = self._read_listing()
+        return self._listings[self.name]
 
-    def _read_listing(self) -> dict[str, tuple[str, set[str]]]:
-        response = self._call("GET", "/__admin/mappings", None)
-        if len(response.content) > MAX_LISTING_BYTES:
-            raise MockError(f"mock {self.name!r} lists more than {MAX_LISTING_BYTES} bytes")
+    def _read_listing(self) -> Declared:
+        raw = self._call("GET", "/__admin/mappings", None, limit=MAX_LISTING_BYTES)
         try:
-            document = response.json()
+            document = json.loads(raw)
             stubs = document["mappings"]
             total = document["meta"]["total"]
         except (ValueError, KeyError, TypeError) as exc:
             raise MockError(f"mock {self.name!r} did not return a stub listing") from exc
         if not isinstance(stubs, list) or not isinstance(total, int) or total > len(stubs):
             raise MockError(f"mock {self.name!r} did not list all of its stubs")
-        found: dict[str, tuple[str, set[str]]] = {}
+        found: Declared = {}
         for stub in stubs:
             metadata = stub.get("metadata") if isinstance(stub, dict) else None
             if not isinstance(metadata, dict) or metadata.get("hermetic") is not True:

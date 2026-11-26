@@ -14,6 +14,7 @@ class FakeAdmin:
     def __init__(self) -> None:
         self.listing: Any = {"mappings": [], "meta": {"total": 0}}
         self.listing_raw: bytes | None = None  # sent instead of `listing` when set
+        self.listing_headers: dict[str, str] = {}  # extra headers on that reply
         self.statuses = {"GET": 200, "PUT": 200, "POST": 200}
         self.calls: list[tuple[str, str, Any]] = []  # method, path, JSON body
         admin = self
@@ -29,6 +30,9 @@ class FakeAdmin:
                     body = json.dumps(admin.listing if method == "GET" else {}).encode()
                 self.send_response(admin.statuses[method])
                 self.send_header("Content-Type", "application/json")
+                if method == "GET":
+                    for name, value in admin.listing_headers.items():
+                        self.send_header(name, value)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)

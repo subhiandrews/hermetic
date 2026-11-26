@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import gzip
+import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from hermetic.execute import ExecuteError, execute_suite
 from hermetic.execute import mocks as mocks_module
-from hermetic.execute.mocks import MockControl, MockError, Mocks, check_mock
+from hermetic.execute.mocks import Declared, MockControl, MockError, Mocks, check_mock
 from hermetic.ingest import ingest
 from hermetic.provision import build_stubs
 from tests.fake_admin import FakeAdmin
@@ -194,9 +197,63 @@ def test_a_huge_listing_is_refused(
     serve(mock_admin, stubs)
     monkeypatch.setattr(mocks_module, "MAX_LISTING_BYTES", 100)
     mock = control(mock_admin)
-    with pytest.raises(MockError, match="lists more than 100 bytes"):
+    with pytest.raises(MockError, match="sent more than 100 bytes"):
         mock.answer("getCart", 404)
     mock.close()
+
+
+def test_a_compressed_listing_is_never_expanded(
+    mock_admin: FakeAdmin, stubs: list[dict[str, Any]]
+) -> None:
+    serve(mock_admin, stubs)
+    mock_admin.listing_raw = gzip.compress(json.dumps(mock_admin.listing).encode())
+    mock_admin.listing_headers = {"Content-Encoding": "gzip"}
+    mock = control(mock_admin)
+    with pytest.raises(MockError, match="did not return a stub listing"):
+        mock.answer("getCart", 404)  # the raw bytes are not JSON, and were not decoded
+    mock.close()
+
+
+def test_a_reply_that_is_too_long_for_what_it_is_for_is_refused(
+    mock_admin: FakeAdmin, stubs: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    serve(mock_admin, stubs)
+    monkeypatch.setattr(mocks_module, "MAX_REPLY_BYTES", 1)  # the switch's `{}` is two bytes
+    mock = control(mock_admin)
+    with pytest.raises(MockError, match="sent more than 1 bytes"):
+        mock.answer("getCart", 404)
+    mock.close()
+
+
+def test_a_reply_that_keeps_arriving_is_cut_off_at_a_deadline(
+    mock_admin: FakeAdmin, stubs: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    serve(mock_admin, stubs)
+    reads: list[int] = []
+
+    def clock() -> float:  # the first read sets the deadline; every later one is past it
+        reads.append(1)
+        return 0.0 if len(reads) == 1 else 1000.0
+
+    # only the name inside `mocks`, so nothing else that reads the clock is affected
+    monkeypatch.setattr("hermetic.execute.mocks.time", SimpleNamespace(monotonic=clock))
+    mock = control(mock_admin)
+    with pytest.raises(MockError, match="answered too slowly"):
+        mock.answer("getCart", 404)
+    mock.close()
+
+
+def test_the_listing_is_shared_by_the_controls_of_a_run(
+    mock_admin: FakeAdmin, stubs: list[dict[str, Any]]
+) -> None:
+    serve(mock_admin, stubs)
+    shared: dict[str, Declared] = {}
+    for _ in range(3):  # three tests, each with its own control
+        mock = MockControl("carts", mock_admin.url, timeout=5, listings=shared)
+        mock.answer("getCart", 404)
+        mock.close()
+    assert mock_admin.paths("GET") == ["/__admin/mappings"]
+    assert len(mock_admin.paths("PUT")) == 3
 
 
 def test_only_the_stubs_hermetic_wrote_with_a_usable_scenario_count(
@@ -300,11 +357,17 @@ def test_finish_tries_every_mock_then_reports_the_first_failure(
         ("carts", "ftp://127.0.0.1:21", "expected http"),
         ("carts", "http://", "expected http"),
         ("carts", "127.0.0.1:8080", "expected http"),
+        ("carts", "http://999.1.1.1:8080", "invalid URL for mock 'carts'"),  # httpx refuses it
     ],
 )
 def test_an_unusable_mock_is_refused_before_a_run(name: str, url: str, message: str) -> None:
     with pytest.raises(MockError, match=message):
         check_mock(name, url)
+
+
+def test_a_control_for_a_url_the_client_refuses_is_a_mock_error() -> None:
+    with pytest.raises(MockError, match="invalid URL for mock 'carts'"):
+        MockControl("carts", "http://999.1.1.1:8080", timeout=1)
 
 
 def test_a_url_with_a_password_is_not_echoed_when_refused() -> None:
@@ -356,6 +419,26 @@ def test_plain(hermetic_client):
         ("PUT", f"/__admin/scenarios/{scenario}/state"),
         ("POST", "/__admin/scenarios/reset"),  # one reset, for the one test that switched
     ]
+
+
+def test_the_listing_is_read_once_for_a_whole_run(
+    server: str, tmp_path: Path, mock_admin: FakeAdmin, stubs: list[dict[str, Any]]
+) -> None:
+    serve(mock_admin, stubs)
+    suite = write_suite(
+        tmp_path,
+        """
+def test_one(hermetic_mocks):
+    hermetic_mocks["carts"].answer("getCart", 404)
+
+def test_two(hermetic_mocks):
+    hermetic_mocks["carts"].answer("getCart", 409)
+""",
+    )
+    results = execute_suite(suite, server, mocks={"carts": mock_admin.url})
+    assert {r.status for r in results} == {"passed"}
+    assert mock_admin.paths("GET") == ["/__admin/mappings"]  # not once per test
+    assert len(mock_admin.paths("PUT")) == 2 and len(mock_admin.paths("POST")) == 2
 
 
 def test_a_failing_test_still_resets_the_mock(

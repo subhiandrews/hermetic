@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 import httpx
 import pytest
 
-from hermetic.execute.mocks import MockControl, Mocks
+from hermetic.execute.mocks import Declared, MockControl, Mocks
 from hermetic.history.models import Exchange, TestResult, TestStatus
 from hermetic.redact import (
     MAX_BODY_CHARS,
@@ -159,6 +159,7 @@ class HermeticPlugin:
         self._target = target
         self._timeout = timeout
         self._mocks = mocks or {}
+        self._listings: dict[str, Declared] = {}  # what each mock declares, read once per run
         # Only the target: the mocks are switched by this plugin (see `hermetic_mocks`), never
         # called by a test.
         self._allowed = {origin_of(target)}
@@ -197,7 +198,7 @@ class HermeticPlugin:
         """
         mocks = Mocks(
             {
-                name: MockControl(name, url, timeout=self._timeout)
+                name: MockControl(name, url, timeout=self._timeout, listings=self._listings)
                 for name, url in self._mocks.items()
             }
         )
