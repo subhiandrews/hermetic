@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import errno
+import os
 import subprocess
+import threading
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -11,7 +14,7 @@ from hermetic import cli
 from hermetic.cli import app
 from hermetic.discover import Dependency, DependencySet
 from hermetic.provision import COMPOSE_NAME, Endpoint, StackError, down, generate_compose, up
-from hermetic.provision.stack import CommandResult, run_command
+from hermetic.provision.stack import LOCK_NAME, CommandResult, run_command
 
 cli_runner = CliRunner()
 
@@ -436,6 +439,92 @@ def test_a_stack_that_is_already_running_is_left_alone(stack: tuple[Path, str]) 
     with pytest.raises(StackError, match="already running; run `hermetic down --service shop`"):
         up("shop", path, text, docker)
     assert docker.verbs() == []  # no up, and above all no down
+
+
+def hold_lock(folder: Path) -> int:
+    """Take the lock another `hermetic up` would hold; the caller closes the descriptor."""
+    import fcntl  # not on Windows, so not at the top: the rest of this module still runs there
+
+    fd = os.open(folder / LOCK_NAME, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return fd
+
+
+def test_a_second_up_for_the_same_stack_is_refused_without_touching_docker(
+    stack: tuple[Path, str],
+) -> None:
+    path, text = stack
+    docker = FakeDocker()
+    fd = hold_lock(path.parent)
+    try:
+        with pytest.raises(StackError, match="another `hermetic up` for 'shop' is running"):
+            up("shop", path, text, docker)
+    finally:
+        os.close(fd)
+    assert docker.calls == []  # not even the running check, and so never a `down`
+
+
+def test_the_lock_is_released_after_a_start_and_after_a_failed_start(
+    stack: tuple[Path, str],
+) -> None:
+    path, text = stack
+    with pytest.raises(StackError, match="docker compose up failed"):
+        up("shop", path, text, FakeDocker(up_code=1))
+    assert len(up("shop", path, text, FakeDocker())) == 3  # the failure did not keep the lock
+    assert len(up("shop", path, text, FakeDocker())) == 3  # nor did the success
+
+
+def test_two_ups_at_once_cannot_both_start(stack: tuple[Path, str]) -> None:
+    path, text = stack
+    inside = threading.Event()
+    release = threading.Event()
+    first = FakeDocker()
+
+    def slow(argv: Sequence[str], *, stdin: str | None, timeout: float) -> CommandResult:
+        if "up" in argv:
+            inside.set()  # the first run is now mid-start, past every check
+            assert release.wait(timeout=30)
+        return first(argv, stdin=stdin, timeout=timeout)
+
+    started: list[list[Endpoint]] = []
+    thread = threading.Thread(target=lambda: started.append(up("shop", path, text, slow)))
+    thread.start()
+    try:
+        assert inside.wait(timeout=30)
+        second = FakeDocker()
+        with pytest.raises(StackError, match="another `hermetic up`"):
+            up("shop", path, text, second)
+        assert second.calls == []
+    finally:
+        release.set()
+        thread.join(timeout=30)
+    assert len(started[0]) == 3 and "down" not in first.verbs()  # the first run was not disturbed
+
+
+def test_a_lock_file_that_is_a_link_is_refused(stack: tuple[Path, str], tmp_path: Path) -> None:
+    path, text = stack
+    target = tmp_path / "elsewhere"
+    target.write_text("")
+    (path.parent / LOCK_NAME).symlink_to(target)
+    docker = FakeDocker()
+    with pytest.raises(StackError, match=r"cannot open .*\.up\.lock"):
+        up("shop", path, text, docker)
+    assert docker.calls == []
+
+
+def test_a_file_system_that_cannot_lock_is_an_error_not_a_traceback(
+    stack: tuple[Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, text = stack
+
+    def refuse(fd: int, operation: int) -> None:
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr("fcntl.flock", refuse)
+    docker = FakeDocker()
+    with pytest.raises(StackError, match=r"cannot lock .*\.up\.lock: No locks available"):
+        up("shop", path, text, docker)
+    assert docker.calls == []
 
 
 def test_a_failing_running_check_stops_the_start(stack: tuple[Path, str]) -> None:
