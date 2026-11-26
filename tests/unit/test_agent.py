@@ -70,7 +70,7 @@ def test_embedded_text_cannot_close_its_block() -> None:
 
 def test_editing_the_system_prompt_forces_a_prompt_version_decision() -> None:
     digest = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:12]
-    assert (PROMPT_VERSION, digest) == ("2", "0ec7530027de"), (
+    assert (PROMPT_VERSION, digest) == ("3", "7d6caa4a427c"), (
         "SYSTEM_PROMPT changed (it includes the validator's name lists): bump PROMPT_VERSION if "
         "every test should be rewritten, then update this pin"
     )

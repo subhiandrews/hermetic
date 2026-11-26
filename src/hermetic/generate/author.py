@@ -9,6 +9,14 @@ from hermetic.ingest.models import DocFile, Operation
 
 
 @dataclass(frozen=True)
+class MockSurface:
+    """A downstream mock a test may switch: its name and the errors it declares per operation."""
+
+    name: str  # the NAME of `hermetic run --mock NAME=URL`
+    errors: dict[str, list[str]]  # downstream operation id -> statuses it can be switched to
+
+
+@dataclass(frozen=True)
 class AuthorRequest:
     operation: Operation
     service_title: str
@@ -16,6 +24,7 @@ class AuthorRequest:
     docs: list[DocFile]
     reason: str  # why this test is being written now
     previous_source: str | None  # the test being replaced, if any
+    mocks: tuple[MockSurface, ...] = ()  # empty: the test gets no `hermetic_mocks` fixture
 
 
 @dataclass(frozen=True)

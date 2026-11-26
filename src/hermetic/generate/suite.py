@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from hermetic.diffing.manifest import (
     manifest_text,
     save_manifest,
 )
-from hermetic.generate.author import AuthoredTest, AuthorRequest, SuiteAuthor
+from hermetic.generate.author import AuthoredTest, AuthorRequest, MockSurface, SuiteAuthor
 from hermetic.generate.validate import MAX_SOURCE_BYTES, SourceRejected, validate_source
 from hermetic.history.models import SuiteChange
 from hermetic.ingest import ServiceModel
@@ -39,9 +40,17 @@ def fragment_text(operation: Operation) -> str:
 
 
 def generate_suite(
-    model: ServiceModel, author: SuiteAuthor, suite_dir: Path, *, force: bool = False
+    model: ServiceModel,
+    author: SuiteAuthor,
+    suite_dir: Path,
+    *,
+    force: bool = False,
+    mocks: Sequence[MockSurface] = (),
 ) -> list[SuiteChange]:
     """Bring the suite in `suite_dir` in line with the spec and return what changed.
+
+    `mocks` is what the author may tell a test it can switch. It is not part of an operation's
+    fragment hash, so a change to it rewrites nothing by itself: use `force`.
 
     Every new test is authored and validated before any file is written, so an authoring or
     validation failure leaves the suite and the manifest as they were. A failure while writing
@@ -85,6 +94,7 @@ def generate_suite(
             docs=model.docs,
             reason=reason,
             previous_source=previous,
+            mocks=tuple(mocks),
         )
         try:
             result = author.write_test(request)

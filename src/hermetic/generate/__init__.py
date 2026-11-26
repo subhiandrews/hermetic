@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from hermetic.diffing.manifest import Manifest, ManifestEntry, ManifestError
-from hermetic.generate.author import AuthoredTest, AuthorRequest, SuiteAuthor
+from hermetic.generate.author import AuthoredTest, AuthorRequest, MockSurface, SuiteAuthor
+from hermetic.generate.mocks import mock_surface
 from hermetic.generate.suite import GenerateError, generate_suite
 
 __all__ = [
@@ -13,6 +14,8 @@ __all__ = [
     "Manifest",
     "ManifestEntry",
     "ManifestError",
+    "MockSurface",
     "SuiteAuthor",
     "generate_suite",
+    "mock_surface",
 ]

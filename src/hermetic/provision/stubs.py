@@ -315,6 +315,21 @@ def build_stubs(model: ServiceModel) -> tuple[dict[str, dict[str, Any]], list[st
     return stubs, skipped
 
 
+def declared_errors(model: ServiceModel) -> dict[str, list[str]]:
+    """Operation id to the error statuses a mock built from `model` can be switched to.
+
+    Read from the stubs `build_stubs` makes, so it is exactly what `hermetic_mocks` can answer
+    with, and an operation with no switchable error is left out.
+    """
+    stubs, _ = build_stubs(model)
+    found: dict[str, list[str]] = {}
+    for mapping in stubs.values():
+        metadata = mapping["metadata"]
+        if metadata.get("state") not in (None, START_STATE):
+            found.setdefault(metadata["operation"], []).append(metadata["state"])
+    return {operation: sorted(states) for operation, states in found.items()}
+
+
 def _ours(path: Path) -> bool:
     """Whether a file in the folder is a stub an earlier run made."""
     if path.suffix != ".json" or path.is_symlink() or not path.is_file():
