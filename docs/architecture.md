@@ -133,7 +133,7 @@ Each folder's README says where its files came from, at which commit, and under 
 
 ## Known limits
 
-These are gaps in v0.1 that are known and not yet planned in detail:
+These are gaps in v0.2 that are known and not yet planned in detail:
 
 - **Mock error cases depend on the agent's judgment.** Nothing in code says which target operation calls which downstream operation (see Generate and diff), so the agent may skip a call that is there or add a test for one that is not (a wrong one fails or errors when run). Ranges, `default` and 1xx or 3xx responses are not mocked at all, and only WireMock 3.9.1, the pinned image, has been checked.
 - **The `up` lock is narrow.** It is a file beside the compose file, so two `hermetic up` runs that use different compose files for one service are not stopped by it (a stack that is already running still is), and `hermetic down` does not take it, so a `down` during an `up` is not refused. It uses `fcntl`, so `up` does not run on Windows.
@@ -150,7 +150,7 @@ Releases are tag-driven and defined in `.github/workflows/release.yml`, which re
 To cut a release:
 
 1. In a pull request, set `__version__` in `src/hermetic/__init__.py` (the only place the version lives) and merge it.
-2. From an up-to-date `main`, tag that commit and push the tag: `git tag v0.1.0 && git push origin v0.1.0`. The `check-version` job refuses a tag that differs from `__version__`, and nothing is published unless the whole CI workflow passes on the tagged commit.
+2. From an up-to-date `main`, tag that commit and push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z` (the version you set in step 1). The `check-version` job refuses a tag that differs from `__version__`, and nothing is published unless the whole CI workflow passes on the tagged commit.
 3. The workflow publishes the image, the package and a GitHub release. PyPI never accepts the same version twice, so fix a bad release with the next version, not a re-tag.
 
 The `pypi` job runs in a GitHub environment named `pypi` and needs a trusted publisher registered on PyPI (project `hermetic-agent`, since `hermetic` is taken) for this repository, workflow `release.yml` and that environment. Both are set up once, by hand, before the first tag. Protect them: limit the `pypi` environment to `v*` tags and consider a required reviewer (it gates only the PyPI upload; the `image` job has no environment and pushes to GHCR without approval), and add a tag ruleset so only maintainers can create `v*` tags (the only guard on the image), because the workflow publishes whatever commit a pushed `v*` tag points at (it checks the version and CI, not that the commit is on `main`). The image is published to `ghcr.io/<owner>/hermetic`; after the first push, check the package's visibility in its settings.
