@@ -10,6 +10,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from tests.fake_admin import FakeAdmin
+
 
 class _Handler(BaseHTTPRequestHandler):
     def _reply(self, status: int, payload: object) -> None:
@@ -81,6 +83,17 @@ class _Handler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: object) -> None:  # silence request logging
         pass
+
+
+@pytest.fixture
+def mock_admin() -> Iterator[FakeAdmin]:
+    """A fake WireMock admin API; its `url` is what a test passes as a mock."""
+    admin = FakeAdmin()
+    admin.start()
+    try:
+        yield admin
+    finally:
+        admin.stop()
 
 
 @pytest.fixture

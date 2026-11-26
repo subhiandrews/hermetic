@@ -30,10 +30,11 @@ def run_suite(
     changes: list[SuiteChange] | None = None,
     prompt_version: str | None = None,
     timeout: float = 30.0,
+    mocks: dict[str, str] | None = None,
 ) -> RunRecord:
     """Execute the suite, save the run to the store, then publish it to every sink."""
     started = datetime.now(UTC)
-    results = execute_suite(suite, target, timeout=timeout)
+    results = execute_suite(suite, target, timeout=timeout, mocks=mocks)
     finished = datetime.now(UTC)
     record = RunRecord(
         service=service,
