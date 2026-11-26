@@ -4,7 +4,7 @@ Hermetic is an open-source, agentic tester for REST microservices. Give it an Op
 
 Each run is kept in a local history. A small web UI shows past runs, which tests failed and why, and which tests were added, modified, or dropped since the last run, and why.
 
-> **Status:** early (v0.1). Every stage in the pipeline works end to end: ingest, discover, provision, generate, run, report and history. It is young, so read [`docs/architecture.md`](https://github.com/subhiandrews/hermetic/blob/main/docs/architecture.md) (Known limits) before you rely on it. To add your own report destination, see [`docs/writing-sinks.md`](https://github.com/subhiandrews/hermetic/blob/main/docs/writing-sinks.md).
+> **Status:** early (v0.2). Every stage in the pipeline works end to end: ingest, discover, provision, generate, run, report and history. It is young, so read [`docs/architecture.md`](https://github.com/subhiandrews/hermetic/blob/main/docs/architecture.md) (Known limits) before you rely on it. To add your own report destination, see [`docs/writing-sinks.md`](https://github.com/subhiandrews/hermetic/blob/main/docs/writing-sinks.md).
 
 ## Install
 
